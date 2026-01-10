@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: talos-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: talos
+      POSTGRES_PASSWORD: talos_password
+      POSTGRES_DB: talos_audit
+    ports:
+      - "5432:5432"
+    volumes:
+      - talos_postgres_data:/var/lib/postgresql/data
+      - ./src/storage/sql/schema.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U talos -d talos_audit"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  talos_postgres_data:
