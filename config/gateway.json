@@ -1,0 +1,192 @@
+{
+  "upstreams": {
+    "openai-us": {
+      "id": "openai-us",
+      "provider": "openai",
+      "endpoint": "https://api.openai.com/v1",
+      "credentials_ref": "secret:openai-api-key",
+      "tags": {"region": "us"},
+      "enabled": true
+    },
+    "azure-eu": {
+      "id": "azure-eu",
+      "provider": "azure",
+      "endpoint": "https://talos-eu.openai.azure.com",
+      "credentials_ref": "secret:azure-api-key",
+      "tags": {"region": "eu"},
+      "enabled": true
+    },
+    "anthropic-us": {
+      "id": "anthropic-us",
+      "provider": "anthropic",
+      "endpoint": "https://api.anthropic.com/v1",
+      "credentials_ref": "secret:anthropic-api-key",
+      "tags": {"region": "us"},
+      "enabled": true
+    },
+    "google-us": {
+      "id": "google-us",
+      "provider": "google",
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta",
+      "credentials_ref": "secret:google-api-key",
+      "tags": {"region": "us"},
+      "enabled": true
+    },
+    "groq-us": {
+      "id": "groq-us",
+      "provider": "groq",
+      "endpoint": "https://api.groq.com/openai/v1",
+      "credentials_ref": "secret:groq-api-key",
+      "tags": {"region": "us", "type": "fast-inference"},
+      "enabled": true
+    },
+    "together-us": {
+      "id": "together-us",
+      "provider": "together",
+      "endpoint": "https://api.together.xyz/v1",
+      "credentials_ref": "secret:together-api-key",
+      "tags": {"region": "us"},
+      "enabled": true
+    },
+    "mistral-eu": {
+      "id": "mistral-eu",
+      "provider": "mistral",
+      "endpoint": "https://api.mistral.ai/v1",
+      "credentials_ref": "secret:mistral-api-key",
+      "tags": {"region": "eu"},
+      "enabled": true
+    },
+    "ollama-cloud": {
+      "id": "ollama-cloud",
+      "provider": "ollama",
+      "endpoint": "https://ollama.com/api",
+      "credentials_ref": "",
+      "tags": {"region": "cloud", "type": "hosted"},
+      "enabled": true
+    },
+    "ollama-local": {
+      "id": "ollama-local",
+      "provider": "ollama",
+      "endpoint": "env:OLLAMA_HOST",
+      "credentials_ref": "",
+      "tags": {"region": "local", "type": "self-hosted"},
+      "enabled": true
+    }
+  },
+  "model_groups": {
+    "gpt-4-turbo": {
+      "id": "gpt-4-turbo",
+      "name": "GPT-4 Turbo",
+      "deployments": [
+        {"upstream_id": "openai-us", "model_name": "gpt-4o-mini", "weight": 100}
+      ],
+      "fallback_groups": ["gpt-3.5-turbo"]
+    },
+    "gpt-3.5-turbo": {
+      "id": "gpt-3.5-turbo",
+      "name": "GPT-3.5 Turbo",
+      "deployments": [
+        {"upstream_id": "openai-us", "model_name": "gpt-3.5-turbo", "weight": 100}
+      ],
+      "fallback_groups": []
+    },
+    "claude-3-opus": {
+      "id": "claude-3-opus",
+      "name": "Claude 3 Opus",
+      "deployments": [
+        {"upstream_id": "anthropic-us", "model_name": "claude-3-opus-20240229", "weight": 100}
+      ],
+      "fallback_groups": ["claude-3-sonnet"]
+    },
+    "claude-3-sonnet": {
+      "id": "claude-3-sonnet",
+      "name": "Claude 3.5 Sonnet",
+      "deployments": [
+        {"upstream_id": "anthropic-us", "model_name": "claude-3-5-sonnet-20241022", "weight": 100}
+      ],
+      "fallback_groups": []
+    },
+    "gemini-pro": {
+      "id": "gemini-pro",
+      "name": "Gemini Pro",
+      "deployments": [
+        {"upstream_id": "google-us", "model_name": "gemini-1.5-pro", "weight": 100}
+      ],
+      "fallback_groups": []
+    },
+    "gemini-flash": {
+      "id": "gemini-flash",
+      "name": "Gemini Flash",
+      "deployments": [
+        {"upstream_id": "google-us", "model_name": "gemini-1.5-flash", "weight": 100}
+      ],
+      "fallback_groups": []
+    },
+    "groq-llama": {
+      "id": "groq-llama",
+      "name": "Llama 3.1 70B (Groq)",
+      "deployments": [
+        {"upstream_id": "groq-us", "model_name": "llama-3.1-70b-versatile", "weight": 100}
+      ],
+      "fallback_groups": []
+    },
+    "groq-mixtral": {
+      "id": "groq-mixtral",
+      "name": "Mixtral 8x7B (Groq)",
+      "deployments": [
+        {"upstream_id": "groq-us", "model_name": "mixtral-8x7b-32768", "weight": 100}
+      ],
+      "fallback_groups": []
+    },
+    "mistral-large": {
+      "id": "mistral-large",
+      "name": "Mistral Large",
+      "deployments": [
+        {"upstream_id": "mistral-eu", "model_name": "mistral-large-latest", "weight": 100}
+      ],
+      "fallback_groups": []
+    },
+    "together-llama": {
+      "id": "together-llama",
+      "name": "Llama 3.1 405B (Together)",
+      "deployments": [
+        {"upstream_id": "together-us", "model_name": "meta-llama/Llama-3.1-405B-Instruct-Turbo", "weight": 100}
+      ],
+      "fallback_groups": []
+    },
+    "llama3": {
+      "id": "llama3",
+      "name": "Llama 3.2 (Local Ollama)",
+      "deployments": [
+        {"upstream_id": "ollama-local", "model_name": "llama3.2:latest", "weight": 100}
+      ],
+      "fallback_groups": []
+    },
+    "qwen-coder": {
+      "id": "qwen-coder",
+      "name": "Qwen 2.5 Coder 14B (Local Ollama)",
+      "deployments": [
+        {"upstream_id": "ollama-local", "model_name": "qwen2.5-coder:14b", "weight": 100}
+      ],
+      "fallback_groups": []
+    },
+    "gemma": {
+      "id": "gemma",
+      "name": "Gemma 3 4B (Local Ollama)",
+      "deployments": [
+        {"upstream_id": "ollama-local", "model_name": "gemma3:4b", "weight": 100}
+      ],
+      "fallback_groups": []
+    }
+  },
+  "routing_policies": {
+    "default": {
+      "id": "default",
+      "version": 1,
+      "strategy": "weighted_hash",
+      "retries": {"max_attempts": 3, "backoff_ms": 500, "backoff_multiplier": 2},
+      "timeout_ms": 30000,
+      "cooldown": {"failure_threshold": 3, "window_seconds": 60, "cooldown_seconds": 300}
+    }
+  }
+}

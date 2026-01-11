@@ -78,8 +78,18 @@ async def get_tool_schema(server_id: str, tool_name: str, auth: AuthContext = De
     return schema_data
 
 
+import time
+from app.dependencies import get_mcp_client
+from app.adapters.mcp.client import McpClient
+
 @router.post("/servers/{server_id}/tools/{tool_name}:call")
-async def call_tool(server_id: str, tool_name: str, request: ToolCallRequest, auth: AuthContext = Depends(require_scope("mcp:invoke"))):
+async def call_tool(
+    server_id: str, 
+    tool_name: str, 
+    request: ToolCallRequest, 
+    auth: AuthContext = Depends(require_scope("mcp:invoke")),
+    mcp_client: McpClient = Depends(get_mcp_client)
+):
     """Invoke a tool."""
     # Check access
     if not registry.is_tool_allowed(auth.team_id, server_id, tool_name):
@@ -90,10 +100,15 @@ async def call_tool(server_id: str, tool_name: str, request: ToolCallRequest, au
     if not server:
         raise HTTPException(status_code=404, detail={"error": {"code": "NOT_FOUND", "message": "Server not found"}})
     
-    # TODO: Actual invocation via transport adapter
-    # For MVP, return mock response
-    return {
-        "output": {"result": f"Mock invocation of {tool_name} on {server_id}", "input_received": request.input},
-        "timing_ms": 42,
-        "audit_ref": f"audit-{request.request_id or 'unknown'}"
-    }
+    start_ts = time.time()
+    try:
+        result = await mcp_client.call_tool(server, tool_name, request.input)
+        duration_ms = int((time.time() - start_ts) * 1000)
+        
+        return {
+            "output": result,
+            "timing_ms": duration_ms,
+            "audit_ref": f"audit-{request.request_id or 'none'}"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=502, detail={"error": {"code": "UPSTREAM_ERROR", "message": str(e)}})

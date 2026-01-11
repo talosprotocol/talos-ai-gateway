@@ -2,6 +2,13 @@
 import os
 from pydantic_settings import BaseSettings
 
+# Load .env file if it exists
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 class Settings(BaseSettings):
     # Database
     database_url: str = os.getenv("DATABASE_URL", "postgresql://talos:talos@localhost:5432/talos")

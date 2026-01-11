@@ -11,7 +11,7 @@ MOCK_KEYS = {
         "team_id": "team-1",
         "org_id": "org-1",
         "scopes": ["llm:invoke", "mcp:invoke", "mcp:read"],
-        "allowed_model_groups": ["gpt-4-turbo"],
+        "allowed_model_groups": ["gpt-4-turbo", "gpt-3.5-turbo", "llama3", "qwen-coder", "gemma"],
         "allowed_mcp_servers": ["*"],
         "revoked": False
     }

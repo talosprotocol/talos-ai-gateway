@@ -3,7 +3,13 @@ from fastapi import Header, HTTPException, Depends
 from typing import Optional, Set
 from dataclasses import dataclass
 
-# MVP: Mock RBAC data - will be replaced with Postgres
+from app.adapters.postgres.session import get_db
+from app.adapters.postgres.models import RoleBinding, Role
+from sqlalchemy.orm import Session
+from app.domain.auth import get_admin_validator
+import os
+
+# MVP: Mock RBAC data - preserved for DEV_MODE fallback until migration is confirmed
 MOCK_ROLES = {
     "PlatformAdmin": {"permissions": ["*"]},
     "PlatformViewer": {"permissions": ["org.read", "team.read", "mcp.read", "llm.read", "audit.read"]},
@@ -13,7 +19,6 @@ MOCK_ROLES = {
 }
 
 MOCK_BINDINGS = {
-    # principal_id -> list of bindings
     "admin@talos.io": [{"role_id": "PlatformAdmin", "scope": {"type": "platform"}}],
     "viewer@talos.io": [{"role_id": "PlatformViewer", "scope": {"type": "platform"}}],
 }
@@ -26,6 +31,11 @@ class RbacContext:
     effective_permissions: Set[str]
     bindings: list
 
+    @property
+    def id(self) -> str:
+        """Alias for principal_id to support legacy code."""
+        return self.principal_id
+
     def has_permission(self, permission: str, scope: dict = None) -> bool:
         """Check if principal has permission at scope."""
         if "*" in self.effective_permissions:
@@ -33,29 +43,66 @@ class RbacContext:
         return permission in self.effective_permissions
 
 
-async def get_rbac_context(x_talos_principal: Optional[str] = Header(None)) -> RbacContext:
-    """Extract RBAC context from request headers.
+async def get_rbac_context(
+    authorization: Optional[str] = Header(None),
+    x_talos_principal: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
+) -> RbacContext:
+    """Extract RBAC context from JWT or legacy header."""
+    principal_id = None
     
-    In production, this would validate OIDC token or service account token.
-    For MVP, we use a header-based mock.
-    """
-    if not x_talos_principal:
-        raise HTTPException(status_code=401, detail={"error": {"code": "AUTH_INVALID", "message": "Missing X-Talos-Principal header"}})
+    # 1. JWT Validation
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+        validator = get_admin_validator()
+        claims = validator.validate_token(token)
+        principal_id = claims.get("sub")
     
-    bindings = MOCK_BINDINGS.get(x_talos_principal, [])
-    if not bindings:
-        raise HTTPException(status_code=401, detail={"error": {"code": "AUTH_INVALID", "message": "Unknown principal"}})
+    # 2. Legacy Fallback (DEV_MODE only)
+    if not principal_id and os.getenv("DEV_MODE", "false").lower() == "true":
+        principal_id = x_talos_principal
+        
+    if not principal_id:
+        raise HTTPException(
+            status_code=401, 
+            detail={"error": {"code": "AUTH_INVALID", "message": "Missing or invalid authentication"}}
+        )
+
+    # 3. RBAC Resolution from DB
+    bindings = db.query(RoleBinding).filter(RoleBinding.principal_id == principal_id).all()
     
-    # Compute effective permissions from bindings
     effective_permissions: Set[str] = set()
-    for binding in bindings:
-        role = MOCK_ROLES.get(binding["role_id"], {})
-        effective_permissions.update(role.get("permissions", []))
+    binding_data = []
     
+    for b in bindings:
+        role = db.query(Role).filter(Role.id == b.role_id).first()
+        if role:
+            effective_permissions.update(role.permissions or [])
+        binding_data.append({
+            "role_id": b.role_id,
+            "scope_type": b.scope_type,
+            "scope_org_id": b.scope_org_id,
+            "scope_team_id": b.scope_team_id
+        })
+    
+    # 4. Mock Fallback (DEV_MODE only, if DB empty for this user)
+    if not effective_permissions and os.getenv("DEV_MODE", "false").lower() == "true":
+        mock_binding = MOCK_BINDINGS.get(principal_id, [])
+        for b in mock_binding:
+            role = MOCK_ROLES.get(b["role_id"], {})
+            effective_permissions.update(role.get("permissions", []))
+            binding_data.append(b)
+
+    if not effective_permissions:
+        raise HTTPException(
+            status_code=403, 
+            detail={"error": {"code": "RBAC_DENIED", "message": f"Principal {principal_id} has no permissions"}}
+        )
+
     return RbacContext(
-        principal_id=x_talos_principal,
+        principal_id=principal_id,
         effective_permissions=effective_permissions,
-        bindings=bindings
+        bindings=binding_data
     )
 
 

@@ -1,56 +1,43 @@
-"""Audit Adapter - Event emission."""
-from typing import Dict, Any, Optional
+"""Audit event adapter."""
 from datetime import datetime
+from typing import Optional
 import uuid
-import json
-
-# In-memory audit log for MVP
-AUDIT_LOG: list = []
 
 
 def emit_event(
-    event_type: str,
-    surface: str,  # "llm" or "mcp"
+    action: str,
+    resource_type: str,
     request_id: str,
-    key_id: str,
-    team_id: str,
-    org_id: str,
-    target: Optional[str] = None,
+    principal_id: str,
+    resource_id: Optional[str] = None,
     outcome: str = "success",
     error_code: Optional[str] = None,
-    latency_ms: Optional[int] = None,
-    policy_version: Optional[int] = None,
-    metadata: Optional[Dict[str, Any]] = None
-) -> str:
-    """Emit an audit event."""
-    event_id = str(uuid.uuid4())
+    version_before: Optional[int] = None,
+    version_after: Optional[int] = None,
+    context: str = "api"
+) -> dict:
+    """Emit an audit event.
     
+    In production, this would write to an audit log store.
+    For MVP, we print to stdout.
+    """
     event = {
-        "event_id": event_id,
-        "event_type": event_type,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-        "surface": surface,
-        "request_id": request_id,
-        "key_id": key_id,
-        "team_id": team_id,
-        "org_id": org_id,
-        "target": target,
+        "event_id": str(uuid.uuid4()),
+        "timestamp": datetime.utcnow().isoformat(),
+        "principal_id": principal_id,
+        "action": action,
+        "resource_type": resource_type,
+        "resource_id": resource_id,
         "outcome": outcome,
         "error_code": error_code,
-        "latency_ms": latency_ms,
-        "policy_version": policy_version
+        "request_id": request_id,
+        "context": context,
+        "scope": "platform",
+        "version_before": version_before,
+        "version_after": version_after
     }
     
-    # Redact sensitive metadata
-    if metadata:
-        event["metadata_hash"] = hash(json.dumps(metadata, sort_keys=True))
+    # MVP: print to stdout (would go to audit store in production)
+    print(f"[AUDIT] {action} {resource_type}/{resource_id} by {principal_id}: {outcome}")
     
-    AUDIT_LOG.append(event)
-    
-    # In production, this would send to talos-audit-service
-    return event_id
-
-
-def get_recent_events(limit: int = 100) -> list:
-    """Get recent audit events."""
-    return AUDIT_LOG[-limit:]
+    return event
