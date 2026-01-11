@@ -88,3 +88,12 @@ def get_session_store() -> SessionStore:
     if os.getenv("REDIS_URL"):
         return RedisSessionStore()
     return MemorySessionStore()
+
+from app.domain.interfaces import TaskStore
+from app.adapters.postgres.task_store import PostgresTaskStore
+from app.adapters.memory_store.stores import MemoryTaskStore
+
+def get_task_store(db: Session = Depends(get_db)) -> TaskStore:
+    if DEV_MODE:
+        return MemoryTaskStore()
+    return PostgresTaskStore(db)

@@ -1,6 +1,6 @@
 """Postgres Store Implementations."""
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import desc
@@ -310,7 +310,7 @@ class PostgresUsageStore(UsageStore):
 
     def get_stats(self, window_hours: int = 24) -> Dict[str, Any]:
         from sqlalchemy import func
-        since = datetime.utcnow() - timedelta(hours=window_hours)
+        since = datetime.now(timezone.utc) - timedelta(hours=window_hours)
         
         res = self.db.query(
             func.count(UsageEvent.id).label("count"),

@@ -4,7 +4,7 @@ import requests
 import logging
 import os
 from typing import Optional, Dict, List, Set, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ class JwtValidator:
         if not self.jwks_url:
             return {}
         
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         if self._jwks_cache and self._jwks_last_fetch and (now - self._jwks_last_fetch) < timedelta(hours=1):
             return self._jwks_cache
 

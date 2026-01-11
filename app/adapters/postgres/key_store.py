@@ -1,0 +1,216 @@
+"""KeyStore Interface and PostgresKeyStore Implementation.
+
+This module provides the production-grade key store that:
+1. Stores hashed keys with HMAC-SHA256 using peppered hashing
+2. Supports tenant-aware lookups (team_id bound)
+3. Implements Redis caching with short TTL
+4. Handles revocation with immediate cache invalidation
+"""
+import hashlib
+import hmac
+import os
+from abc import ABC, abstractmethod
+from datetime import datetime, timezone
+from typing import Optional, NamedTuple
+
+from sqlalchemy.orm import Session
+
+
+class KeyData(NamedTuple):
+    """Key lookup result."""
+    id: str
+    team_id: str
+    org_id: str
+    scopes: list
+    allowed_model_groups: list
+    allowed_mcp_servers: list
+    revoked: bool
+    expires_at: Optional[datetime]
+
+
+class KeyStore(ABC):
+    """Abstract interface for key storage and lookup."""
+
+    @abstractmethod
+    def lookup_by_hash(self, key_hash: str) -> Optional[KeyData]:
+        """Look up key data by hash."""
+        ...
+
+    @abstractmethod
+    def hash_key(self, raw_key: str) -> str:
+        """Hash a raw key for lookup."""
+        ...
+
+
+class PostgresKeyStore(KeyStore):
+    """Database-backed key store with HMAC-SHA256 hashing.
+    
+    Keys are hashed using HMAC-SHA256 with a pepper stored in KMS/env.
+    The pepper_id is stored with the hash to support rotation.
+    """
+
+    def __init__(
+        self,
+        db: Session,
+        pepper: Optional[str] = None,
+        pepper_id: str = "p1",
+        redis_client=None,
+        cache_ttl_seconds: int = 60,
+    ):
+        """Initialize store.
+        
+        Args:
+            db: SQLAlchemy database session
+            pepper: Secret pepper for HMAC. If None, reads from env.
+            pepper_id: Version identifier for the pepper
+            redis_client: Optional Redis client for caching
+            cache_ttl_seconds: Cache TTL (default: 60s)
+        """
+        self._db = db
+        self._pepper = (pepper or os.getenv("TALOS_KEY_PEPPER", "dev-pepper-change-in-prod")).encode()
+        self._pepper_id = pepper_id
+        self._redis = redis_client
+        self._cache_ttl = cache_ttl_seconds
+
+    def hash_key(self, raw_key: str) -> str:
+        """Hash a raw API key using HMAC-SHA256 with pepper.
+        
+        Format: {pepper_id}:{hex_hash}
+        """
+        h = hmac.new(self._pepper, raw_key.encode(), hashlib.sha256)
+        return f"{self._pepper_id}:{h.hexdigest()}"
+
+    def lookup_by_hash(self, key_hash: str) -> Optional[KeyData]:
+        """Look up key data by hash.
+        
+        First checks Redis cache, then falls back to database.
+        """
+        # Try cache first
+        if self._redis:
+            cached = self._try_cache_get(key_hash)
+            if cached is not None:
+                return cached if cached else None  # False = negative cache
+
+        # Database lookup
+        from ..postgres.models import VirtualKey
+        
+        # Extract hash from {pepper_id}:{hash} format
+        parts = key_hash.split(":", 1)
+        if len(parts) == 2:
+            _, hash_only = parts
+        else:
+            hash_only = key_hash
+
+        vk = self._db.query(VirtualKey).filter(VirtualKey.key_hash == hash_only).first()
+        
+        if not vk:
+            if self._redis:
+                self._cache_negative(key_hash)
+            return None
+
+        key_data = KeyData(
+            id=vk.id,
+            team_id=vk.team_id,
+            org_id=vk.team.org_id if vk.team else None,
+            scopes=vk.scopes or [],
+            allowed_model_groups=vk.allowed_model_groups or [],
+            allowed_mcp_servers=vk.allowed_mcp_servers or [],
+            revoked=vk.revoked,
+            expires_at=vk.expires_at,
+        )
+
+        if self._redis:
+            self._cache_set(key_hash, key_data)
+
+        return key_data
+
+    def _try_cache_get(self, key_hash: str) -> Optional[KeyData | bool]:
+        """Try to get from cache. Returns None if not in cache."""
+        try:
+            import json
+            data = self._redis.get(f"key:{key_hash}")
+            if data is None:
+                return None
+            if data == b"__NEGATIVE__":
+                return False
+            d = json.loads(data)
+            return KeyData(**d)
+        except Exception:
+            return None
+
+    def _cache_set(self, key_hash: str, key_data: KeyData) -> None:
+        """Cache key data."""
+        try:
+            import json
+            data = json.dumps({
+                "id": key_data.id,
+                "team_id": key_data.team_id,
+                "org_id": key_data.org_id,
+                "scopes": key_data.scopes,
+                "allowed_model_groups": key_data.allowed_model_groups,
+                "allowed_mcp_servers": key_data.allowed_mcp_servers,
+                "revoked": key_data.revoked,
+                "expires_at": key_data.expires_at.isoformat() if key_data.expires_at else None,
+            })
+            self._redis.setex(f"key:{key_hash}", self._cache_ttl, data)
+        except Exception:
+            pass
+
+    def _cache_negative(self, key_hash: str) -> None:
+        """Cache negative result for short duration."""
+        try:
+            self._redis.setex(f"key:{key_hash}", 30, "__NEGATIVE__")
+        except Exception:
+            pass
+
+    def invalidate_cache(self, key_hash: str) -> None:
+        """Invalidate cache entry for a key (call on revocation)."""
+        if self._redis:
+            try:
+                self._redis.delete(f"key:{key_hash}")
+            except Exception:
+                pass
+
+
+class MockKeyStore(KeyStore):
+    """DEV-ONLY mock key store for testing.
+    
+    WARNING: This should only be used when DEV_MODE=true.
+    """
+    
+    # Same mock data as before
+    MOCK_KEYS = {
+        hashlib.sha256(b"sk-test-key-1").hexdigest(): KeyData(
+            id="key-1",
+            team_id="team-1",
+            org_id="org-1",
+            scopes=["llm.invoke", "mcp.invoke", "a2a.invoke", "a2a.stream"],
+            allowed_model_groups=["gpt-4-turbo", "gpt-3.5-turbo", "llama3", "qwen-coder", "gemma"],
+            allowed_mcp_servers=["*"],
+            revoked=False,
+            expires_at=None,
+        )
+    }
+
+    def hash_key(self, raw_key: str) -> str:
+        return hashlib.sha256(raw_key.encode()).hexdigest()
+
+    def lookup_by_hash(self, key_hash: str) -> Optional[KeyData]:
+        return self.MOCK_KEYS.get(key_hash)
+
+
+def get_key_store(db: Session = None, redis_client=None) -> KeyStore:
+    """Factory function to get appropriate key store.
+    
+    In DEV_MODE, returns MockKeyStore.
+    In production, returns PostgresKeyStore (requires db session).
+    """
+    dev_mode = os.getenv("DEV_MODE", "false").lower() in ("true", "1", "yes")
+    
+    if dev_mode:
+        return MockKeyStore()
+    
+    if db is None:
+        raise RuntimeError("Database session required for production KeyStore")
+    
+    return PostgresKeyStore(db, redis_client=redis_client)

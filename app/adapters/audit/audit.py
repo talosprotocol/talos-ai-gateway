@@ -1,5 +1,5 @@
 """Audit event adapter."""
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 import uuid
 
@@ -23,7 +23,7 @@ def emit_event(
     """
     event = {
         "event_id": str(uuid.uuid4()),
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "principal_id": principal_id,
         "action": action,
         "resource_type": resource_type,
