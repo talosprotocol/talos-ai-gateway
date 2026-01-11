@@ -1,2 +1,6 @@
 .env
 config/secrets.json
+__pycache__/
+__pycache__/*
+e2e_results.txt
+*.log
