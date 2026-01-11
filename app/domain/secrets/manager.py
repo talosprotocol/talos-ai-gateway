@@ -64,6 +64,7 @@ def set_secret(name: str, value: str):
     _SECRETS_CACHE[name] = {
         "ciphertext": base64.b64encode(envelope.ciphertext).decode("ascii"),
         "nonce": base64.b64encode(envelope.nonce).decode("ascii"),
+        "tag": base64.b64encode(envelope.tag).decode("ascii"),
         "key_id": envelope.key_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "rotated_at": None
@@ -85,6 +86,7 @@ def rotate_secret(name: str, new_value: str) -> bool:
     _SECRETS_CACHE[name] = {
         "ciphertext": base64.b64encode(envelope.ciphertext).decode("ascii"),
         "nonce": base64.b64encode(envelope.nonce).decode("ascii"),
+        "tag": base64.b64encode(envelope.tag).decode("ascii"),
         "key_id": envelope.key_id,
         "created_at": created_at,
         "rotated_at": datetime.now(timezone.utc).isoformat()
@@ -114,9 +116,12 @@ def get_secret_value(name: str) -> Optional[str]:
 
     try:
         kek = _get_kek()
+        # Handle cases where tag might be missing from old data?
+        # Since we are resetting, we assume fresh data.
         envelope = EncryptedEnvelope(
             ciphertext=base64.b64decode(secret["ciphertext"]),
             nonce=base64.b64decode(secret["nonce"]),
+            tag=base64.b64decode(secret.get("tag", "")), # Safety get, though should be there
             key_id=secret["key_id"]
         )
         plaintext = kek.decrypt(envelope)

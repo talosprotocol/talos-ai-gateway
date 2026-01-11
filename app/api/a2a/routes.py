@@ -4,39 +4,42 @@ from typing import Dict, Any
 from app.middleware.auth_public import get_auth_context, AuthContext, get_auth_context_or_none
 from app.middleware.attestation import get_attestation_auth
 from app.dependencies import (
-    get_routing_service, get_audit_store, get_rate_limit_store, get_usage_store, get_mcp_client, get_task_store
+    get_routing_service, get_audit_store, get_rate_limit_store, get_usage_store, 
+    get_mcp_client, get_task_store, get_key_store
+)
+from app.domain.interfaces import (
+    AuditStore, RateLimitStore, UsageStore, TaskStore
 )
 from app.adapters.mcp.client import McpClient
 from app.domain.routing import RoutingService
-from app.domain.interfaces import AuditStore, RateLimitStore, UsageStore, TaskStore
 from app.domain.a2a.dispatcher import A2ADispatcher
+from app.adapters.postgres.key_store import KeyStore
 
 router = APIRouter()
 
 async def get_integrated_auth(
     auth_bearer: AuthContext | None = Depends(get_auth_context_or_none),
     auth_attest: AuthContext | None = Depends(get_attestation_auth),
-    token: str | None = Query(default=None)
+    token: str | None = Query(default=None),
+    key_store: KeyStore = Depends(get_key_store)
 ) -> AuthContext:
     if auth_attest:
         return auth_attest
     if auth_bearer:
         return auth_bearer
         
-    # Dev mode query token fallback
+    # Dev mode query token fallback (only if DEV_MODE=true)
     if app_settings.dev_mode and token:
-         from app.middleware.auth_public import MOCK_KEYS
-         import hashlib
-         key_hash = hashlib.sha256(token.encode()).hexdigest()
-         key_data = MOCK_KEYS.get(key_hash)
-         if key_data and not key_data.get("revoked"):
+         key_hash = key_store.hash_key(token)
+         key_data = key_store.lookup_by_hash(key_hash)
+         if key_data and not key_data.revoked:
               return AuthContext(
-                  key_id=key_data["id"],
-                  team_id=key_data["team_id"],
-                  org_id=key_data["org_id"],
-                  scopes=key_data["scopes"],
-                  allowed_model_groups=key_data["allowed_model_groups"],
-                  allowed_mcp_servers=key_data["allowed_mcp_servers"]
+                  key_id=key_data.id,
+                  team_id=key_data.team_id,
+                  org_id=key_data.org_id,
+                  scopes=key_data.scopes,
+                  allowed_model_groups=key_data.allowed_model_groups,
+                  allowed_mcp_servers=key_data.allowed_mcp_servers
               )
 
     raise HTTPException(
@@ -78,7 +81,7 @@ from fastapi import Header, Query, HTTPException
 from app.settings import settings as app_settings
 from app.domain.a2a.streaming import stream_task_events
 from app.adapters.redis.client import get_redis_client
-import hashlib # For Mock lookup simulation (reuse logic) - Wait, we can reuse get_auth_context logic if we mock header.
+import hashlib # For Static lookup simulation (reuse logic)
 # Actually, calling get_auth_context with a modified request is hard in a sub-dependency.
 # But we can call `get_auth_context` directly if we import it.
 import redis.asyncio as redis
@@ -86,41 +89,16 @@ import uuid
 
 async def get_sse_auth(
     authorization: str | None = Header(default=None),
-    token: str | None = Query(default=None)
+    token: str | None = Query(default=None),
+    key_store: KeyStore = Depends(get_key_store)
 ) -> AuthContext:
-    key_value = None
-    if authorization and authorization.startswith("Bearer "):
-        key_value = authorization[7:]
-    elif app_settings.dev_mode and token:
-        key_value = token
-        
-    if not key_value:
-        raise HTTPException(status_code=401, detail={"error": {"code": -32000, "message": "Unauthorized", "data": {"details": "Missing Bearer token"}}})
-
-    # Validate Key (Reusable logic desired, but for now duplicate the lookup or call logic)
-    # We can reconstruct a bearer string and call get_auth_context?
-    # get_auth_context depends on Header. 
-    # Let's just refactor auth logic? No, too risky.
-    # Duplicate lookup logic from auth_public.py is safest for now to avoid refactor.
-    # Or better: Import MOCK_KEYS from auth_public.
-    from app.middleware.auth_public import MOCK_KEYS
-    
-    key_hash = hashlib.sha256(key_value.encode()).hexdigest()
-    key_data = MOCK_KEYS.get(key_hash)
-    
-    if not key_data:
-        raise HTTPException(status_code=401, detail={"error": {"code": -32000, "message": "Unauthorized", "data": {"details": "Invalid key"}}})
-        
-    if key_data.get("revoked"):
-        raise HTTPException(status_code=401, detail={"error": {"code": -32000, "message": "Unauthorized", "data": {"details": "Key revoked"}}})
-        
-    return AuthContext(
-        key_id=key_data["id"],
-        team_id=key_data["team_id"],
-        org_id=key_data["org_id"],
-        scopes=key_data["scopes"],
-        allowed_model_groups=key_data["allowed_model_groups"],
-        allowed_mcp_servers=key_data["allowed_mcp_servers"]
+    """Unified SSE Auth resolver."""
+    # This is redundant with get_integrated_auth, but kept for compatibility if needed.
+    # Preferably, just use get_integrated_auth.
+    return await get_integrated_auth(
+        auth_bearer=await get_auth_context_or_none(authorization, key_store),
+        token=token,
+        key_store=key_store
     )
 
 @router.get("/tasks/{task_id}/events")

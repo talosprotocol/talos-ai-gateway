@@ -355,10 +355,12 @@ class A2ADispatcher:
             "principal_id": self.auth.key_id,
             "context": "a2a",
             "action": action,
-            "request_id": resource_id, # Mapping resource_id (request_id) to request_id field
+            "request_id": resource_id,
             "resource_type": "a2a_task",
             "resource_id": resource_id,
             "status": outcome,
+            "schema_id": "talos.audit.a2a.v1",
+            "schema_version": 1,
             "details": details or {}
         }
         if error_code:

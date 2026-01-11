@@ -30,8 +30,7 @@ def get_provider_catalog() -> dict:
         # Try local contracts path first
         paths = [
             CATALOG_PATH,
-            Path(__file__).parent.parent.parent / "catalog" / "provider_templates.json",
-            Path("/Users/nileshchakraborty/workspace/study/blockchain-mcp-security/deploy/repos/talos-contracts/catalog/provider_templates.json")
+            Path(__file__).parent.parent.parent / "catalog" / "provider_templates.json"
         ]
         for path in paths:
             if path.exists():
@@ -96,6 +95,8 @@ def audit(store: AuditStore, action: str, resource_type: str, principal_id: str,
         "resource_type": resource_type,
         "resource_id": resource_id,
         "status": outcome,
+        "schema_id": "talos.audit.admin.v1",
+        "schema_version": 1,
         "details": details
     }
     store.append_event(event)
@@ -550,7 +551,7 @@ async def delete_mcp_policy(
 
 @router.get("/secrets")
 async def list_secrets(
-    principal: dict = Depends(require_permission("secrets.read")),
+    principal: dict = Depends(require_permission("keys.read")),
     store: SecretStore = Depends(get_secret_store)
 ):
     return {"secrets": store.list_secrets()}
@@ -559,7 +560,7 @@ async def list_secrets(
 @router.post("/secrets", status_code=201)
 async def create_secret(
     data: dict, 
-    principal: dict = Depends(require_permission("secrets.write")),
+    principal: dict = Depends(require_permission("keys.write")),
     store: SecretStore = Depends(get_secret_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ):
@@ -579,7 +580,7 @@ async def create_secret(
 @router.delete("/secrets/{name}")
 async def delete_secret(
     name: str, 
-    principal: dict = Depends(require_permission("secrets.write")),
+    principal: dict = Depends(require_permission("keys.write")),
     store: SecretStore = Depends(get_secret_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ):

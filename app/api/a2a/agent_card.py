@@ -4,6 +4,8 @@ from typing import List, Optional, Union, Dict, Any
 
 from app.settings import settings
 from app.middleware.auth_public import get_auth_context, AuthContext
+from app.dependencies import get_key_store
+from app.adapters.postgres.key_store import KeyStore
 
 # Constants
 API_V1_STR = "/v1"
@@ -47,7 +49,8 @@ class AgentCard(BaseModel):
 @router.get("/.well-known/agent.json", response_model=AgentCard, response_model_exclude_none=True)
 async def get_agent_card(
     response: Response,
-    auth_header: Optional[str] = Header(None, alias="Authorization")
+    auth_header: Optional[str] = Header(None, alias="Authorization"),
+    key_store: KeyStore = Depends(get_key_store)
 ):
     """
     Returns the Agent Card for A2A discovery.
@@ -65,7 +68,7 @@ async def get_agent_card(
         # We manually call get_auth_context here or rely on exception
         try:
              # get_auth_context parses "Bearer <token>"
-             await get_auth_context(authorization=auth_header)
+             await get_auth_context(authorization=auth_header, key_store=key_store)
         except HTTPException as e:
              raise e
         except Exception:

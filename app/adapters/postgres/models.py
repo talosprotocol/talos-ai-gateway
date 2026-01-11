@@ -147,6 +147,7 @@ class Principal(Base):
     email = Column(String(255), unique=True, index=True)
     org_id = Column(String(255), ForeignKey("orgs.id"), nullable=True)
     display_name = Column(String(255))
+    public_key = Column(String(64), nullable=True, index=True)  # Ed25519 public key (hex)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -199,6 +200,7 @@ class Secret(Base):
     name = Column(String(255), primary_key=True)
     ciphertext = Column(Text, nullable=False)  # Base64-encoded encrypted value
     nonce = Column(String(32), nullable=False)  # Base64-encoded 96-bit nonce
+    tag = Column(String(32), nullable=False)    # Base64-encoded 128-bit authentication tag
     key_id = Column(String(64), nullable=False)  # KEK version identifier
     version = Column(Integer, default=1, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -217,8 +219,11 @@ class AuditEvent(Base):
     resource_type = Column(String(50), nullable=False)
     resource_id = Column(String(255))
     request_id = Column(String(36), index=True)
+    schema_id = Column(String(100), default="talos.audit.v1")
+    schema_version = Column(Integer, default=1)
     details = Column(JSON, default=dict)
     status = Column(String(20))  # success, error
+    event_hash = Column(String(64), index=True) # Deterministic SHA-256
 
     __table_args__ = (
         Index("idx_audit_timestamp", desc("timestamp")),
