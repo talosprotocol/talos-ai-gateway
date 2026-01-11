@@ -55,7 +55,7 @@ class PostgresKeyStore(KeyStore):
         pepper: Optional[str] = None,
         pepper_id: str = "p1",
         redis_client=None,
-        cache_ttl_seconds: int = 60,
+        cache_ttl_seconds: int = 30,
     ):
         """Initialize store.
         
@@ -64,19 +64,26 @@ class PostgresKeyStore(KeyStore):
             pepper: Secret pepper for HMAC. If None, reads from env.
             pepper_id: Version identifier for the pepper
             redis_client: Optional Redis client for caching
-            cache_ttl_seconds: Cache TTL (default: 60s)
+            cache_ttl_seconds: Cache TTL (default: 30s, max 120s)
         """
         self._db = db
         self._pepper = (pepper or os.getenv("TALOS_KEY_PEPPER", "dev-pepper-change-in-prod")).encode()
         self._pepper_id = pepper_id
         self._redis = redis_client
-        self._cache_ttl = cache_ttl_seconds
+        # Hard max TTL of 120s
+        self._cache_ttl = min(cache_ttl_seconds, 120)
 
     def hash_key(self, raw_key: str) -> str:
         """Hash a raw API key using HMAC-SHA256 with pepper.
         
         Format: {pepper_id}:{hex_hash}
         """
+        # Ensure we don't hash with a default pepper in production
+        if not self._pepper or self._pepper == b"dev-pepper-change-in-prod":
+            # This check is a safety net; the factory should have caught it.
+            if os.getenv("DEV_MODE", "false").lower() not in ("true", "1", "yes"):
+                raise RuntimeError("Production KeyStore MUST have a unique, secure pepper configured.")
+
         h = hmac.new(self._pepper, raw_key.encode(), hashlib.sha256)
         return f"{self._pepper_id}:{h.hexdigest()}"
 
@@ -172,45 +179,37 @@ class PostgresKeyStore(KeyStore):
                 pass
 
 
-class MockKeyStore(KeyStore):
-    """DEV-ONLY mock key store for testing.
-    
-    WARNING: This should only be used when DEV_MODE=true.
-    """
-    
-    # Same mock data as before
-    MOCK_KEYS = {
-        hashlib.sha256(b"sk-test-key-1").hexdigest(): KeyData(
-            id="key-1",
-            team_id="team-1",
-            org_id="org-1",
-            scopes=["llm.invoke", "mcp.invoke", "a2a.invoke", "a2a.stream"],
-            allowed_model_groups=["gpt-4-turbo", "gpt-3.5-turbo", "llama3", "qwen-coder", "gemma"],
-            allowed_mcp_servers=["*"],
-            revoked=False,
-            expires_at=None,
-        )
-    }
-
-    def hash_key(self, raw_key: str) -> str:
-        return hashlib.sha256(raw_key.encode()).hexdigest()
-
-    def lookup_by_hash(self, key_hash: str) -> Optional[KeyData]:
-        return self.MOCK_KEYS.get(key_hash)
-
-
 def get_key_store(db: Session = None, redis_client=None) -> KeyStore:
     """Factory function to get appropriate key store.
     
-    In DEV_MODE, returns MockKeyStore.
     In production, returns PostgresKeyStore (requires db session).
     """
     dev_mode = os.getenv("DEV_MODE", "false").lower() in ("true", "1", "yes")
+    pepper = os.getenv("TALOS_KEY_PEPPER")
+    pepper_id = os.getenv("TALOS_PEPPER_ID", "v1")
     
-    if dev_mode:
-        return MockKeyStore()
-    
-    if db is None:
-        raise RuntimeError("Database session required for production KeyStore")
-    
-    return PostgresKeyStore(db, redis_client=redis_client)
+    if not dev_mode:
+        if not pepper:
+            raise RuntimeError("CRITICAL: TALOS_KEY_PEPPER environment variable is missing in production mode.")
+        if pepper == "dev-pepper-change-in-prod":
+            raise RuntimeError("CRITICAL: Default pepper detected in production mode. Security breach risk.")
+        
+        if db is None:
+            raise RuntimeError("Database session required for production KeyStore")
+    else:
+        # Use a stable dev pepper if none provided
+        pepper = pepper or "dev-pepper-change-in-prod"
+        if db is None:
+            # Fallback for dev if no DB provided (though usually DB is present)
+            # In Phase 0/1 we decided to remove MockKeyStore from prod imports.
+            # If we need a Mock for local dev without Postgres, it must be in a 
+            # test-only or dev-only file. For now, we expect Postgres even in dev
+            # unless we explicitly implement a JsonKeyStore.
+            pass
+
+    return PostgresKeyStore(
+        db=db, 
+        pepper=pepper, 
+        pepper_id=pepper_id, 
+        redis_client=redis_client
+    )

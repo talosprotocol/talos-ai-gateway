@@ -4,12 +4,13 @@ import hashlib
 import json
 from typing import Optional, Dict, Any
 from fastapi import Request, Header, HTTPException, Depends
-from cryptography.hazmat.primitives.asymmetric import ed25519
-from cryptography.exceptions import InvalidSignature
+from app.domain.a2a.canonical import canonical_json_bytes
 
 from app.domain.a2a.canonical import canonical_json_bytes
-from app.middleware.auth_public import AuthContext, MOCK_KEYS
+from app.middleware.auth_public import AuthContext
 from app.adapters.redis.client import get_redis_client
+from app.dependencies import get_key_store
+from app.adapters.postgres.key_store import KeyStore
 import redis.asyncio as redis
 
 # Replay protection window
@@ -21,7 +22,8 @@ async def get_attestation_auth(
     x_talos_key_id: Optional[str] = Header(None, alias="X-Talos-Key-Id"),
     x_talos_signature: Optional[str] = Header(None, alias="X-Talos-Signature"),
     x_talos_nonce: Optional[str] = Header(None, alias="X-Talos-Nonce"),
-    x_talos_timestamp: Optional[str] = Header(None, alias="X-Talos-Timestamp")
+    x_talos_timestamp: Optional[str] = Header(None, alias="X-Talos-Timestamp"),
+    key_store: KeyStore = Depends(get_key_store)
 ) -> Optional[AuthContext]:
     """
     Verifies Talos A2A Attestation headers.
@@ -43,7 +45,7 @@ async def get_attestation_auth(
         raise HTTPException(status_code=401, detail={"error": {"talos_code": "INVALID_HEADERS", "message": "Invalid timestamp format"}})
 
     # 2. Key Lookup
-    # In MOCK_KEYS, we use sha256 of public key as the identifier for now? 
+    # Identifier check
     # Or just use the hex key id directly if we add it to mock store.
     # The plan says X-Talos-Key-Id is the hex-encoded public key.
     try:
@@ -55,14 +57,15 @@ async def get_attestation_auth(
 
     # Check if key is known and not revoked
     key_hash = hashlib.sha256(public_key_bytes).hexdigest()
-    key_data = MOCK_KEYS.get(key_hash)
+    # Note: For attestation, we might need a specific hashing rule, 
+    # but the KeyStore's lookup_by_hash expects f"{pepper_id}:{hash}".
+    # We should use the key_store's lookup mechanism.
+    key_data = key_store.lookup_by_hash(key_hash)
     
     if not key_data:
-        # For Phase A5 verification, we might need to "auto-trust" or have specific mock keys.
-        # Let's assume for now they must be in MOCK_KEYS.
         raise HTTPException(status_code=401, detail={"error": {"talos_code": "AUTH_INVALID", "message": "Unknown Key-Id"}})
 
-    if key_data.get("revoked"):
+    if key_data.revoked:
         raise HTTPException(status_code=401, detail={"error": {"talos_code": "AUTH_REVOKED", "message": "Key revoked"}})
 
     # 3. Replay Protection
@@ -93,17 +96,15 @@ async def get_attestation_auth(
     canonical_body = canonical_json_bytes(body)
     payload = f"{x_talos_nonce}|{x_talos_timestamp}|".encode() + canonical_body
 
-    try:
-        verify_key = ed25519.Ed25519PublicKey.from_public_bytes(public_key_bytes)
-        verify_key.verify(sig_bytes, payload)
-    except InvalidSignature:
+    from talos_core_rs import Wallet
+    if not Wallet.verify(payload, sig_bytes, public_key_bytes):
         raise HTTPException(status_code=401, detail={"error": {"talos_code": "INVALID_SIGNATURE", "message": "Signature verification failed"}})
 
     return AuthContext(
-        key_id=key_data["id"],
-        team_id=key_data["team_id"],
-        org_id=key_data["org_id"],
-        scopes=key_data["scopes"],
-        allowed_model_groups=key_data["allowed_model_groups"],
-        allowed_mcp_servers=key_data["allowed_mcp_servers"]
+        key_id=key_data.id,
+        team_id=key_data.team_id,
+        org_id=key_data.org_id,
+        scopes=key_data.scopes,
+        allowed_model_groups=key_data.allowed_model_groups,
+        allowed_mcp_servers=key_data.allowed_mcp_servers
     )

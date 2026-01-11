@@ -15,8 +15,11 @@ class ToolCallRequest(BaseModel):
     session_id: Optional[str] = None
 
 
+
+from app.errors import raise_talos_error
+
 @router.get("/servers")
-async def list_servers(auth: AuthContext = Depends(require_scope("mcp:read"))):
+async def list_servers(auth: AuthContext = Depends(require_scope("mcp.read"))):
     """List MCP servers available to the key."""
     all_servers = registry.list_servers()
     
@@ -41,14 +44,14 @@ async def list_servers(auth: AuthContext = Depends(require_scope("mcp:read"))):
 
 
 @router.get("/servers/{server_id}/tools")
-async def list_tools(server_id: str, auth: AuthContext = Depends(require_scope("mcp:read"))):
+async def list_tools(server_id: str, auth: AuthContext = Depends(require_scope("mcp.read"))):
     """List tools for a server."""
     # Check access
     if not auth.can_access_mcp_server(server_id):
-        raise HTTPException(status_code=403, detail={"error": {"code": "POLICY_DENIED", "message": "Server not allowed for this key"}})
+        raise_talos_error("POLICY_DENIED", 403, "Server not allowed for this key")
     
     if not registry.is_server_allowed(auth.team_id, server_id):
-        raise HTTPException(status_code=403, detail={"error": {"code": "POLICY_DENIED", "message": "Server not allowed for this team"}})
+        raise_talos_error("POLICY_DENIED", 403, "Server not allowed for this team")
     
     # Get tools
     tools = discovery.get_tools(server_id)
@@ -65,15 +68,15 @@ async def list_tools(server_id: str, auth: AuthContext = Depends(require_scope("
 
 
 @router.get("/servers/{server_id}/tools/{tool_name}/schema")
-async def get_tool_schema(server_id: str, tool_name: str, auth: AuthContext = Depends(require_scope("mcp:read"))):
+async def get_tool_schema(server_id: str, tool_name: str, auth: AuthContext = Depends(require_scope("mcp.read"))):
     """Get JSON schema for a tool."""
     # Check access
     if not registry.is_tool_allowed(auth.team_id, server_id, tool_name):
-        raise HTTPException(status_code=403, detail={"error": {"code": "POLICY_DENIED", "message": "Tool not allowed"}})
+        raise_talos_error("POLICY_DENIED", 403, "Tool not allowed")
     
     schema_data = discovery.get_tool_schema(server_id, tool_name)
     if not schema_data:
-        raise HTTPException(status_code=404, detail={"error": {"code": "NOT_FOUND", "message": f"Schema for {tool_name} not found"}})
+        raise_talos_error("NOT_FOUND", 404, f"Schema for {tool_name} not found")
     
     return schema_data
 
@@ -87,18 +90,18 @@ async def call_tool(
     server_id: str, 
     tool_name: str, 
     request: ToolCallRequest, 
-    auth: AuthContext = Depends(require_scope("mcp:invoke")),
+    auth: AuthContext = Depends(require_scope("mcp.invoke")),
     mcp_client: McpClient = Depends(get_mcp_client)
 ):
     """Invoke a tool."""
     # Check access
     if not registry.is_tool_allowed(auth.team_id, server_id, tool_name):
-        raise HTTPException(status_code=403, detail={"error": {"code": "POLICY_DENIED", "message": "Tool not allowed"}})
+        raise_talos_error("POLICY_DENIED", 403, "Tool not allowed")
     
     # Get server config
     server = registry.get_server(server_id)
     if not server:
-        raise HTTPException(status_code=404, detail={"error": {"code": "NOT_FOUND", "message": "Server not found"}})
+        raise_talos_error("NOT_FOUND", 404, "Server not found")
     
     start_ts = time.time()
     try:
@@ -111,4 +114,4 @@ async def call_tool(
             "audit_ref": f"audit-{request.request_id or 'none'}"
         }
     except Exception as e:
-        raise HTTPException(status_code=502, detail={"error": {"code": "UPSTREAM_ERROR", "message": str(e)}})
+        raise_talos_error("UPSTREAM_ERROR", 502, str(e))

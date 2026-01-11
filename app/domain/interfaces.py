@@ -1,8 +1,12 @@
 """Domain interfaces for persistence stores."""
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict, Any, TypedDict
+from typing import List, Optional, Dict, Any, TypedDict, Protocol
 from datetime import datetime
 from dataclasses import dataclass
+
+class PrincipalStore(Protocol):
+    def get_principal(self, principal_id: str) -> Optional[Dict[str, Any]]:
+        ...
 
 class UpstreamStore(ABC):
     @abstractmethod

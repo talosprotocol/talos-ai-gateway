@@ -9,21 +9,6 @@ from sqlalchemy.orm import Session
 from app.domain.auth import get_admin_validator
 import os
 
-# MVP: Mock RBAC data - preserved for DEV_MODE fallback until migration is confirmed
-MOCK_ROLES = {
-    "PlatformAdmin": {"permissions": ["*"]},
-    "PlatformViewer": {"permissions": ["org.read", "team.read", "mcp.read", "llm.read", "audit.read"]},
-    "OrgAdmin": {"permissions": ["org.read", "org.write", "team.read", "team.write", "mcp.admin", "llm.admin", "keys.write"]},
-    "TeamAdmin": {"permissions": ["team.read", "mcp.admin", "keys.write", "policies.write"]},
-    "TeamViewer": {"permissions": ["team.read", "mcp.read", "llm.read"]},
-}
-
-MOCK_BINDINGS = {
-    "admin@talos.io": [{"role_id": "PlatformAdmin", "scope": {"type": "platform"}}],
-    "viewer@talos.io": [{"role_id": "PlatformViewer", "scope": {"type": "platform"}}],
-}
-
-
 @dataclass
 class RbacContext:
     """RBAC context for admin requests."""
@@ -85,14 +70,7 @@ async def get_rbac_context(
             "scope_team_id": b.scope_team_id
         })
     
-    # 4. Mock Fallback (DEV_MODE only, if DB empty for this user)
-    if not effective_permissions and os.getenv("DEV_MODE", "false").lower() == "true":
-        mock_binding = MOCK_BINDINGS.get(principal_id, [])
-        for b in mock_binding:
-            role = MOCK_ROLES.get(b["role_id"], {})
-            effective_permissions.update(role.get("permissions", []))
-            binding_data.append(b)
-
+    # 4. Final check for permissions
     if not effective_permissions:
         raise HTTPException(
             status_code=403, 

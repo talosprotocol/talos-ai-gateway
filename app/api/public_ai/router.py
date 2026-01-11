@@ -35,6 +35,8 @@ def audit(store: AuditStore, action: str, resource_type: str, principal_id: str,
         "resource_type": resource_type,
         "resource_id": resource_id,
         "status": outcome,
+        "schema_id": "talos.audit.ai.v1",
+        "schema_version": 1,
         "details": details
     }
     store.append_event(event)
@@ -75,7 +77,7 @@ class ChatCompletionRequest(BaseModel):
 async def chat_completions(
     request: ChatCompletionRequest,
     response: Response,
-    auth: AuthContext = Depends(require_scope("llm:invoke")),
+    auth: AuthContext = Depends(require_scope("llm.invoke")),
     routing_service: RoutingService = Depends(get_routing_service),
     audit_store: AuditStore = Depends(get_audit_store),
     rl_store: RateLimitStore = Depends(get_rate_limit_store),
@@ -225,7 +227,7 @@ async def chat_completions(
 
 @router.get("/models")
 async def list_models(
-    auth: AuthContext = Depends(require_scope("llm:invoke")),
+    auth: AuthContext = Depends(require_scope("llm.invoke")),
     store: ModelGroupStore = Depends(get_model_group_store)
 ):
     """List allowed models for the authenticated key."""

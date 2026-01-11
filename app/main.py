@@ -12,17 +12,34 @@ from app.api.a2a import agent_card
 
 import asyncio
 from app.jobs.retention import retention_worker
+from app.jobs.revocation import revocation_worker
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     shutdown_event = asyncio.Event()
     worker_task = asyncio.create_task(retention_worker(shutdown_event))
+    revoc_task = asyncio.create_task(revocation_worker(shutdown_event))
+    
+    # Surface Completeness Gate
+    from app.dependencies import get_surface_registry
+    try:
+        registry = get_surface_registry()
+        registry.verify_app_routes(app)
+    except RuntimeError as e:
+        import sys
+        print(f"CRITICAL STARTUP ERROR: {e}")
+        sys.exit(1)
+        
     yield
     # Shutdown
     shutdown_event.set()
     try:
-        await asyncio.wait_for(worker_task, timeout=5.0)
+        await asyncio.gather(
+            asyncio.wait_for(worker_task, timeout=5.0),
+            asyncio.wait_for(revoc_task, timeout=5.0),
+            return_exceptions=True
+        )
     except asyncio.TimeoutError:
         pass # Force kill if stuck
 
@@ -32,6 +49,9 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan
 )
+
+from app.middleware.audit import TalosAuditMiddleware
+app.add_middleware(TalosAuditMiddleware)
 
 from fastapi.responses import JSONResponse
 from fastapi import Request, HTTPException

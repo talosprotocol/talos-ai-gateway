@@ -1,10 +1,11 @@
 """Postgres Store Implementations."""
 import logging
+import json
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import desc
-from app.domain.interfaces import UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, RoutingPolicyStore
+from app.domain.interfaces import UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, RoutingPolicyStore, PrincipalStore
 from app.adapters.postgres.models import (
     LlmUpstream, ModelGroup, Secret, McpServer, McpPolicy, AuditEvent, 
     Deployment, Role, Principal, RoutingPolicy, UsageEvent
@@ -189,12 +190,12 @@ class PostgresRoutingPolicyStore(RoutingPolicyStore):
 
 
 import uuid
-
-from app.domain.security import encrypt_value, decrypt_value
+from app.domain.secrets.kek_provider import KekProvider
 
 class PostgresSecretStore(SecretStore):
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, kek_provider: KekProvider):
         self.db = db
+        self.kek_provider = kek_provider
 
     def list_secrets(self) -> List[Dict[str, Any]]:
         objs = self.db.query(Secret).all()
@@ -211,19 +212,47 @@ class PostgresSecretStore(SecretStore):
         if not obj:
             return None
         try:
-            return decrypt_value(obj.encrypted_value)
-        except Exception:
-            # Fallback or error?
+            from app.domain.secrets.kek_provider import EncryptedEnvelope
+            import base64
+            
+            envelope = EncryptedEnvelope(
+                ciphertext=base64.b64decode(obj.ciphertext),
+                nonce=base64.b64decode(obj.nonce),
+                tag=base64.b64decode(obj.tag),
+                key_id=obj.key_id
+            )
+            
+            decrypted = self.kek_provider.decrypt(envelope)
+            return decrypted.decode('utf-8')
+        except Exception as e:
+            logger.error(f"Failed to decrypt secret {name}: {e}")
             return None
 
     def set_secret(self, name: str, value: str) -> None:
-        ct = encrypt_value(value)
+        import base64
+        envelope = self.kek_provider.encrypt(value.encode('utf-8'))
+        
+        # Base64 encode all parts
+        b64_ct = base64.b64encode(envelope.ciphertext).decode('ascii')
+        b64_nonce = base64.b64encode(envelope.nonce).decode('ascii')
+        b64_tag = base64.b64encode(envelope.tag).decode('ascii')
+        
         obj = self.db.query(Secret).filter(Secret.name == name).first()
         if obj:
-            obj.encrypted_value = ct
+            obj.ciphertext = b64_ct
+            obj.nonce = b64_nonce
+            obj.tag = b64_tag
+            obj.key_id = envelope.key_id
             obj.version += 1
         else:
-            obj = Secret(name=name, encrypted_value=ct, version=1)
+            obj = Secret(
+                name=name,
+                ciphertext=b64_ct,
+                nonce=b64_nonce,
+                tag=b64_tag,
+                key_id=envelope.key_id,
+                version=1
+            )
             self.db.add(obj)
         self.db.commit()
 
@@ -328,11 +357,41 @@ class PostgresUsageStore(UsageStore):
         }
 
 
+from app.domain.a2a.canonical import canonical_json_bytes
+import hashlib
+
 class PostgresAuditStore(AuditStore):
     def __init__(self, db: Session):
         self.db = db
 
     def append_event(self, event: Dict[str, Any]) -> None:
+        # Prepare event for hashing (exclude volatile fields if needed, 
+        # but Phase 5 says 'stable after schema upgrades', 
+        # so we hash the canonical core fields)
+        core_event = {
+            "principal_id": event.get("principal_id"),
+            "action": event.get("action"),
+            "resource_type": event.get("resource_type"),
+            "resource_id": event.get("resource_id"),
+            "status": event.get("status"),
+            "schema_id": event.get("schema_id"),
+            "schema_version": event.get("schema_version"),
+            "details": event.get("details", {})
+        }
+        
+        # Add timestamp to hash for temporal integrity
+        if "timestamp" in event:
+            ts = event["timestamp"]
+            if isinstance(ts, datetime):
+                core_event["timestamp"] = ts.isoformat()
+            else:
+                 core_event["timestamp"] = str(ts)
+
+        canonical_bytes = canonical_json_bytes(core_event)
+        event_h = hashlib.sha256(canonical_bytes).hexdigest()
+        
+        event["event_hash"] = event_h
+        
         obj = AuditEvent(**event)
         self.db.add(obj)
         self.db.commit()
@@ -347,3 +406,11 @@ class PostgresAuditStore(AuditStore):
         objs = q.order_by(desc(AuditEvent.timestamp)).limit(limit).all()
         return [to_dict(o) for o in objs]
 
+
+class PostgresPrincipalStore(PrincipalStore):
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_principal(self, principal_id: str) -> Optional[Dict[str, Any]]:
+        obj = self.db.query(Principal).filter(Principal.id == principal_id).first()
+        return to_dict(obj)

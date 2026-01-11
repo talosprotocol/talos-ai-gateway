@@ -13,6 +13,7 @@ class EncryptedEnvelope(NamedTuple):
     """Encrypted data envelope with AES-GCM."""
     ciphertext: bytes
     nonce: bytes
+    tag: bytes
     key_id: str
 
 
@@ -60,11 +61,17 @@ class EnvKekProvider(KekProvider):
 
         nonce = secrets.token_bytes(12)  # 96-bit nonce for AES-GCM
         aesgcm = AESGCM(self._key)
-        ciphertext = aesgcm.encrypt(nonce, plaintext, None)
+        # AESGCM.encrypt returns ciphertext + tag
+        ct_and_tag = aesgcm.encrypt(nonce, plaintext, None)
+        
+        # Last 16 bytes is the tag
+        tag = ct_and_tag[-16:]
+        ciphertext = ct_and_tag[:-16]
 
         return EncryptedEnvelope(
             ciphertext=ciphertext,
             nonce=nonce,
+            tag=tag,
             key_id=self._key_id
         )
 
@@ -76,7 +83,9 @@ class EnvKekProvider(KekProvider):
             raise ValueError(f"Key ID mismatch: expected {self._key_id}, got {envelope.key_id}")
 
         aesgcm = AESGCM(self._key)
-        return aesgcm.decrypt(envelope.nonce, envelope.ciphertext, None)
+        # Reconstruct ciphertext + tag
+        ct_and_tag = envelope.ciphertext + envelope.tag
+        return aesgcm.decrypt(envelope.nonce, ct_and_tag, None)
 
 
 class ProductionKekProvider(KekProvider):

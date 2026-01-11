@@ -9,7 +9,7 @@ SCHEMA_CACHE: Dict[str, dict] = {}
 TOOL_LIST_CACHE: Dict[str, dict] = {}
 
 # Mock tool data for demo servers
-MOCK_TOOLS = {
+BUILTIN_TOOLS = {
     "filesystem": [
         {"name": "read_file", "description": "Read contents of a file", "tags": {}},
         {"name": "write_file", "description": "Write contents to a file", "tags": {}},
@@ -20,7 +20,7 @@ MOCK_TOOLS = {
     ]
 }
 
-MOCK_SCHEMAS = {
+BUILTIN_SCHEMAS = {
     "filesystem": {
         "read_file": {
             "type": "object",
@@ -67,8 +67,8 @@ def get_tools(server_id: str) -> List[dict]:
         if datetime.now(expires_at.tzinfo) < expires_at:
             return cached["tools"]
     
-    # Fetch tools (mock for MVP)
-    tools = MOCK_TOOLS.get(server_id, [])
+    # Fetch tools (fallback to builtin)
+    tools = BUILTIN_TOOLS.get(server_id, [])
     
     # Cache for 60 seconds
     TOOL_LIST_CACHE[cache_key] = {
@@ -90,15 +90,16 @@ def get_tool_schema(server_id: str, tool_name: str) -> Optional[dict]:
         if datetime.now(expires_at.tzinfo) < expires_at:
             return cached
     
-    # Fetch schema (mock for MVP)
-    server_schemas = MOCK_SCHEMAS.get(server_id, {})
+    # Fetch schema (fallback to builtin)
+    server_schemas = BUILTIN_SCHEMAS.get(server_id, {})
     schema = server_schemas.get(tool_name)
     
     if not schema:
         return None
     
     # Compute hash
-    schema_hash = hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()[:16]
+    from app.domain.a2a.canonical import canonical_json_bytes
+    schema_hash = hashlib.sha256(canonical_json_bytes(schema)).hexdigest()[:16]
     
     result = {
         "json_schema": schema,

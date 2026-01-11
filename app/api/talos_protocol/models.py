@@ -15,6 +15,8 @@ class Frame(BaseModel):
     type: FrameType
     session_id: Optional[str] = Field(default=None, description="Logical session ID")
     sequence: Optional[int] = Field(default=None, description="Monotonic sequence counter")
+    nonce: Optional[str] = Field(default=None, description="Base64url nonce for handshake/attestation")
+    timestamp: Optional[int] = Field(default=None, description="Unix timestamp")
     payload: str = Field(description="Base64url-encoded payload bytes")
-    signature: Optional[str] = None
+    signature: Optional[str] = Field(default=None, description="Base64url signature")
     flags: int = 0

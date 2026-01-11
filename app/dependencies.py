@@ -34,10 +34,12 @@ def get_routing_policy_store(db: Session = Depends(get_db)) -> RoutingPolicyStor
         return RoutingPolicyJsonStore()
     return PostgresRoutingPolicyStore(db)
 
+from app.domain.secrets.kek_provider import get_kek_provider
+
 def get_secret_store(db: Session = Depends(get_db)) -> SecretStore:
     if DEV_MODE:
         return SecretJsonStore()
-    return PostgresSecretStore(db)
+    return PostgresSecretStore(db, get_kek_provider())
 
 def get_mcp_store(db: Session = Depends(get_db)) -> McpStore:
     if DEV_MODE:
@@ -97,3 +99,43 @@ def get_task_store(db: Session = Depends(get_db)) -> TaskStore:
     if DEV_MODE:
         return MemoryTaskStore()
     return PostgresTaskStore(db)
+
+from app.adapters.postgres.key_store import get_key_store as get_ks_factory, KeyStore
+from app.adapters.redis.client import get_redis_client
+
+async def get_key_store(db: Session = Depends(get_db)) -> KeyStore:
+    redis_client = await get_redis_client()
+    return get_ks_factory(db, redis_client=redis_client)
+
+from app.domain.interfaces import PrincipalStore
+from app.adapters.postgres.stores import PostgresPrincipalStore
+# We need a MockPrincipalStore/JsonPrincipalStore for DEV_MODE if needed, or fallback.
+class MockPrincipalStore(PrincipalStore):
+    def get_principal(self, principal_id: str): return None
+
+def get_principal_store(db: Session = Depends(get_db)) -> PrincipalStore:
+    if DEV_MODE:
+        return MockPrincipalStore()
+    return PostgresPrincipalStore(db)
+
+from app.middleware.attestation_http import AttestationVerifier, RedisReplayDetector
+
+async def get_attestation_verifier(
+    p_store: PrincipalStore = Depends(get_principal_store)
+) -> AttestationVerifier:
+    redis_client = await get_redis_client()
+    replay = RedisReplayDetector(redis_client)
+    return AttestationVerifier(p_store, replay)
+
+from app.domain.registry import SurfaceRegistry
+
+_registry_instance = None
+
+def get_surface_registry() -> SurfaceRegistry:
+    global _registry_instance
+    if _registry_instance is None:
+        # Assume path is relative to CWD (usually root of repo in docker)
+        # Or configured via env.
+        path = os.getenv("SURFACE_INVENTORY_PATH", "deploy/repos/talos-contracts/inventory/gateway_surface.json")
+        _registry_instance = SurfaceRegistry(path)
+    return _registry_instance
