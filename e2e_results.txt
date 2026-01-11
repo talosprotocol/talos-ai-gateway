@@ -1,0 +1,22 @@
+Verifying Talos Gateway at http://localhost:8000...
+
+--- Testing Provider Catalog ---
+✅ Fetched Catalog v1.0.0 with 21 templates
+✅ Found OpenAI template: https://api.openai.com/v1
+
+--- Testing Secrets API ---
+✅ Created secret: test-secret-0bf80066
+✅ Secret test-secret-0bf80066 found in list
+✅ Deleted secret: test-secret-0bf80066
+
+--- Testing MCP API ---
+✅ Created MCP server: mcp-test-b568efd0
+✅ Found MCP server: npx ['-y', '@modelcontextprotocol/server-filesystem', '/tmp']
+✅ Disabled MCP server: mcp-test-b568efd0
+✅ Deleted MCP server: mcp-test-b568efd0
+
+--- Testing Dashboard UI ---
+✅ Dashboard loads successfully
+✅ MCP Servers section found in HTML
+
+Verification Complete.

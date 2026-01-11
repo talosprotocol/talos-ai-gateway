@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from app.api.public_ai import router as ai_router
 from app.api.public_mcp import router as mcp_router
 from app.api.admin import router as admin_router
+from app.dashboard import router as dashboard_router
+from app.api.talos_protocol import router as protocol_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -25,6 +27,9 @@ def health():
     return {"status": "ok"}
 
 # Mount routers
+app.include_router(dashboard_router.router, prefix="", tags=["Dashboard"])
+app.include_router(protocol_router.router, prefix="", tags=["Protocol"])
 app.include_router(ai_router.router, prefix="/v1", tags=["LLM"])
-app.include_router(mcp_router.router, prefix="/mcp/v1", tags=["MCP"])
+app.include_router(mcp_router.router, prefix="/v1/mcp", tags=["MCP"])
 app.include_router(admin_router.router, prefix="/admin/v1", tags=["Admin"])
+

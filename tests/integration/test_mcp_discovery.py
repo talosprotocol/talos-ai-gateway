@@ -1,5 +1,6 @@
 """Integration tests for MCP Discovery API."""
 import pytest
+from uuid import uuid4
 from fastapi.testclient import TestClient
 from app.main import app
 
@@ -16,12 +17,12 @@ class TestMcpDiscovery:
 
     def test_list_servers_requires_auth(self):
         """Should return 401 without auth."""
-        response = client.get("/mcp/v1/servers")
+        response = client.get("/v1/mcp/servers")
         assert response.status_code == 401
 
     def test_list_servers_with_auth(self):
         """Should return servers with valid key."""
-        response = client.get("/mcp/v1/servers", headers=HEADERS)
+        response = client.get("/v1/mcp/servers", headers=HEADERS)
         assert response.status_code == 200
         data = response.json()
         assert "servers" in data
@@ -29,7 +30,7 @@ class TestMcpDiscovery:
 
     def test_list_tools(self):
         """Should return tools for a server."""
-        response = client.get("/mcp/v1/servers/filesystem/tools", headers=HEADERS)
+        response = client.get("/v1/mcp/servers/filesystem/tools", headers=HEADERS)
         assert response.status_code == 200
         data = response.json()
         assert "tools" in data
@@ -37,7 +38,7 @@ class TestMcpDiscovery:
 
     def test_get_tool_schema(self):
         """Should return schema with hash."""
-        response = client.get("/mcp/v1/servers/filesystem/tools/read_file/schema", headers=HEADERS)
+        response = client.get("/v1/mcp/servers/filesystem/tools/read_file/schema", headers=HEADERS)
         assert response.status_code == 200
         data = response.json()
         assert "json_schema" in data
@@ -47,7 +48,7 @@ class TestMcpDiscovery:
     def test_call_tool(self):
         """Should invoke tool and return output."""
         response = client.post(
-            "/mcp/v1/servers/filesystem/tools/read_file:call",
+            "/v1/mcp/servers/filesystem/tools/read_file:call",
             headers=HEADERS,
             json={"input": {"path": "/tmp/test.txt"}}
         )
@@ -74,18 +75,20 @@ class TestAdminMcpRegistry:
 
     def test_register_mcp_server(self):
         """Should register new server."""
+        unique_id = f"test-server-{uuid4().hex[:8]}"
         response = client.post(
             "/admin/v1/mcp/servers",
             headers=ADMIN_HEADERS,
             json={
+                "id": unique_id,
                 "name": "Test Server",
                 "transport": "http",
                 "endpoint": "http://localhost:9000"
             }
         )
-        assert response.status_code == 200
+        assert response.status_code == 201
         data = response.json()
-        assert "id" in data
+        assert data["id"] == unique_id
 
     def test_viewer_cannot_register_server(self):
         """Viewer should be denied write access."""

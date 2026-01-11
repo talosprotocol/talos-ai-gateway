@@ -1,0 +1,94 @@
+{
+  "upstreams": [
+    {
+      "id": "openrouter",
+      "provider": "openai",
+      "endpoint": "https://openrouter.ai/api/v1",
+      "credentials_ref": "secret:openrouter-api-key",
+      "tags": {"type": "aggregator", "free-tier": true},
+      "enabled": true
+    },
+    {
+      "id": "deepinfra",
+      "provider": "openai",
+      "endpoint": "https://api.deepinfra.com/v1/openai",
+      "credentials_ref": "secret:deepinfra-api-key",
+      "tags": {"type": "inference", "free-tier": true},
+      "enabled": true
+    },
+    {
+      "id": "sambanova",
+      "provider": "openai",
+      "endpoint": "https://api.sambanova.ai/v1",
+      "credentials_ref": "secret:sambanova-api-key",
+      "tags": {"type": "fast-inference"},
+      "enabled": true
+    },
+    {
+      "id": "cerebras",
+      "provider": "openai",
+      "endpoint": "https://api.cerebras.ai/v1",
+      "credentials_ref": "secret:cerebras-api-key",
+      "tags": {"type": "fast-inference"},
+      "enabled": true
+    },
+    {
+      "id": "nvidia-nim",
+      "provider": "openai",
+      "endpoint": "https://integrate.api.nvidia.com/v1",
+      "credentials_ref": "secret:nvidia-api-key",
+      "tags": {"type": "enterprise"},
+      "enabled": true
+    },
+    {
+      "id": "custom-local",
+      "provider": "custom",
+      "endpoint": "http://localhost:8080/v1",
+      "credentials_ref": "",
+      "tags": {"type": "local", "custom": true},
+      "enabled": true
+    }
+  ],
+  "model_groups": [
+    {
+      "id": "openrouter-free",
+      "name": "OpenRouter Free Models",
+      "deployments": [
+        {"upstream_id": "openrouter", "model_name": "meta-llama/llama-3.1-8b-instruct:free", "weight": 100}
+      ],
+      "fallback_groups": []
+    },
+    {
+      "id": "deepseek-coder",
+      "name": "DeepSeek Coder V2 (DeepInfra)",
+      "deployments": [
+        {"upstream_id": "deepinfra", "model_name": "deepseek-ai/DeepSeek-Coder-V2-Instruct", "weight": 100}
+      ],
+      "fallback_groups": []
+    },
+    {
+      "id": "sambanova-llama",
+      "name": "Llama 3.1 405B (SambaNova)",
+      "deployments": [
+        {"upstream_id": "sambanova", "model_name": "Meta-Llama-3.1-405B-Instruct", "weight": 100}
+      ],
+      "fallback_groups": []
+    },
+    {
+      "id": "cerebras-llama",
+      "name": "Llama 3.1 70B (Cerebras)",
+      "deployments": [
+        {"upstream_id": "cerebras", "model_name": "llama3.1-70b", "weight": 100}
+      ],
+      "fallback_groups": []
+    },
+    {
+      "id": "custom-model",
+      "name": "Custom Local Model",
+      "deployments": [
+        {"upstream_id": "custom-local", "model_name": "my-custom-model", "weight": 100}
+      ],
+      "fallback_groups": []
+    }
+  ]
+}

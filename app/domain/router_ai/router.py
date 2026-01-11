@@ -2,60 +2,14 @@
 from typing import Dict, List, Optional
 import hashlib
 from datetime import datetime, timedelta
-import asyncio
 
 from app.adapters.redis.client import get_redis, cooldown_key
+from app.config_loader import get_upstreams, get_model_groups, get_routing_policies, get_config, save_config
 
-# In-memory stores for MVP (upstreams/groups/policies)
-UPSTREAMS: Dict[str, dict] = {
-    "openai-us": {
-        "id": "openai-us",
-        "provider": "openai",
-        "endpoint": "https://api.openai.com/v1",
-        "credentials_ref": "secret:openai-api-key",
-        "tags": {"region": "us"},
-        "enabled": True
-    },
-    "azure-eu": {
-        "id": "azure-eu",
-        "provider": "azure",
-        "endpoint": "https://talos-eu.openai.azure.com",
-        "credentials_ref": "secret:azure-api-key",
-        "tags": {"region": "eu"},
-        "enabled": True
-    }
-}
-
-MODEL_GROUPS: Dict[str, dict] = {
-    "gpt-4-turbo": {
-        "id": "gpt-4-turbo",
-        "name": "GPT-4 Turbo",
-        "deployments": [
-            {"upstream_id": "openai-us", "model_name": "gpt-4-turbo-preview", "weight": 50},
-            {"upstream_id": "azure-eu", "model_name": "gpt-4-turbo", "weight": 50}
-        ],
-        "fallback_groups": ["gpt-3.5-turbo"]
-    },
-    "gpt-3.5-turbo": {
-        "id": "gpt-3.5-turbo",
-        "name": "GPT-3.5 Turbo",
-        "deployments": [
-            {"upstream_id": "openai-us", "model_name": "gpt-3.5-turbo", "weight": 100}
-        ],
-        "fallback_groups": []
-    }
-}
-
-ROUTING_POLICIES: Dict[str, dict] = {
-    "default": {
-        "id": "default",
-        "version": 1,
-        "strategy": "weighted_hash",
-        "retries": {"max_attempts": 3, "backoff_ms": 500, "backoff_multiplier": 2},
-        "timeout_ms": 30000,
-        "cooldown": {"failure_threshold": 3, "window_seconds": 60, "cooldown_seconds": 300}
-    }
-}
+# Load from config file (mutable at runtime)
+UPSTREAMS: Dict[str, dict] = dict(get_upstreams())
+MODEL_GROUPS: Dict[str, dict] = dict(get_model_groups())
+ROUTING_POLICIES: Dict[str, dict] = dict(get_routing_policies())
 
 # In-memory cooldown fallback
 COOLDOWN_STATE: Dict[str, datetime] = {}
@@ -70,10 +24,19 @@ def get_upstream(upstream_id: str) -> Optional[dict]:
 
 
 def create_upstream(data: dict) -> dict:
+    """Add or update an upstream."""
     upstream_id = data.get("id") or f"upstream-{len(UPSTREAMS)+1}"
     data["id"] = upstream_id
     UPSTREAMS[upstream_id] = data
     return data
+
+
+def delete_upstream(upstream_id: str) -> bool:
+    """Delete an upstream by ID."""
+    if upstream_id in UPSTREAMS:
+        del UPSTREAMS[upstream_id]
+        return True
+    return False
 
 
 def list_model_groups() -> List[dict]:
@@ -85,14 +48,41 @@ def get_model_group(group_id: str) -> Optional[dict]:
 
 
 def create_model_group(data: dict) -> dict:
+    """Add or update a model group."""
     group_id = data.get("id") or f"model-{len(MODEL_GROUPS)+1}"
     data["id"] = group_id
     MODEL_GROUPS[group_id] = data
     return data
 
 
+def delete_model_group(group_id: str) -> bool:
+    """Delete a model group by ID."""
+    if group_id in MODEL_GROUPS:
+        del MODEL_GROUPS[group_id]
+        return True
+    return False
+
+
 def get_routing_policy(policy_id: str = "default") -> Optional[dict]:
     return ROUTING_POLICIES.get(policy_id)
+
+
+def save_current_config(config_path: Optional[str] = None) -> None:
+    """Save current in-memory config to file."""
+    config = {
+        "upstreams": UPSTREAMS,
+        "model_groups": MODEL_GROUPS,
+        "routing_policies": ROUTING_POLICIES
+    }
+    save_config(config, config_path)
+
+
+def reload_from_file() -> None:
+    """Reload config from file into memory."""
+    global UPSTREAMS, MODEL_GROUPS, ROUTING_POLICIES
+    UPSTREAMS = dict(get_upstreams())
+    MODEL_GROUPS = dict(get_model_groups())
+    ROUTING_POLICIES = dict(get_routing_policies())
 
 
 async def is_upstream_cooled_down_async(upstream_id: str) -> bool:
