@@ -1,7 +1,6 @@
 """SQLAlchemy Models for Control Plane."""
-from sqlalchemy import Column, String, Boolean, Integer, Float, DateTime, ForeignKey, JSON, Text, UniqueConstraint, Index, desc
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy import Column, String, JSON, Integer, DateTime, Boolean, ForeignKey, Index, CheckConstraint, text, Float, Text, UniqueConstraint, desc
+from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime
 
 Base = declarative_base()
@@ -194,13 +193,16 @@ class UsageEvent(Base):
 
 
 class Secret(Base):
-    """Secret storage (encrypted)."""
+    """Secret storage with AES-GCM envelope encryption."""
     __tablename__ = "secrets"
     
     name = Column(String(255), primary_key=True)
-    encrypted_value = Column(Text, nullable=False)
+    ciphertext = Column(Text, nullable=False)  # Base64-encoded encrypted value
+    nonce = Column(String(32), nullable=False)  # Base64-encoded 96-bit nonce
+    key_id = Column(String(64), nullable=False)  # KEK version identifier
     version = Column(Integer, default=1, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    rotated_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -253,3 +255,46 @@ class ConfigVersion(Base):
     content = Column(JSON, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     applied_by = Column(String(255))
+
+
+class A2ATask(Base):
+    """A2A Task Persistence."""
+    __tablename__ = "a2a_tasks"
+    
+    id = Column(String(64), primary_key=True) # Text ID
+    
+    # Tenancy & Origin
+    team_id = Column(String(255), ForeignKey("teams.id"), nullable=False, index=True)
+    key_id = Column(String(255), ForeignKey("virtual_keys.id"), nullable=False, index=True)
+    org_id = Column(String(255), index=True) # Optional, denormalized
+    
+    # Metadata
+    request_id = Column(String(64), index=True) # Indexed, NOT unique globally
+    origin_surface = Column(String(20), default="a2a")
+    method = Column(String(50)) # tasks.send, etc.
+    
+    # State
+    # Status: queued, running, completed, failed, canceled
+    status = Column(String(20), nullable=False, default="queued") 
+    version = Column(Integer, default=1, nullable=False) # Optimistic locking
+    
+    # Data (Privacy Preserving)
+    request_meta = Column(JSON, default=dict) # Safe metadata ONLY (method, tool_name, model, profile_ver)
+    input_redacted = Column(JSON, nullable=True) # Redacted input if configured
+    
+    # Results
+    result = Column(JSON, nullable=True) # The 'task' object
+    error = Column(JSON, nullable=True) # Error details
+    
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued','running','completed','failed','canceled')",
+            name="check_a2a_status_enum",
+        ),
+    )
+
+
+Index("idx_a2a_tasks_team_created", A2ATask.team_id, A2ATask.created_at.desc())

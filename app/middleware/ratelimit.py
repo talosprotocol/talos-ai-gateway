@@ -1,6 +1,6 @@
 """Rate Limiting - Redis Token Bucket implementation."""
 from typing import Dict, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 import asyncio
 
@@ -27,7 +27,7 @@ async def check_rate_limit_async(
 ) -> RateLimitResult:
     """Check rate limits using Redis token bucket."""
     bucket_key = rate_limit_key(team_id, key_id, surface, target)
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     window_seconds = 60
     
     try:

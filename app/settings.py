@@ -26,8 +26,22 @@ class Settings(BaseSettings):
     # MCP
     mcp_schema_cache_ttl_seconds: int = 600
     mcp_tool_list_cache_ttl_seconds: int = 60
+
+    # A2A
+    # A2A
+    a2a_agent_card_visibility: str = "auth_required"
+    dev_mode: bool = False
     
-    class Config:
-        env_file = ".env"
+    # A2A Task Retention
+    a2a_task_retention_days: int = 30
+    
+    # A2A SSE Limits
+    a2a_sse_max_duration_seconds: int = 900 # 15 Minutes
+    a2a_sse_idle_timeout_seconds: int = 60 # 1 Minute
+    
+    model_config = {
+        "env_file": ".env",
+        "extra": "ignore"
+    }
 
 settings = Settings()

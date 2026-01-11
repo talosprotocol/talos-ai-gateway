@@ -10,7 +10,7 @@ MOCK_KEYS = {
         "id": "key-1",
         "team_id": "team-1",
         "org_id": "org-1",
-        "scopes": ["llm:invoke", "mcp:invoke", "mcp:read"],
+        "scopes": ["llm.invoke", "mcp.invoke", "a2a.invoke", "a2a.stream"],
         "allowed_model_groups": ["gpt-4-turbo", "gpt-3.5-turbo", "llama3", "qwen-coder", "gemma"],
         "allowed_mcp_servers": ["*"],
         "revoked": False
@@ -64,6 +64,15 @@ async def get_auth_context(authorization: Optional[str] = Header(None)) -> AuthC
         allowed_model_groups=key_data["allowed_model_groups"],
         allowed_mcp_servers=key_data["allowed_mcp_servers"]
     )
+
+async def get_auth_context_or_none(authorization: Optional[str] = Header(None)) -> Optional[AuthContext]:
+    """Optional version of get_auth_context."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    try:
+        return await get_auth_context(authorization)
+    except HTTPException:
+        return None
 
 
 def require_scope(scope: str):

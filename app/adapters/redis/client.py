@@ -14,6 +14,8 @@ async def get_redis() -> redis.Redis:
         _redis_client = redis.from_url(redis_url, decode_responses=True)
     return _redis_client
 
+get_redis_client = get_redis
+
 
 async def close_redis():
     """Close Redis connection."""

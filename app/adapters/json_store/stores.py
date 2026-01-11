@@ -3,7 +3,7 @@ import json
 import os
 import uuid
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 
@@ -222,7 +222,7 @@ class SecretJsonStore(SecretStore):
 
     def list_secrets(self) -> List[Dict[str, Any]]:
         # Mock metadata
-        return [{"name": k, "created_at": datetime.utcnow().isoformat(), "version": 1} for k in self._cache.keys()]
+        return [{"name": k, "created_at": datetime.now(timezone.utc).isoformat(), "version": 1} for k in self._cache.keys()]
 
     def get_secret_value(self, name: str) -> Optional[str]:
         return self._cache.get(name)

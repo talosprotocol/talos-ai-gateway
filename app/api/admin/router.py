@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Depends, Header
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import uuid
 import json
@@ -90,7 +90,7 @@ def audit(store: AuditStore, action: str, resource_type: str, principal_id: str,
           resource_id: str = None, outcome: str = "success", **details):
     event = {
         "event_id": str(uuid.uuid4()),
-        "timestamp": datetime.utcnow(),
+        "timestamp": datetime.now(timezone.utc),
         "principal_id": principal_id,
         "action": action,
         "resource_type": resource_type,
@@ -159,7 +159,7 @@ async def create_upstream(
     
     upstream_data = data.dict()
     upstream_data["version"] = 1
-    upstream_data["created_at"] = datetime.utcnow().isoformat()
+    upstream_data["created_at"] = datetime.now(timezone.utc).isoformat()
     
     store.create_upstream(upstream_data)
     
@@ -282,7 +282,7 @@ async def create_model_group(
     
     group_data = data.dict()
     group_data["version"] = 1
-    group_data["created_at"] = datetime.utcnow().isoformat()
+    group_data["created_at"] = datetime.now(timezone.utc).isoformat()
     
     store.create_model_group(group_data)
     
@@ -388,7 +388,7 @@ async def create_routing_policy(
     new_version = (latest.get("version", 0) if latest else 0) + 1
     
     data["version"] = new_version
-    data["created_at"] = datetime.utcnow().isoformat()
+    data["created_at"] = datetime.now(timezone.utc).isoformat()
     
     store.create_policy(data)
     
@@ -410,8 +410,8 @@ async def get_llm_health(
         health[u.get("id")] = {
             "status": "ok" if u.get("enabled", True) else "disabled",
             "consecutive_failures": 0,
-            "last_check_time": datetime.utcnow().isoformat(),
-            "last_success_time": datetime.utcnow().isoformat(),
+            "last_check_time": datetime.now(timezone.utc).isoformat(),
+            "last_success_time": datetime.now(timezone.utc).isoformat(),
             "error": None
         }
     
@@ -444,7 +444,7 @@ async def create_mcp_server(
         raise HTTPException(status_code=400, detail={"error": {"code": "VALIDATION_ERROR", "message": "Exists"}})
     
     data["version"] = 1
-    data["created_at"] = datetime.utcnow().isoformat()
+    data["created_at"] = datetime.now(timezone.utc).isoformat()
     
     store.create_server(data)
     

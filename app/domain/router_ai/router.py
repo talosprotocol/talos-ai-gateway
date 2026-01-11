@@ -1,7 +1,7 @@
 """LLM Router - Upstreams, Model Groups, Routing with Redis Cooldown."""
 from typing import Dict, List, Optional
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.adapters.redis.client import get_redis, cooldown_key
 from app.config_loader import get_upstreams, get_model_groups, get_routing_policies, get_config, save_config
@@ -95,7 +95,7 @@ async def is_upstream_cooled_down_async(upstream_id: str) -> bool:
     except Exception:
         # Fallback to in-memory
         cooldown_until = COOLDOWN_STATE.get(upstream_id)
-        if cooldown_until and datetime.utcnow() < cooldown_until:
+        if cooldown_until and datetime.now(timezone.utc) < cooldown_until:
             return True
         return False
 
@@ -103,7 +103,7 @@ async def is_upstream_cooled_down_async(upstream_id: str) -> bool:
 def is_upstream_cooled_down(upstream_id: str) -> bool:
     """Sync check for cooldown (in-memory fallback)."""
     cooldown_until = COOLDOWN_STATE.get(upstream_id)
-    if cooldown_until and datetime.utcnow() < cooldown_until:
+    if cooldown_until and datetime.now(timezone.utc) < cooldown_until:
         return True
     return False
 
@@ -175,4 +175,4 @@ def mark_upstream_failed(upstream_id: str, policy_id: str = "default"):
     policy = get_routing_policy(policy_id)
     cooldown_config = policy.get("cooldown", {})
     cooldown_seconds = cooldown_config.get("cooldown_seconds", 300)
-    COOLDOWN_STATE[upstream_id] = datetime.utcnow() + timedelta(seconds=cooldown_seconds)
+    COOLDOWN_STATE[upstream_id] = datetime.now(timezone.utc) + timedelta(seconds=cooldown_seconds)

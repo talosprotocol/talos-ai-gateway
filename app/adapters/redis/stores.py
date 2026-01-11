@@ -1,6 +1,6 @@
 """Redis Store Implementations."""
 from typing import Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 
 from app.domain.interfaces import RateLimitStore, RateLimitResult
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class RedisRateLimitStore(RateLimitStore):
     async def check_limit(self, key: str, limit: int, window_seconds: int = 60) -> RateLimitResult:
         redis = await get_redis()
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         # Simple Fixed Window / Sliding Expiration
         # INCR key
@@ -49,7 +49,7 @@ from app.domain.interfaces import SessionStore, SessionState
 class RedisSessionStore(SessionStore):
     async def create_session(self, session_id: str, public_key: str, ttl: int = 3600) -> SessionState:
         redis = await get_redis()
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         expires = now + timedelta(seconds=ttl)
         
         mapping = {

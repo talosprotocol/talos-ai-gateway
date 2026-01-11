@@ -1,7 +1,7 @@
 """MCP Server Registry - Domain Model."""
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 # In-memory store for MVP - will be replaced with Postgres
 MCP_SERVERS: Dict[str, dict] = {
@@ -58,7 +58,7 @@ def create_server(server_data: dict) -> dict:
     """Register a new MCP server."""
     server_id = server_data.get("id") or f"mcp-{len(MCP_SERVERS)+1}"
     server_data["id"] = server_id
-    server_data["created_at"] = datetime.utcnow().isoformat() + "Z"
+    server_data["created_at"] = datetime.now(timezone.utc).isoformat() + "Z"
     MCP_SERVERS[server_id] = server_data
     return server_data
 

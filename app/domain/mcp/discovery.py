@@ -2,7 +2,7 @@
 from typing import Dict, List, Optional
 import hashlib
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # In-memory schema cache for MVP
 SCHEMA_CACHE: Dict[str, dict] = {}
@@ -73,8 +73,8 @@ def get_tools(server_id: str) -> List[dict]:
     # Cache for 60 seconds
     TOOL_LIST_CACHE[cache_key] = {
         "tools": tools,
-        "fetched_at": datetime.utcnow().isoformat() + "Z",
-        "expires_at": (datetime.utcnow() + timedelta(seconds=60)).isoformat() + "Z"
+        "fetched_at": datetime.now(timezone.utc).isoformat() + "Z",
+        "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat() + "Z"
     }
     
     return tools
@@ -103,8 +103,8 @@ def get_tool_schema(server_id: str, tool_name: str) -> Optional[dict]:
     result = {
         "json_schema": schema,
         "schema_hash": schema_hash,
-        "fetched_at": datetime.utcnow().isoformat() + "Z",
-        "expires_at": (datetime.utcnow() + timedelta(seconds=600)).isoformat() + "Z",  # 10 min TTL
+        "fetched_at": datetime.now(timezone.utc).isoformat() + "Z",
+        "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=600)).isoformat() + "Z",  # 10 min TTL
         "ttl_seconds": 600
     }
     
