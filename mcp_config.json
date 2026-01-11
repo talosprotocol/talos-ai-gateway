@@ -31,6 +31,14 @@
       "endpoint": "http://localhost:9000",
       "version": 1,
       "created_at": "2026-01-10T23:16:57.090715"
+    },
+    {
+      "id": "test-server-e1f11868",
+      "name": "Test Server",
+      "transport": "http",
+      "endpoint": "http://localhost:9000",
+      "version": 1,
+      "created_at": "2026-01-11T01:10:30.637143"
     }
   ],
   "policies": []
