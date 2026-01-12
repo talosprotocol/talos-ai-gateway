@@ -2,7 +2,7 @@
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
-from app.domain.audit import get_audit_logger
+from app.dependencies import get_audit_logger
 import uuid
 
 class TalosAuditMiddleware(BaseHTTPMiddleware):
@@ -32,25 +32,39 @@ class TalosAuditMiddleware(BaseHTTPMiddleware):
         return response
 
     def _log_success_or_failure(self, request: Request, response: Response):
+        if getattr(request.state, "audit_emitted", False):
+            return
+
         surface = request.state.surface
         auth = request.state.auth
         meta = getattr(request.state, "audit_meta", {})
         
-        # Determine Status
-        status = "success"
-        if response.status_code >= 400:
-            status = "failure"
+        # Determine Outcome based on locked rules
+        authz = getattr(request.state, "authz_decision", None)
+        if authz == "DENY":
+            outcome = "denied"
+        elif response.status_code >= 400:
+            outcome = "failure"
+        else:
+            outcome = "success"
         
-        # Principal
+        # Principal Logic (Normative Shapes)
+        is_signed = auth.principal_id and auth.principal_id != auth.key_id
+        
         principal_data = {
             "principal_id": auth.principal_id or auth.key_id,
             "team_id": auth.team_id,
-            "org_id": auth.org_id,
-            "auth_mode": "bearer_attested" if auth.principal_id else "bearer",
-            "signer_key_id": auth.principal_id if auth.principal_id else None
+            "auth_mode": "signed" if is_signed else "bearer",
+            "signer_key_id": auth.principal_id if is_signed else None
         }
         
+        client_ip = request.client.host if request.client else None
         audit_logger = get_audit_logger()
+        is_trusted = client_ip in audit_logger.trusted_proxies if client_ip else False
+
+        audit_logger = get_audit_logger()
+        is_trusted = client_ip in audit_logger.trusted_proxies if client_ip else False
+
         audit_logger.log_event(
             surface=surface,
             principal=principal_data,
@@ -58,10 +72,10 @@ class TalosAuditMiddleware(BaseHTTPMiddleware):
                 "method": request.method,
                 "path": request.url.path,
                 "status_code": response.status_code,
-                "client_ip_hash": None # TODO hash IP if present
+                "client_ip": client_ip,
+                "is_trusted": is_trusted
             },
-            status=status,
+            outcome=outcome,
             request_id=request.state.request_id,
-            metadata=meta,
-            resource=None # Routes can set this in meta or special state if needed
+            metadata=meta
         )
