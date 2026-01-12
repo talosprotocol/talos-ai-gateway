@@ -1,13 +1,13 @@
 
 from fastapi import Request, Depends, Header, HTTPException
 from typing import Optional
-from app.dependencies import get_key_store, get_attestation_verifier, get_principal_store, get_surface_registry
+from app.dependencies import get_key_store, get_attestation_verifier, get_principal_store, get_surface_registry, get_audit_logger
 from app.adapters.postgres.key_store import KeyStore
 from app.middleware.attestation_http import AttestationVerifier, AttestationError
 from app.domain.interfaces import PrincipalStore
-from app.domain.registry import SurfaceRegistry
+from app.domain.registry import SurfaceRegistry, SurfaceItem
 from app.errors import raise_talos_error
-from app.domain.audit import get_audit_logger, AuditLogger
+from app.domain.audit import AuditLogger
 
 class AuthContext:
     """Authentication context for requests."""
@@ -52,7 +52,13 @@ async def get_auth_context(
     
     try:
         # 0. Resolve Surface
-        route_path = request.route.path
+        # Use fallback if route not available (e.g. testing or middleware ordering)
+        if hasattr(request, "route") and request.route:
+            route_path = request.route.path
+        else:
+            # Fallback to current path (works for static paths, but templates might fail)
+            route_path = request.url.path
+
         surface = registry.match_request(request.method, route_path)
         if not surface:
             # Should be caught by Startup Gate, but redundancy is safe.
@@ -139,20 +145,34 @@ async def get_auth_context(
 
                 if principal_obj['team_id'] != key_data.team_id:
                     # Log potential security event
+                    client_ip = request.client.host if request.client else None
+                    req_id = getattr(request.state, "request_id", "req-unknown")
+                    
                     audit_logger.log_event(
-                        principal_id=principal_obj['id'], # The signer who failed
-                        team_id=team_id,
-                        action=surface.audit_action,
-                        status="denied",
-                        resource_ref=request.url.path,
-                        metadata={"error": "Identity Binding Mismatch", "bearer_team": team_id, "signer_team": principal_obj['team_id']},
-                        classification=surface.data_classification
+                        surface=surface,
+                        principal={
+                            "principal_id": principal_obj['id'],
+                            "team_id": principal_obj['team_id'],
+                            "auth_mode": "signed",
+                            "signer_key_id": signer_key_id
+                        },
+                        http_info={
+                            "method": request.method,
+                            "path": request.url.path,
+                            "status_code": 403,
+                            "client_ip": client_ip
+                        },
+                        outcome="denied",
+                        request_id=req_id,
+                        metadata={"error": "Identity Binding Mismatch", "bearer_team": team_id, "signer_team": principal_obj['team_id']}
                     )
+                    request.state.authz_decision = "DENY"
                     raise_talos_error("RBAC_DENIED", 403, "Identity binding mismatch: Bearer Team != Signer Team")
                 
                 principal_id = principal_obj['id']
 
             except AttestationError as e:
+                request.state.authz_decision = "DENY"
                 raise_talos_error(e.code, 401, str(e))
         
         # If success, we don't log success HERE. The Router or Post-Middleware should log success.
@@ -200,19 +220,30 @@ async def get_auth_context(
                 err_code = e.detail["error"].get("code", "UNKNOWN")
                 err_msg = e.detail["error"].get("message", str(e))
         
-        # Determine Status
-        log_status = "denied" if status_code in [401, 403] else "failure"
+        # Determine Outcome
+        log_outcome = "denied" if status_code in [401, 403] else "failure"
+        if log_outcome == "denied":
+            request.state.authz_decision = "DENY"
 
         # 3. Build Principal Dict
+        # Determine if attested/signed
+        auth_mode = "bearer"
+        signer_key_id = None
+        if principal_id != "unknown" and principal_id != key_id:
+            auth_mode = "signed"
+            signer_key_id = principal_id # In this fallback logic, principal_id was signer_key_id if verified
+
         principal_data = {
             "principal_id": principal_id,
             "team_id": team_id,
-            "org_id": "unknown", # or from key
-            "auth_mode": "bearer_attested" if principal_id != "unknown" and principal_id != key_id else "bearer",
-            "signer_key_id": principal_id if principal_id != key_id else None
+            "auth_mode": auth_mode,
+            "signer_key_id": signer_key_id
         }
 
         # 4. Log
+        client_ip = request.client.host if request.client else None
+        req_id = getattr(request.state, "request_id", "req-unknown")
+        
         audit_logger.log_event(
             surface=surface,
             principal=principal_data,
@@ -220,16 +251,18 @@ async def get_auth_context(
                 "method": request.method,
                 "path": request.url.path,
                 "status_code": status_code,
-                "client_ip_hash": None # Optional
+                "client_ip": client_ip
             },
-            status=log_status,
-            request_id="todo-req-id", # Need request ID middleware or header
+            outcome=log_outcome,
+            request_id=req_id,
             metadata={
                 "error": err_msg,
                 "code": err_code,
                 "message": err_msg
             }
         )
+        # Checkpoint: Mark as emitted so subsequent middleware doesn't double-log
+        request.state.audit_emitted = True
         raise e
 
 async def get_auth_context_or_none(
@@ -238,13 +271,14 @@ async def get_auth_context_or_none(
     key_store: KeyStore = Depends(get_key_store),
     verifier: AttestationVerifier = Depends(get_attestation_verifier),
     principal_store: PrincipalStore = Depends(get_principal_store),
-    registry: SurfaceRegistry = Depends(get_surface_registry)
+    registry: SurfaceRegistry = Depends(get_surface_registry),
+    audit_logger: AuditLogger = Depends(get_audit_logger)
 ) -> Optional[AuthContext]:
     """Optional version."""
     if not authorization:
         return None
     try:
-        return await get_auth_context(request, authorization, None, key_store, verifier, principal_store, registry)
+        return await get_auth_context(request, authorization, None, key_store, verifier, principal_store, registry, audit_logger)
     except HTTPException:
         return None
 

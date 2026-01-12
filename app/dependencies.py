@@ -139,3 +139,23 @@ def get_surface_registry() -> SurfaceRegistry:
         path = os.getenv("SURFACE_INVENTORY_PATH", "deploy/repos/talos-contracts/inventory/gateway_surface.json")
         _registry_instance = SurfaceRegistry(path)
     return _registry_instance
+
+from app.domain.audit import AuditLogger
+from app.domain.sink import AuditSink, StdOutSink, HttpSink
+
+_audit_logger_instance = None
+
+def get_audit_logger() -> AuditLogger:
+    global _audit_logger_instance
+    if _audit_logger_instance is None:
+        # Determine sink type
+        sink_url = os.getenv("AUDIT_SINK_URL")
+        sink: AuditSink
+        if sink_url:
+            api_key = os.getenv("AUDIT_SINK_API_KEY")
+            sink = HttpSink(sink_url, api_key)
+        else:
+            sink = StdOutSink()
+            
+        _audit_logger_instance = AuditLogger(sink)
+    return _audit_logger_instance

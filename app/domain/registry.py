@@ -17,6 +17,7 @@ class SurfaceItem:
     audit_action: str
     data_classification: str
     audit_meta_allowlist: List[str]
+    path_template: Optional[str] = None
 
 class SurfaceRegistry:
     def __init__(self, inventory_path: str):
@@ -34,6 +35,15 @@ class SurfaceRegistry:
                 tmpl = match['path_template']
                 key = f"{method}:{tmpl}"
                 
+                allowlist = item.get('audit_meta_allowlist')
+                if allowlist is None:
+                    raise RuntimeError(f"Surface {item['id']} missing 'audit_meta_allowlist'")
+                
+                # Check for wildcards/globs
+                for entry in allowlist:
+                    if '*' in entry or '?' in entry or '[' in entry or '{' in entry:
+                        raise RuntimeError(f"Surface {item['id']} contains forbidden wildcard in allowlist: {entry}")
+
                 self._items[key] = SurfaceItem(
                     id=item['id'],
                     type=item['type'],
@@ -41,7 +51,8 @@ class SurfaceRegistry:
                     attestation_required=item['attestation_required'],
                     audit_action=item['audit_action'],
                     data_classification=item['data_classification'],
-                    audit_meta_allowlist=item.get('audit_meta_allowlist', [])
+                    audit_meta_allowlist=allowlist,
+                    path_template=tmpl
                 )
         logger.info(f"Loaded {len(self._items)} surface items from inventory.")
 
