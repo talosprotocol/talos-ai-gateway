@@ -8,8 +8,10 @@ from fastapi.routing import APIRoute
 
 logger = logging.getLogger(__name__)
 
-@dataclass
-class SurfaceItem:
+from pydantic import BaseModel, Field
+
+class SurfaceItem(BaseModel):
+    """Security Surface Item (Pydantic)."""
     id: str  # Opcode
     type: str
     required_scopes: List[str]

@@ -96,8 +96,6 @@ async def get_auth_context(
             "org_id": key_data.org_id
         }
 
-        }
-
         # If surface requires multiple scopes, we enforce ALL must be granted.
         for required_perm in surface.required_scopes:
             resource_ctx = {

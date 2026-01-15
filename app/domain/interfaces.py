@@ -76,8 +76,9 @@ class AuditStore(ABC):
     @abstractmethod
     def list_events(self, filters: Dict[str, Any], limit: int = 100) -> List[Dict[str, Any]]: pass
 
-@dataclass
-class RateLimitResult:
+from pydantic import BaseModel, Field
+
+class RateLimitResult(BaseModel):
     allowed: bool
     remaining: int
     reset_at: datetime
@@ -87,8 +88,7 @@ class RateLimitStore(ABC):
     @abstractmethod
     async def check_limit(self, key: str, limit: int, window_seconds: int = 60) -> RateLimitResult: pass
 
-@dataclass
-class SessionState:
+class SessionState(BaseModel):
     session_id: str
     public_key: str
     next_sequence: int

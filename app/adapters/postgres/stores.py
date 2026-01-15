@@ -188,80 +188,7 @@ class PostgresRoutingPolicyStore(RoutingPolicyStore):
         self.db.commit()
 
 
-import uuid
-from app.domain.secrets.kek_provider import KekProvider
 
-class PostgresSecretStore(SecretStore):
-    def __init__(self, db: Session, kek_provider: KekProvider):
-        self.db = db
-        self.kek_provider = kek_provider
-
-    def list_secrets(self) -> List[Dict[str, Any]]:
-        objs = self.db.query(Secret).all()
-        res = []
-        for o in objs:
-            d = to_dict(o)
-            if 'encrypted_value' in d:
-                del d['encrypted_value']
-            res.append(d)
-        return res
-
-    def get_secret_value(self, name: str) -> Optional[str]:
-        obj = self.db.query(Secret).filter(Secret.name == name).first()
-        if not obj:
-            return None
-        try:
-            from app.domain.secrets.kek_provider import EncryptedEnvelope
-            import base64
-            
-            envelope = EncryptedEnvelope(
-                ciphertext=base64.b64decode(obj.ciphertext),
-                nonce=base64.b64decode(obj.nonce),
-                tag=base64.b64decode(obj.tag),
-                key_id=obj.key_id
-            )
-            
-            decrypted = self.kek_provider.decrypt(envelope)
-            return decrypted.decode('utf-8')
-        except Exception as e:
-            logger.error(f"Failed to decrypt secret {name}: {e}")
-            return None
-
-    def set_secret(self, name: str, value: str) -> None:
-        import base64
-        envelope = self.kek_provider.encrypt(value.encode('utf-8'))
-        
-        # Base64 encode all parts
-        b64_ct = base64.b64encode(envelope.ciphertext).decode('ascii')
-        b64_nonce = base64.b64encode(envelope.nonce).decode('ascii')
-        b64_tag = base64.b64encode(envelope.tag).decode('ascii')
-        
-        obj = self.db.query(Secret).filter(Secret.name == name).first()
-        if obj:
-            obj.ciphertext = b64_ct
-            obj.nonce = b64_nonce
-            obj.tag = b64_tag
-            obj.key_id = envelope.key_id
-            obj.version += 1
-        else:
-            obj = Secret(
-                name=name,
-                ciphertext=b64_ct,
-                nonce=b64_nonce,
-                tag=b64_tag,
-                key_id=envelope.key_id,
-                version=1
-            )
-            self.db.add(obj)
-        self.db.commit()
-
-    def delete_secret(self, name: str) -> bool:
-        obj = self.db.query(Secret).filter(Secret.name == name).first()
-        if obj:
-            self.db.delete(obj)
-            self.db.commit()
-            return True
-        return False
 
 
 class PostgresMcpStore(McpStore):
@@ -386,6 +313,7 @@ class PostgresAuditStore(AuditStore):
             else:
                  core_event["timestamp"] = str(ts)
 
+        from app.domain.a2a.canonical import canonical_json_bytes
         canonical_bytes = canonical_json_bytes(core_event)
         event_h = hashlib.sha256(canonical_bytes).hexdigest()
         

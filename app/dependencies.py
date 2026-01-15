@@ -11,7 +11,7 @@ from app.adapters.json_store.stores import (
 )
 from app.adapters.postgres.session import get_db
 from app.adapters.postgres.stores import (
-    PostgresUpstreamStore, PostgresModelGroupStore, PostgresSecretStore, PostgresMcpStore, PostgresAuditStore, PostgresRoutingPolicyStore
+    PostgresUpstreamStore, PostgresModelGroupStore, PostgresMcpStore, PostgresAuditStore, PostgresRoutingPolicyStore
 )
 
 logger = logging.getLogger(__name__)
@@ -33,12 +33,40 @@ def get_routing_policy_store(db: Session = Depends(get_db)) -> RoutingPolicyStor
         return RoutingPolicyJsonStore()
     return PostgresRoutingPolicyStore(db)
 
-from app.domain.secrets.kek_provider import get_kek_provider
+from app.adapters.secrets.local_provider import LocalKekProvider
+from app.adapters.postgres.secret_store import PostgresSecretStore
+from app.domain.secrets.ports import KekProvider, SecretStore
 
-def get_secret_store(db: Session = Depends(get_db)) -> SecretStore:
+def get_kek_provider() -> KekProvider:
+    """Factory for KEK provider."""
+    master_key = os.getenv("TALOS_MASTER_KEY")
+    key_id = os.getenv("TALOS_KEK_ID", "v1")
+
+    if not master_key:
+        master_key = os.getenv("MASTER_KEY")
+        if not master_key:
+            if DEV_MODE:
+                master_key = "dev-master-key-change-in-prod"
+            else:
+                raise RuntimeError("CRITICAL: TALOS_MASTER_KEY missing in production.")
+
+    return LocalKekProvider(master_key, key_id)
+
+def get_secret_store(
+    db: Session = Depends(get_db),
+    kek: KekProvider = Depends(get_kek_provider)
+) -> SecretStore:
     if DEV_MODE:
         return SecretJsonStore()
-    return PostgresSecretStore(db, get_kek_provider())
+    return PostgresSecretStore(db, kek)
+
+from app.domain.secrets.manager import SecretsManager
+
+def get_secrets_manager(
+    store: SecretStore = Depends(get_secret_store),
+    kek: KekProvider = Depends(get_kek_provider)
+) -> SecretsManager:
+    return SecretsManager(kek, store)
 
 def get_mcp_store(db: Session = Depends(get_db)) -> McpStore:
     if DEV_MODE:
