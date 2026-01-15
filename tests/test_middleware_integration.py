@@ -1,10 +1,8 @@
 import pytest
-from unittest.mock import AsyncMock, Mock, patch
-from fastapi import Request, HTTPException
-from app.middleware.auth_public import get_auth_context, AuthContext
+from unittest.mock import AsyncMock, Mock
+from fastapi import HTTPException
+from app.middleware.auth_public import get_auth_context
 from app.domain.registry import SurfaceItem
-from app.api.public_mcp.router import ToolCallRequest
-from app.domain.interfaces import PrincipalStore
 
 @pytest.fixture
 def mock_deps():

@@ -1,7 +1,6 @@
 """Dependency Injection Module."""
 import os
 import logging
-from typing import Generator
 
 from fastapi import Depends
 from sqlalchemy.orm import Session
@@ -159,3 +158,20 @@ def get_audit_logger() -> AuditLogger:
             
         _audit_logger_instance = AuditLogger(sink)
     return _audit_logger_instance
+
+from app.policy import PolicyEngine, DeterministicPolicyEngine
+
+_policy_engine_instance = None
+
+def get_policy_engine() -> PolicyEngine:
+    global _policy_engine_instance
+    if _policy_engine_instance is None:
+        # TODO: Load from real DB or Config
+        # For Phase 7.1, we initialize with empty dicts or basic system roles
+        roles_db = {
+            "role-admin": {"id": "role-admin", "permissions": ["*:*"]},
+            "role-public": {"id": "role-public", "permissions": ["public:*"]}
+        }
+        bindings_db = {}
+        _policy_engine_instance = DeterministicPolicyEngine(roles_db, bindings_db)
+    return _policy_engine_instance

@@ -1,5 +1,4 @@
 """MCP Server Registry - Domain Model."""
-from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from datetime import datetime, timezone
 

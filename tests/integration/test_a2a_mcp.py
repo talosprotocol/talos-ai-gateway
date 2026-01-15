@@ -4,8 +4,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 from fastapi.testclient import TestClient
 from app.main import app
 from app.middleware.auth_public import get_auth_context, AuthContext
-from app.dependencies import get_audit_store, get_rate_limit_store, get_usage_store, get_routing_service, get_mcp_client
-from app.adapters.mcp.client import McpClient
+from app.dependencies import get_audit_store, get_rate_limit_store, get_mcp_client
 
 client = TestClient(app)
 

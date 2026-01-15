@@ -10,7 +10,7 @@ import hashlib
 import hmac
 import os
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional, NamedTuple
 
 from sqlalchemy.orm import Session

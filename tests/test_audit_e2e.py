@@ -1,11 +1,8 @@
 
 import pytest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 from fastapi.testclient import TestClient
 from app.main import app
-from app.domain.audit import AuditLogger
-import json
-import hashlib
 
 @pytest.fixture
 def client():
@@ -30,7 +27,7 @@ def test_audit_e2e_success(client, mock_audit_logger):
     from app.domain.registry import SurfaceItem
     from app.adapters.postgres.session import get_db
     import app.dependencies as deps_module
-    from app.dependencies import get_model_group_store, get_audit_logger, get_surface_registry
+    from app.dependencies import get_model_group_store, get_surface_registry
 
     # Mock DB
     app.dependency_overrides[get_db] = lambda: Mock()

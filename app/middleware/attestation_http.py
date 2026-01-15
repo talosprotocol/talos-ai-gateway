@@ -2,11 +2,9 @@ import base64
 import json
 import logging
 import time
-from typing import Optional, Tuple
 from abc import ABC, abstractmethod
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from tenacity import retry, stop_after_attempt, wait_fixed
 
 from app.domain.a2a.canonical import canonical_json_bytes
 from app.domain.interfaces import PrincipalStore

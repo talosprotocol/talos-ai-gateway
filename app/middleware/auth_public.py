@@ -1,7 +1,7 @@
 
 from fastapi import Request, Depends, Header, HTTPException
 from typing import Optional
-from app.dependencies import get_key_store, get_attestation_verifier, get_principal_store, get_surface_registry, get_audit_logger
+from app.dependencies import get_key_store, get_attestation_verifier, get_principal_store, get_surface_registry, get_audit_logger, get_policy_engine
 from app.adapters.postgres.key_store import KeyStore
 from app.middleware.attestation_http import AttestationVerifier, AttestationError
 from app.domain.interfaces import PrincipalStore
@@ -9,6 +9,7 @@ from app.domain.registry import SurfaceRegistry, SurfaceItem
 from app.errors import raise_talos_error
 from app.domain.audit import AuditLogger
 from talos_sdk.validation import validate_principal, IdentityValidationError
+from app.policy import PolicyEngine
 
 class AuthContext:
     """Authentication context for requests."""
@@ -41,7 +42,8 @@ async def get_auth_context(
     verifier: AttestationVerifier = Depends(get_attestation_verifier),
     principal_store: PrincipalStore = Depends(get_principal_store),
     registry: SurfaceRegistry = Depends(get_surface_registry),
-    audit_logger: AuditLogger = Depends(get_audit_logger)
+    audit_logger: AuditLogger = Depends(get_audit_logger),
+    policy_engine: PolicyEngine = Depends(get_policy_engine)
 ) -> AuthContext:
     """Extract and validate virtual key from Authorization header."""
     
@@ -86,29 +88,41 @@ async def get_auth_context(
         key_id = key_data.id
         team_id = key_data.team_id
 
-        # 2. Enforce Scopes
-        # Check if key has ALL required scopes? Or ANY? 
-        # Usually "required_scopes" means you need ONE OF (if alternate) or ALL?
-        # Spec says "required_scopes": ["llm.invoke"].
-        # Let's enforce that key MUST have the required scope.
-        # Note: scopes can be wildcards in key? "llm.*"
-        # Helper to match scope. To keep simple for now: exact match or crude wildcard.
-        has_permission = False
-        for req in surface.required_scopes:
-            # Check against key_data.scopes
-            if req in key_data.scopes:
-                has_permission = True
-                break
-            # Handle simple wildcards like "llm.*" matching "llm.invoke"
-            # If key has "llm.*", does it grant "llm.invoke"? Yes.
-            for granted in key_data.scopes:
-                 if granted.endswith(".*") and req.startswith(granted[:-2]):
-                      has_permission = True
-                      break
-            if has_permission: break
-        
-        if not has_permission:
-             raise_talos_error("RBAC_DENIED", 403, f"Missing required scopes: {surface.required_scopes}")
+        # 2. RBAC Policy Check
+        # Principal Context (using Key ID as proxy until binding is loaded)
+        principal_ctx = {
+            "id": key_id,
+            "team_id": team_id,
+            "org_id": key_data.org_id
+        }
+
+        }
+
+        # If surface requires multiple scopes, we enforce ALL must be granted.
+        for required_perm in surface.required_scopes:
+            resource_ctx = {
+                "id": "gateway-surface",
+                "org_id": key_data.org_id,
+                "team_id": team_id 
+            }
+            
+            result = policy_engine.authorize(principal_ctx, required_perm, resource_ctx)
+            
+            if result.allowed:
+                continue
+
+            # Fallback: Legacy Scope Check
+            is_legacy_allowed = False
+            for internal_scope in key_data.scopes:
+                if internal_scope == "*:*" or internal_scope == required_perm:
+                    is_legacy_allowed = True
+                    break
+                if internal_scope.endswith(".*") and required_perm.startswith(internal_scope[:-2]):
+                    is_legacy_allowed = True
+                    break
+            
+            if not is_legacy_allowed:
+                raise_talos_error("RBAC_DENIED", 403, f"Policy denied: {result.reason} (Perm: {required_perm})")
 
         principal_id = key_id # Default to key_id if no attestation binding yet? 
         # Actually principal_id usually refers to the human/system Identity, not the Key.
@@ -196,7 +210,7 @@ async def get_auth_context(
         validation_principal = {
             "schema_id": "talos.principal",
             "schema_version": "v2",
-            "id": "00000000-0000-0000-0000-000000000000", # Placeholder ID, validation only checks format if present, but we need to pass a valid shape.
+            "id": "01946765-c7e0-798c-8c65-22d7a64b91f5", # Placeholder valid UUIDv7
                                                           # Ideally principal store returns the FULL definition.
                                                           # For now, we construct a partial for shape validation if SDK supports it,
                                                           # OR we skip full object validation and only validate what we have.

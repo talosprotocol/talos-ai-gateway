@@ -2,9 +2,8 @@
 import pytest
 from unittest.mock import MagicMock
 import json
-from datetime import datetime, timezone
 
-from app.adapters.postgres.key_store import PostgresKeyStore, KeyData
+from app.adapters.postgres.key_store import PostgresKeyStore
 from app.adapters.postgres.models import VirtualKey, Team
 
 

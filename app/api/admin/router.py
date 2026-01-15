@@ -1,5 +1,5 @@
 """Admin API Router - LLM Upstreams, Model Groups, Policies, Catalog."""
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional

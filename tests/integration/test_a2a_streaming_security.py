@@ -1,14 +1,9 @@
 import pytest
-from datetime import datetime, timezone
-from typing import Optional
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 from app.main import app
-from app.api.a2a.routes import get_sse_auth
-from app.middleware.auth_public import AuthContext, get_auth_context
+from app.middleware.auth_public import AuthContext
 from app.adapters.postgres.task_store import PostgresTaskStore
-from app.dependencies import get_task_store
-from app.adapters.redis.client import get_redis_client
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -77,7 +72,6 @@ async def test_sse_route_security():
 @pytest.mark.asyncio
 async def test_stream_generator_cross_team_logic(db_session):
     from app.domain.a2a.streaming import stream_task_events
-    import fastapi.concurrency
     import asyncio
     
     # Setup Store

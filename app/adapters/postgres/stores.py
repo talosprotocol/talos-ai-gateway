@@ -1,6 +1,5 @@
 """Postgres Store Implementations."""
 import logging
-import json
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session, joinedload
@@ -8,7 +7,7 @@ from sqlalchemy import desc
 from app.domain.interfaces import UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, RoutingPolicyStore, PrincipalStore
 from app.adapters.postgres.models import (
     LlmUpstream, ModelGroup, Secret, McpServer, McpPolicy, AuditEvent, 
-    Deployment, Role, Principal, RoutingPolicy, UsageEvent
+    Deployment, Principal, RoutingPolicy, UsageEvent
 )
 
 logger = logging.getLogger(__name__)
@@ -111,7 +110,7 @@ class PostgresModelGroupStore(ModelGroupStore):
             raise KeyError(f"ModelGroup {group_id} not found")
 
         if expected_version is not None and obj.version != expected_version:
-             raise ValueError(f"Version mismatch")
+             raise ValueError("Version mismatch")
 
         # Handle deployments update (full replace strategy)
         if 'deployments' in updates:

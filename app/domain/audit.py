@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 import hashlib
 import hmac
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional
 from app.domain.registry import SurfaceItem
 import asyncio
 from app.domain.sink import AuditSink, StdOutSink

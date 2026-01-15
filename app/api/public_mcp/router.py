@@ -1,9 +1,9 @@
 """Public MCP API Router - Dynamic Discovery."""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import Any, Dict, Optional
 
-from app.middleware.auth_public import get_auth_context, require_scope, AuthContext
+from app.middleware.auth_public import require_scope, AuthContext
 from app.domain.mcp import registry, discovery
 
 router = APIRouter()

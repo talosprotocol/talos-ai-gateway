@@ -1,8 +1,6 @@
 
 import pytest
 import os
-import json
-import hashlib
 from unittest.mock import Mock, patch, AsyncMock
 from fastapi.testclient import TestClient
 from app.main import app

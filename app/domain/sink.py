@@ -2,8 +2,6 @@ from typing import Protocol, Any, Dict
 import json
 import logging
 import aiohttp
-import os
-from abc import abstractmethod
 
 logger = logging.getLogger("talos.audit.sink")
 

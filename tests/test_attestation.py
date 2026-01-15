@@ -138,7 +138,6 @@ class PatchTime:
     def __enter__(self):
         self.patch = pytest.MonkeyPatch()
         # Mock time.time
-        import time
         self.patch.setattr(time, 'time', lambda: self.ts)
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.patch.undo()

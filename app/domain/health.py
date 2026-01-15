@@ -1,6 +1,6 @@
 """Health State Management for Upstreams."""
 import time
-from typing import Dict, Optional
+from typing import Dict
 
 class HealthState:
     def __init__(self):

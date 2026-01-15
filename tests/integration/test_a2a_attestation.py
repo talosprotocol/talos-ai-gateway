@@ -1,6 +1,5 @@
 import pytest
 import pytest_asyncio
-import asyncio
 import time
 import uuid
 import base64
@@ -36,7 +35,7 @@ def sign_request(body: dict, private_key: ed25519.Ed25519PrivateKey, key_id: str
     signature_b64 = base64.urlsafe_b64encode(signature).decode().rstrip("=")
     
     return {
-        "Authorization": f"Bearer test-key-value", # Real value doesn't matter for mock hash lookup
+        "Authorization": "Bearer test-key-value", # Real value doesn't matter for mock hash lookup
         "X-Talos-Key-Id": key_id,
         "X-Talos-Signature": signature_b64,
         "X-Talos-Nonce": nonce,

@@ -1,7 +1,5 @@
 import pytest
-import hashlib
 from datetime import datetime, timezone, timedelta
-from typing import Optional
 from unittest.mock import MagicMock, AsyncMock, patch
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -10,11 +8,10 @@ from sqlalchemy.pool import StaticPool
 
 from app.main import app
 from app.api.a2a.routes import get_task_store
-from app.middleware.auth_public import get_auth_context, AuthContext
+from app.middleware.auth_public import AuthContext
 from app.adapters.postgres.models import Base, A2ATask
 from app.adapters.postgres.task_store import PostgresTaskStore
 from app.dependencies import get_task_store, get_audit_store, get_rate_limit_store, get_mcp_client
-from app.adapters.redis.client import get_redis_client
 
 # Setup In-Memory SQLite for "Real DB" tests (closest we get without spinning up Postgres container)
 SQLALCHEMY_DATABASE_URL = "sqlite://"

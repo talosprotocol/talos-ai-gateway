@@ -1,7 +1,6 @@
 """CLI for Talos AI Gateway configuration."""
 import click
 import json
-from pathlib import Path
 from typing import Optional
 
 from app.domain.router_ai import router as llm_router

@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import MagicMock
 from app.domain.a2a.dispatcher import A2ADispatcher
 

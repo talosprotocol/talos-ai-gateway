@@ -1,4 +1,3 @@
-import os
 import sys
 from sqlalchemy import text
 from app.adapters.postgres.session import SessionLocal
