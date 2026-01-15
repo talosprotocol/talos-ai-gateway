@@ -8,15 +8,17 @@ from app.adapters.mcp.client import McpClient
 from app.middleware.auth_public import AuthContext
 
 class McpMapper:
-    def __init__(self, mcp_client: McpClient, audit_store):
+    def __init__(self, mcp_client: McpClient, audit_store, capability_validator: Optional[Any] = None):
         self.mcp_client = mcp_client
         self.audit_store = audit_store
+        self.capability_validator = capability_validator
 
     async def execute_tool(
         self, 
         tool_call: Dict[str, Any], 
         auth_context: AuthContext, 
-        request_id: str
+        request_id: str,
+        capability: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Execute an MCP tool call deterministically.
@@ -37,12 +39,42 @@ class McpMapper:
 
         if not server_id or not tool_name:
              raise JsonRpcException(-32602, "Invalid Params", data={"details": "Missing server_id or tool_name"})
+             
+        # --- TGA Capability Enforcement ---
+        if capability:
+            if not self.capability_validator:
+                raise JsonRpcException(-32000, "Capability validation unavailable", data={"talos_code": "CONFIG_ERROR"})
+            
+            # 1. Decode & Verify Signature
+            try:
+                cap = self.capability_validator.decode_and_verify(capability)
+            except Exception as e:
+                # Map to JGA_DENIED or similar
+                raise JsonRpcException(-32000, "Capability Invalid", data={"talos_code": "TGA_CAPABILITY_INVALID", "details": str(e)})
 
-        # 2. Key Access Check
+            # 2. Verify Call-Capability Digest Binding
+            expected_digest = tool_call.get("capability_digest")
+            if expected_digest:
+                actual_digest = self.capability_validator.calculate_capability_digest(capability)
+                if actual_digest != expected_digest:
+                     raise JsonRpcException(-32000, "Capability Mismatch", data={"talos_code": "TGA_DIGEST_MISMATCH", "details": "ToolCall.capability_digest does not match provided token"})
+
+            # 3. Enforce Constraints
+            try:
+                self.capability_validator.validate_tool_call(cap, server_id, tool_name, arguments)
+            except Exception as e:
+                raise JsonRpcException(-32000, "Constraint Violation", data={"talos_code": "TGA_CONSTRAINT_VIOLATION", "details": str(e)})
+
+            # 4. Audit Trace IDs
+            if self.audit_store:
+                # We'll attach trace_id and plan_id to the audit event below
+                pass
+
+        # 4. Key Access Check
         if not auth_context.can_access_mcp_server(server_id):
              raise JsonRpcException(-32000, "Access Denied", data={"talos_code": "MCP_DENIED_SERVER", "details": "Key cannot access this server"})
 
-        # 3. Policy Check
+        # 5. Policy Check
         if not registry.is_tool_allowed(auth_context.team_id, server_id, tool_name):
              raise JsonRpcException(-32000, "Access Denied", data={"talos_code": "MCP_DENIED_TOOL", "details": "Prohibited by Team Policy"})
 
@@ -53,7 +85,7 @@ class McpMapper:
 
         # 5. Audit Event (Before Execution) - using same request_id
         if self.audit_store:
-            await self.audit_store.log_event({
+            audit_event = {
                 "type": "mcp.tool.call",
                 "request_id": request_id, 
                 "team_id": auth_context.team_id,
@@ -61,7 +93,20 @@ class McpMapper:
                 "surface": "a2a",
                 "server_id": server_id,
                 "tool_name": tool_name
-            })
+            }
+            # Attach TGA trace info if available from capability
+            if capability:
+                # We can re-decode or pass cap down. Let's re-decode for isolation or pass cap.
+                # Actually cap is local to execute_tool if it was decoded.
+                # Let's assume we want to log the capability digest too.
+                audit_event["tga"] = {
+                    "capability_digest": self.capability_validator.calculate_capability_digest(capability) if self.capability_validator else None
+                }
+                # If we decoded it successfully above, cap variable is available in the scope.
+                # But to be safe, we'll try to re-decode or pass it.
+                # Since we already verified it above, we can just use the 'cap' variable if we move the audit call down.
+            
+            await self.audit_store.log_event(audit_event)
 
         # 6. Execute via Client
         try:

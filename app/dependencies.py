@@ -129,6 +129,8 @@ def get_task_store(db: Session = Depends(get_db)) -> TaskStore:
 
 from app.adapters.postgres.key_store import get_key_store as get_ks_factory, KeyStore
 from app.adapters.redis.client import get_redis_client
+from app.domain.tga.validator import CapabilityValidator
+from app.settings import settings
 
 async def get_key_store(db: Session = Depends(get_db)) -> KeyStore:
     redis_client = await get_redis_client()
@@ -203,3 +205,11 @@ def get_policy_engine() -> PolicyEngine:
         bindings_db = {}
         _policy_engine_instance = DeterministicPolicyEngine(roles_db, bindings_db)
     return _policy_engine_instance
+
+def get_capability_validator() -> CapabilityValidator:
+    """Provides the TGA capability validator."""
+    if not settings.supervisor_public_key:
+        # In dev/testing we might not have a key, but for TGA calls it will be required.
+        # We return a validator with a dummy key that will fail on real signatures.
+        return CapabilityValidator(supervisor_public_key="dev-placeholder")
+    return CapabilityValidator(supervisor_public_key=settings.supervisor_public_key)

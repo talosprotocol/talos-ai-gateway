@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     a2a_sse_max_duration_seconds: int = 900 # 15 Minutes
     a2a_sse_idle_timeout_seconds: int = 60 # 1 Minute
     
+    # TGA
+    supervisor_public_key: Optional[str] = os.getenv("TGA_SUPERVISOR_PUBLIC_KEY")
+    
     model_config = {
         "env_file": ".env",
         "extra": "ignore"

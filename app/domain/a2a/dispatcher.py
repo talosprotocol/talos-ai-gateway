@@ -28,7 +28,8 @@ class A2ADispatcher:
         rl_store: RateLimitStore,
         usage_store: UsageStore,
         task_store: TaskStore,
-        mcp_client: McpClient
+        mcp_client: McpClient,
+        capability_validator: Optional[Any] = None
     ):
         self.auth = auth
         self.routing = routing_service
@@ -36,7 +37,7 @@ class A2ADispatcher:
         self.rl_store = rl_store
         self.usage_store = usage_store
         self.task_store = task_store
-        self.mcp_mapper = McpMapper(mcp_client, audit_store)
+        self.mcp_mapper = McpMapper(mcp_client, audit_store, capability_validator)
         self._redis_promise = get_redis_client()
         self.redis = None
 
@@ -45,7 +46,7 @@ class A2ADispatcher:
             self.redis = await self._redis_promise
         return self.redis
         
-    async def dispatch(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def dispatch(self, payload: Dict[str, Any], capability: Optional[str] = None) -> Dict[str, Any]:
         """
         Main entry point for JSON-RPC dispatch.
         """
@@ -68,7 +69,7 @@ class A2ADispatcher:
             # 4. Dispatch
             result = None
             if method == "tasks.send":
-                result = await self.handle_send(params, request_id)
+                result = await self.handle_send(params, request_id, capability)
             elif method == "tasks.get":
                 result = await self.handle_get(params)
             elif method == "tasks.cancel":
@@ -132,7 +133,7 @@ class A2ADispatcher:
             # Non-blocking failure
             pass
 
-    async def handle_send(self, params: Dict[str, Any], request_id: Any) -> Dict[str, Any]:
+    async def handle_send(self, params: Dict[str, Any], request_id: Any, capability: Optional[str] = None) -> Dict[str, Any]:
         # Scope Check for A2A
         if "a2a.invoke" not in self.auth.scopes:
              raise JsonRpcException(-32000, "Permission denied", data={"talos_code": "RBAC_DENIED", "details": "Missing 'a2a.invoke' scope"})
@@ -207,7 +208,12 @@ class A2ADispatcher:
             
             # --- A2: MCP Path ---
             if tool_call:
-                result_task = await self.mcp_mapper.execute_tool(tool_call, self.auth, str(request_id))
+                result_task = await self.mcp_mapper.execute_tool(
+                    tool_call, 
+                    self.auth, 
+                    str(request_id),
+                    capability=capability
+                )
 
             else:
                 # --- A1: LLM Path ---
