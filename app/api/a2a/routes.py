@@ -5,7 +5,7 @@ from app.middleware.auth_public import AuthContext, get_auth_context_or_none
 from app.middleware.attestation import get_attestation_auth
 from app.dependencies import (
     get_routing_service, get_audit_store, get_rate_limit_store, get_usage_store, 
-    get_mcp_client, get_task_store, get_key_store
+    get_mcp_client, get_task_store, get_key_store, get_capability_validator
 )
 from app.domain.interfaces import (
     AuditStore, RateLimitStore, UsageStore, TaskStore
@@ -57,7 +57,9 @@ async def handle_jsonrpc(
     rl_store: RateLimitStore = Depends(get_rate_limit_store),
     usage_store: UsageStore = Depends(get_usage_store),
     task_store: TaskStore = Depends(get_task_store),
-    mcp_client: McpClient = Depends(get_mcp_client)
+    mcp_client: McpClient = Depends(get_mcp_client),
+    cap_validator: Any = Depends(get_capability_validator),
+    x_talos_capability: Optional[str] = Header(None)
 ):
     """
     JSON-RPC 2.0 Endpoint for Agent-to-Agent interaction.
@@ -69,10 +71,11 @@ async def handle_jsonrpc(
         rl_store=rl_store,
         usage_store=usage_store,
         task_store=task_store,
-        mcp_client=mcp_client
+        mcp_client=mcp_client,
+        capability_validator=cap_validator
     )
     
-    response = await dispatcher.dispatch(payload)
+    response = await dispatcher.dispatch(payload, capability=x_talos_capability)
     return response
 
 # SSE Endpoint (Phase A4)
