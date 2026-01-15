@@ -1,6 +1,5 @@
 """Tests for KEK Provider and Secrets Manager."""
 import pytest
-import os
 
 
 def test_env_kek_provider_encrypt_decrypt():

@@ -1,12 +1,12 @@
 """Public AI API Router - OpenAI Compatible with Real Upstream Calls."""
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 import uuid
 import time
 from datetime import datetime
 
-from app.middleware.auth_public import get_auth_context, require_scope, AuthContext
+from app.middleware.auth_public import require_scope, AuthContext
 # check_rate_limit removed
 from app.dependencies import (
     get_routing_service, get_model_group_store, get_audit_store, 

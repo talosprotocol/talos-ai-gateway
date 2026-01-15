@@ -1,5 +1,4 @@
 """Integration tests for MCP Discovery API."""
-import pytest
 from uuid import uuid4
 from fastapi.testclient import TestClient
 from app.main import app

@@ -1,8 +1,7 @@
 """Rate Limiting - Redis Token Bucket implementation."""
-from typing import Dict, Optional
+from typing import Dict
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
-import asyncio
 
 from app.adapters.redis.client import get_redis, rate_limit_key
 

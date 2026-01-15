@@ -1,7 +1,6 @@
 from fastapi.testclient import TestClient
 from app.main import app
 import json
-import base64
 
 def test_handshake():
     print("Connecting to WebSocket...")

@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List
 from dataclasses import dataclass
 
 from fastapi import FastAPI

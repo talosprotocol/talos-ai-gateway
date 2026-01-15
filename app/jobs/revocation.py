@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import redis.asyncio as redis
 from app.adapters.redis.client import get_redis_client
 
 logger = logging.getLogger(__name__)

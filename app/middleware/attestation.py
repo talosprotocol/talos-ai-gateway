@@ -2,16 +2,14 @@ import time
 import base64
 import hashlib
 import json
-from typing import Optional, Dict, Any
+from typing import Optional
 from fastapi import Request, Header, HTTPException, Depends
 from app.domain.a2a.canonical import canonical_json_bytes
 
-from app.domain.a2a.canonical import canonical_json_bytes
 from app.middleware.auth_public import AuthContext
 from app.adapters.redis.client import get_redis_client
 from app.dependencies import get_key_store
 from app.adapters.postgres.key_store import KeyStore
-import redis.asyncio as redis
 
 # Replay protection window
 NONCE_TTL = 300 # 5 minutes

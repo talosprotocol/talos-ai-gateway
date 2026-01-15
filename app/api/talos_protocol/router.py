@@ -4,7 +4,6 @@ from app.dependencies import get_session_store, get_key_store
 from app.domain.interfaces import SessionStore
 from app.adapters.postgres.key_store import KeyStore
 from app.adapters.redis.client import get_redis_client
-from app.domain.a2a.canonical import canonical_json_bytes
 from talos_core_rs import Wallet
 import json
 import uuid

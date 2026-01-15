@@ -1,7 +1,6 @@
 """Verify Dashboard Stats Implementation."""
 import sys
 import os
-import time
 from fastapi.testclient import TestClient
 
 # Ensure app in path

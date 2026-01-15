@@ -1,7 +1,7 @@
 """Routing Service."""
 import random
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from app.domain.interfaces import UpstreamStore, ModelGroupStore, RoutingPolicyStore
 from app.domain.health import HealthState
 

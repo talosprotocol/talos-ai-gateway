@@ -1,8 +1,7 @@
 import pytest
 import json
-import os
 from unittest.mock import Mock, MagicMock
-from app.domain.registry import SurfaceRegistry, SurfaceItem
+from app.domain.registry import SurfaceRegistry
 
 @pytest.fixture
 def mock_inventory(tmp_path):

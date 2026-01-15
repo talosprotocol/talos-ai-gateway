@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Integration verification script for Talos AI Gateway Admin API."""
 import requests
-import json
 import sys
 import uuid
 import time

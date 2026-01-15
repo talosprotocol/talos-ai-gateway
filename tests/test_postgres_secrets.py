@@ -1,9 +1,8 @@
 
-import json
 import base64
 import unittest
 from unittest.mock import MagicMock
-from app.domain.secrets.kek_provider import EnvKekProvider, EncryptedEnvelope
+from app.domain.secrets.kek_provider import EnvKekProvider
 from app.adapters.postgres.stores import PostgresSecretStore
 
 class MockSecret:

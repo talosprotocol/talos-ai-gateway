@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Request, Body, Header, Query
 from typing import Dict, Any
 
-from app.middleware.auth_public import get_auth_context, AuthContext, get_auth_context_or_none
+from app.middleware.auth_public import AuthContext, get_auth_context_or_none
 from app.middleware.attestation import get_attestation_auth
 from app.dependencies import (
     get_routing_service, get_audit_store, get_rate_limit_store, get_usage_store, 
@@ -77,14 +77,12 @@ async def handle_jsonrpc(
 
 # SSE Endpoint (Phase A4)
 from fastapi.responses import StreamingResponse
-from fastapi import Header, Query, HTTPException
+from fastapi import Query, HTTPException
 from app.settings import settings as app_settings
 from app.domain.a2a.streaming import stream_task_events
 from app.adapters.redis.client import get_redis_client
-import hashlib # For Static lookup simulation (reuse logic)
 # Actually, calling get_auth_context with a modified request is hard in a sub-dependency.
 # But we can call `get_auth_context` directly if we import it.
-import redis.asyncio as redis
 import uuid
 
 async def get_sse_auth(
@@ -109,7 +107,6 @@ async def stream_events(
     auth: AuthContext = Depends(get_integrated_auth),
     task_store: TaskStore = Depends(get_task_store)
 ):
-    from fastapi.responses import JSONResponse
     request_id = str(uuid.uuid4()) # Generate request ID for the stream session
     
     if "a2a.stream" not in auth.scopes:

@@ -1,5 +1,5 @@
 """SQLAlchemy Models for Control Plane."""
-from sqlalchemy import Column, String, JSON, Integer, DateTime, Boolean, ForeignKey, Index, CheckConstraint, text, Float, Text, UniqueConstraint, desc
+from sqlalchemy import Column, String, JSON, Integer, DateTime, Boolean, ForeignKey, Index, CheckConstraint, Float, Text, UniqueConstraint, desc
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime
 

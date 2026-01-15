@@ -3,7 +3,6 @@ from app.main import app
 from app.settings import settings
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
-from datetime import datetime
 from app.middleware.auth_public import get_auth_context
 from app.dependencies import get_audit_store, get_rate_limit_store, get_usage_store, get_routing_service
 

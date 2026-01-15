@@ -1,7 +1,6 @@
 """MCP Discovery - Tool fetching and caching."""
 from typing import Dict, List, Optional
 import hashlib
-import json
 from datetime import datetime, timedelta, timezone
 
 # In-memory schema cache for MVP

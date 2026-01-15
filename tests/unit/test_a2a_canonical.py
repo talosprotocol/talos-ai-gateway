@@ -1,5 +1,3 @@
-import pytest
-import json
 from app.domain.a2a.canonical import canonical_json_bytes
 
 def test_canonical_json_sorting():

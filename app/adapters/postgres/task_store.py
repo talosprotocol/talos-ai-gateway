@@ -1,7 +1,6 @@
 from typing import Dict, Optional, Any, List
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
-from sqlalchemy.orm.attributes import flag_modified
 from app.domain.interfaces import TaskStore
 from app.adapters.postgres.models import A2ATask
 

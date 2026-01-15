@@ -1,5 +1,5 @@
 """Redis Store Implementations."""
-from typing import Dict, Any, Optional
+from typing import Optional
 from datetime import datetime, timedelta, timezone
 import logging
 

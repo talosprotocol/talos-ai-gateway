@@ -4,7 +4,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 
 from app.adapters.redis.client import get_redis, cooldown_key
-from app.config_loader import get_upstreams, get_model_groups, get_routing_policies, get_config, save_config
+from app.config_loader import get_upstreams, get_model_groups, get_routing_policies, save_config
 
 # Load from config file (mutable at runtime)
 UPSTREAMS: Dict[str, dict] = dict(get_upstreams())

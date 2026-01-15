@@ -1,9 +1,7 @@
 """MCP Client Adapter."""
 import logging
 import os
-import asyncio
-from typing import Dict, Any, List, Optional
-from contextlib import asynccontextmanager
+from typing import Dict, Any
 
 try:
     from mcp import StdioServerParameters

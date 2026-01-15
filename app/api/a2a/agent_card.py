@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Header, Response
 from pydantic import BaseModel, Field
-from typing import List, Optional, Union, Dict, Any
+from typing import List, Optional
 
 from app.settings import settings
-from app.middleware.auth_public import get_auth_context, AuthContext
+from app.middleware.auth_public import get_auth_context
 from app.dependencies import get_key_store
 from app.adapters.postgres.key_store import KeyStore
 

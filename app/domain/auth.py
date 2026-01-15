@@ -3,7 +3,7 @@ import jwt
 import requests
 import logging
 import os
-from typing import Optional, Dict, List, Set, Any
+from typing import Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException
 

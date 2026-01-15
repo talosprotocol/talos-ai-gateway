@@ -1,9 +1,9 @@
 import uuid
 import time
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
-from app.api.a2a.jsonrpc import validator, JsonRpcException, JsonRpcResponse, JsonRpcError
+from app.api.a2a.jsonrpc import validator, JsonRpcException
 from app.domain.a2a.mapper_llm import map_input_to_llm_messages, map_llm_response_to_task
 from app.domain.a2a.mapper_mcp import McpMapper
 from app.domain.routing import RoutingService
@@ -12,8 +12,7 @@ from fastapi.concurrency import run_in_threadpool
 from app.domain.interfaces import AuditStore, RateLimitStore, UsageStore, TaskStore
 from app.middleware.auth_public import AuthContext
 from app.adapters.upstreams_ai.client import (
-    invoke_openai_compatible, get_api_key, 
-    UpstreamRateLimitError, UpstreamServerError, UpstreamError
+    invoke_openai_compatible, get_api_key
 )
 from app.adapters.mcp.client import McpClient
 from app.adapters.redis.client import rate_limit_key, get_redis_client
@@ -129,7 +128,7 @@ class A2ADispatcher:
             
             # Cache Last Event (1h TTL)
             await self.redis.setex(f"a2a:last_event:{task_id}", 3600, json.dumps(event))
-        except Exception as e:
+        except Exception:
             # Non-blocking failure
             pass
 

@@ -1,9 +1,8 @@
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional, Union, List
-from pydantic import BaseModel, Field
+from typing import Any, Dict, Optional, Union
+from pydantic import BaseModel
 import jsonschema
-from fastapi import HTTPException
 
 # Path to schemas in the monorepo
 # Use resolve() to handle running from different CWDs
