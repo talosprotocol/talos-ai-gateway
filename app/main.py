@@ -13,6 +13,10 @@ from app.api.a2a import agent_card
 import asyncio
 from app.jobs.retention import retention_worker
 from app.jobs.revocation import revocation_worker
+from app.logging_hardening import setup_logging_redaction
+
+# Initialize logging redaction filters early
+setup_logging_redaction()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

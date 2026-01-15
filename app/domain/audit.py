@@ -196,7 +196,8 @@ class AuditLogger:
 
     def _canonical_json_bytes(self, event: Dict[str, Any]) -> bytes:
         """RFC 8785 (JCS) style canonicalization."""
+        from app.domain.a2a.canonical import canonical_json_bytes
         # Ensure 'event_hash' is NOT in the input
         clean = {k: v for k, v in event.items() if k != "event_hash"}
-        return json.dumps(clean, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
+        return canonical_json_bytes(clean)
 
