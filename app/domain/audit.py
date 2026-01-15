@@ -96,7 +96,7 @@ class AuditLogger:
             hmac_hex = hmac.new(key_bytes, ip_bytes, hashlib.sha256).hexdigest()
             
             http_clean["client_ip_hash"] = hmac_hex
-            http_clean["client_ip_hash_alg"] = "HMAC-SHA256"
+            http_clean["client_ip_hash_alg"] = "hmac-sha256"
             http_clean["client_ip_hash_key_id"] = self.ip_hmac_key_id
         # Else: omitted per Locked Rule 4
         
@@ -128,9 +128,12 @@ class AuditLogger:
             "surface_id": surface.id,
             "outcome": outcome,
             "principal": principal_clean,
-            "http": http_clean,
-            "meta": safe_meta
+            "http": http_clean
+            # Meta is added conditionally
         }
+        
+        if safe_meta:
+            event["meta"] = safe_meta
         
         if resource and resource.get("resource_type") and resource.get("resource_id"):
             event["resource"] = {
@@ -152,25 +155,40 @@ class AuditLogger:
         redacted_keys = []
         allowlist = set(surface.audit_meta_allowlist or [])
         
+        MAX_SAFE_INT = 9007199254740991
+        MIN_SAFE_INT = -9007199254740991
+        
+        RESERVED_KEYS = {"meta_redaction_applied", "meta_redacted_keys"}
+
         for k, v in metadata.items():
+            if k in RESERVED_KEYS:
+                # Silently drop reserved keys if user tries to inject them
+                continue
+
             if k not in allowlist:
                 redacted_keys.append(k)
                 continue
             
             # Enforce Scalar Types: string, number, boolean, null
-            if isinstance(v, (str, int, float, bool)) or v is None:
+            if isinstance(v, (str, float, bool)) or v is None:
                 # Max string length enforcement (1024 as per locked spec)
                 if isinstance(v, str) and len(v) > 1024:
                     safe[k] = v[:1021] + "..."
                     redacted_keys.append(f"{k} (truncated)")
                 else:
                     safe[k] = v
+            elif isinstance(v, int):
+                # Integer Range Check
+                if MIN_SAFE_INT <= v <= MAX_SAFE_INT:
+                    safe[k] = v
+                else:
+                    redacted_keys.append(f"{k} (unsafe integer)")
             else:
                 redacted_keys.append(f"{k} (invalid type)")
                     
         if redacted_keys:
             safe["meta_redaction_applied"] = True
-            safe["meta_redacted_keys"] = ", ".join(sorted(redacted_keys))
+            safe["meta_redacted_keys"] = sorted(redacted_keys) # Sorted List
             # Log telemetry metric (placeholder for real metric system)
             logging.warning(f"AUDIT_META_REDACTION: surface={surface.id} keys={redacted_keys}")
                     
