@@ -1,7 +1,7 @@
 import uuid
 import time
 from datetime import datetime, timezone
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from app.api.a2a.jsonrpc import validator, JsonRpcException
 from app.domain.a2a.mapper_llm import map_input_to_llm_messages, map_llm_response_to_task

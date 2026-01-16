@@ -1,5 +1,6 @@
 """Settings and configuration."""
 import os
+from typing import Optional
 from pydantic_settings import BaseSettings
 
 # Load .env file if it exists

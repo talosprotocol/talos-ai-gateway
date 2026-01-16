@@ -8,6 +8,7 @@ Unified LLM Inference + MCP Tool Gateway with RBAC and Audit.
 - **MCP Discovery**: Dynamic tool discovery and invocation
 - **RBAC**: Deny-by-default admin control plane
 - **Virtual Keys**: Unified auth for data plane
+- **TGA Capabilities**: Cryptographically signed tool authorization (JWS/EdDSA)
 - **Rate Limiting**: Token bucket per key/team
 - **Audit**: Event emission for all operations
 
@@ -49,11 +50,12 @@ make test
 
 Environment variables:
 
-| Variable       | Default                                         | Description    |
-| -------------- | ----------------------------------------------- | -------------- |
-| `DATABASE_URL` | `postgresql://talos:talos@localhost:5432/talos` | Postgres       |
-| `REDIS_URL`    | `redis://localhost:6379/0`                      | Redis          |
-| `MASTER_KEY`   | (required in prod)                              | Encryption key |
+| Variable                    | Default                                         | Description                                      |
+| --------------------------- | ----------------------------------------------- | ------------------------------------------------ |
+| `DATABASE_URL`              | `postgresql://talos:talos@localhost:5432/talos` | Postgres                                         |
+| `REDIS_URL`                 | `redis://localhost:6379/0`                      | Redis                                            |
+| `MASTER_KEY`                | (required in prod)                              | Encryption key                                   |
+| `TGA_SUPERVISOR_PUBLIC_KEY` | (optional)                                      | Ed25519 public key for TGA capability validation |
 
 ## Architecture
 
@@ -62,9 +64,13 @@ app/
 ├── api/
 │   ├── public_ai/     # /v1/*
 │   ├── public_mcp/    # /mcp/v1/*
+│   ├── a2a/           # /a2a/* (Agent-to-Agent)
 │   └── admin/         # /admin/v1/*
 ├── middleware/        # Auth, Rate Limit, Redaction
-├── domain/           # Business logic
+├── domain/
+│   ├── tga/           # TGA capability validation
+│   ├── secrets/       # Secret management
+│   └── ...            # Other business logic
 └── adapters/         # External integrations
 ```
 

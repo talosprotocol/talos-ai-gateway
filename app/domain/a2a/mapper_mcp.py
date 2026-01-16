@@ -1,5 +1,5 @@
 """A2A <-> MCP Mapper."""
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import datetime
 
 from app.api.a2a.jsonrpc import JsonRpcException
