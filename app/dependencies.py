@@ -213,3 +213,16 @@ def get_capability_validator() -> CapabilityValidator:
         # We return a validator with a dummy key that will fail on real signatures.
         return CapabilityValidator(supervisor_public_key="dev-placeholder")
     return CapabilityValidator(supervisor_public_key=settings.supervisor_public_key)
+
+from app.domain.a2a.session_manager import A2ASessionManager
+from app.domain.a2a.frame_store import A2AFrameStore
+from app.domain.a2a.group_manager import A2AGroupManager
+
+def get_a2a_session_manager(db: Session = Depends(get_db)) -> A2ASessionManager:
+    return A2ASessionManager(db)
+
+def get_a2a_frame_store(db: Session = Depends(get_db)) -> A2AFrameStore:
+    return A2AFrameStore(db)
+
+def get_a2a_group_manager(db: Session = Depends(get_db)) -> A2AGroupManager:
+    return A2AGroupManager(db)

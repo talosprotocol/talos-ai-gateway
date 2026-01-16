@@ -55,6 +55,114 @@
         "scope_type": "global",
         "attributes": {}
       }
+    },
+    {
+      "method": "POST",
+      "path_template": "/a2a/v1/sessions",
+      "permission": "a2a.session.create",
+      "scope_template": {
+        "scope_type": "principal",
+        "attributes": { "principal_id": "{actor_id}" }
+      }
+    },
+    {
+      "method": "GET",
+      "path_template": "/a2a/v1/sessions/{id}",
+      "permission": "a2a.session.read",
+      "scope_template": {
+        "scope_type": "session",
+        "attributes": { "session_id": "{id}" }
+      }
+    },
+    {
+      "method": "POST",
+      "path_template": "/a2a/v1/sessions/{id}/accept",
+      "permission": "a2a.session.accept",
+      "scope_template": {
+        "scope_type": "session",
+        "attributes": { "session_id": "{id}" }
+      }
+    },
+    {
+      "method": "POST",
+      "path_template": "/a2a/v1/sessions/{id}/rotate",
+      "permission": "a2a.session.rotate",
+      "scope_template": {
+        "scope_type": "session",
+        "attributes": { "session_id": "{id}" }
+      }
+    },
+    {
+      "method": "DELETE",
+      "path_template": "/a2a/v1/sessions/{id}",
+      "permission": "a2a.session.close",
+      "scope_template": {
+        "scope_type": "session",
+        "attributes": { "session_id": "{id}" }
+      }
+    },
+    {
+      "method": "POST",
+      "path_template": "/a2a/v1/sessions/{id}/frames",
+      "permission": "a2a.frame.send",
+      "scope_template": {
+        "scope_type": "session",
+        "attributes": { "session_id": "{id}" }
+      }
+    },
+    {
+      "method": "GET",
+      "path_template": "/a2a/v1/sessions/{id}/frames",
+      "permission": "a2a.frame.receive",
+      "scope_template": {
+        "scope_type": "session",
+        "attributes": { "session_id": "{id}" }
+      }
+    },
+    {
+      "method": "POST",
+      "path_template": "/a2a/v1/groups",
+      "permission": "a2a.group.create",
+      "scope_template": {
+        "scope_type": "principal",
+        "attributes": { "principal_id": "{actor_id}" }
+      }
+    },
+    {
+      "method": "GET",
+      "path_template": "/a2a/v1/groups/{id}",
+      "permission": "a2a.group.read",
+      "scope_template": {
+        "scope_type": "group",
+        "attributes": { "group_id": "{id}" }
+      }
+    },
+    {
+      "method": "POST",
+      "path_template": "/a2a/v1/groups/{id}/members",
+      "permission": "a2a.group.manage",
+      "scope_template": {
+        "scope_type": "group",
+        "attributes": { "group_id": "{id}" }
+      }
+    },
+    {
+      "method": "DELETE",
+      "path_template": "/a2a/v1/groups/{id}/members/{pid}",
+      "permission": "a2a.group.manage",
+      "scope_template": {
+        "scope_type": "group",
+        "attributes": { "group_id": "{id}" }
+      }
+    },
+    {
+      "method": "DELETE",
+      "path_template": "/a2a/v1/groups/{id}",
+      "permission": "a2a.group.close",
+      "scope_template": {
+        "scope_type": "group",
+        "attributes": { "group_id": "{id}" }
+      }
     }
   ]
 }
