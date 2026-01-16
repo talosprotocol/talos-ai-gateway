@@ -303,3 +303,70 @@ class A2ATask(Base):
 
 
 Index("idx_a2a_tasks_team_created", A2ATask.team_id, A2ATask.created_at.desc())
+
+class A2ASession(Base):
+    __tablename__ = "a2a_sessions"
+    
+    session_id = Column(String(36), primary_key=True)
+    state = Column(String(20), nullable=False) # pending, active, closed
+    initiator_id = Column(String(255), nullable=False)
+    responder_id = Column(String(255), nullable=False)
+    ratchet_state_blob = Column(Text, nullable=True) # base64url
+    ratchet_state_digest = Column(String(64), nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class A2ASessionEvent(Base):
+    __tablename__ = "a2a_session_events"
+    
+    session_id = Column(String(36), primary_key=True)
+    seq = Column(Integer, primary_key=True)
+    prev_digest = Column(String(64), nullable=True)
+    digest = Column(String(64), nullable=False)
+    event_json = Column(JSON, nullable=False)
+    ts = Column(DateTime, default=datetime.utcnow)
+    actor_id = Column(String(255), nullable=False)
+    target_id = Column(String(255), nullable=True)
+    
+    __table_args__ = (UniqueConstraint("session_id", "seq", name="uq_session_event_seq"),)
+
+
+class A2AFrame(Base):
+    __tablename__ = "a2a_frames"
+    
+    session_id = Column(String(36), primary_key=True)
+    sender_id = Column(String(255), primary_key=True)
+    sender_seq = Column(Integer, primary_key=True)
+    
+    recipient_id = Column(String(255), nullable=False, index=True)
+    frame_digest = Column(String(64), nullable=False)
+    ciphertext_hash = Column(String(64), nullable=False)
+    header_b64u = Column(Text, nullable=False)
+    ciphertext_b64u = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class A2AGroup(Base):
+    __tablename__ = "a2a_groups"
+    
+    group_id = Column(String(36), primary_key=True)
+    owner_id = Column(String(255), nullable=False)
+    state = Column(String(20), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class A2AGroupEvent(Base):
+    __tablename__ = "a2a_group_events"
+    
+    group_id = Column(String(36), primary_key=True)
+    seq = Column(Integer, primary_key=True)
+    prev_digest = Column(String(64), nullable=True)
+    digest = Column(String(64), nullable=False)
+    event_json = Column(JSON, nullable=False)
+    ts = Column(DateTime, default=datetime.utcnow)
+    actor_id = Column(String(255), nullable=False)
+    target_id = Column(String(255), nullable=True)
+    
+    __table_args__ = (UniqueConstraint("group_id", "seq", name="uq_group_event_seq"),)

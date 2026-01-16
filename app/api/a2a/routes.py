@@ -1,150 +1,197 @@
-from fastapi import APIRouter, Depends, Request, Body, Header, Query
-from typing import Dict, Any, Optional
-
-from app.middleware.auth_public import AuthContext, get_auth_context_or_none
-from app.middleware.attestation import get_attestation_auth
-from app.dependencies import (
-    get_routing_service, get_audit_store, get_rate_limit_store, get_usage_store, 
-    get_mcp_client, get_task_store, get_key_store, get_capability_validator
+from fastapi import APIRouter, Depends, HTTPException, Request
+from typing import Optional
+from app.domain.a2a.models import (
+    SessionCreateRequest, SessionAcceptRequest, SessionRotateRequest, FrameSendRequest,
+    GroupCreateRequest, GroupMemberAddRequest
 )
-from app.domain.interfaces import (
-    AuditStore, RateLimitStore, UsageStore, TaskStore
-)
-from app.adapters.mcp.client import McpClient
-from app.domain.routing import RoutingService
-from app.domain.a2a.dispatcher import A2ADispatcher
-from app.adapters.postgres.key_store import KeyStore
+from app.domain.a2a.session_manager import A2ASessionManager
+from app.domain.a2a.frame_store import A2AFrameStore
+from app.domain.a2a.group_manager import A2AGroupManager
+from app.dependencies import get_a2a_session_manager, get_a2a_frame_store, get_a2a_group_manager
 
 router = APIRouter()
 
-async def get_integrated_auth(
-    auth_bearer: AuthContext | None = Depends(get_auth_context_or_none),
-    auth_attest: AuthContext | None = Depends(get_attestation_auth),
-    token: str | None = Query(default=None),
-    key_store: KeyStore = Depends(get_key_store)
-) -> AuthContext:
-    if auth_attest:
-        return auth_attest
-    if auth_bearer:
-        return auth_bearer
+def get_actor_id(request: Request) -> str:
+    if not hasattr(request.state, "principal") or not request.state.principal:
+        # Should be caught by middleware normally
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return request.state.principal.id
+
+@router.post("/sessions", status_code=201)
+def create_session(
+    req: SessionCreateRequest,
+    sm: A2ASessionManager = Depends(get_a2a_session_manager),
+    actor_id: str = Depends(get_actor_id)
+):
+    if actor_id == req.responder_id:
+        raise HTTPException(status_code=400, detail="Initiator cannot be responder")
+    return sm.create_session(actor_id, req)
+
+@router.get("/sessions/{id}")
+def get_session(
+    id: str,
+    sm: A2ASessionManager = Depends(get_a2a_session_manager),
+    actor_id: str = Depends(get_actor_id)
+):
+    session = sm.get_session(id)
+    if not session:
+        raise HTTPException(status_code=404, detail="A2A_SESSION_NOT_FOUND")
+    # RBAC handles permission to READ, but business logic might enforce participation?
+    # Spec: "Only session participants?" Not explicitly in RBAC, but maybe implied.
+    # RBAC just says "a2a.session.read" on "session/{id}".
+    return session
+
+@router.post("/sessions/{id}/accept")
+def accept_session(
+    id: str,
+    req: SessionAcceptRequest,
+    sm: A2ASessionManager = Depends(get_a2a_session_manager),
+    actor_id: str = Depends(get_actor_id)
+):
+    # actor_id must be responder. Validated in SM.
+    try:
+        return sm.accept_session(id, actor_id, req)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/sessions/{id}/rotate")
+def rotate_session(
+    id: str,
+    req: SessionRotateRequest,
+    sm: A2ASessionManager = Depends(get_a2a_session_manager),
+    actor_id: str = Depends(get_actor_id)
+):
+    try:
+        return sm.rotate_session(id, actor_id, req)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.delete("/sessions/{id}")
+def close_session(
+    id: str,
+    sm: A2ASessionManager = Depends(get_a2a_session_manager),
+    actor_id: str = Depends(get_actor_id)
+):
+    try:
+        return sm.close_session(id, actor_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@router.post("/sessions/{id}/frames", status_code=201)
+def send_frame(
+    id: str,
+    req: FrameSendRequest,
+    sm: A2ASessionManager = Depends(get_a2a_session_manager),
+    fs: A2AFrameStore = Depends(get_a2a_frame_store),
+    actor_id: str = Depends(get_actor_id)
+):
+    # Validate session
+    session = sm.get_session(id)
+    if not session:
+        raise HTTPException(status_code=404, detail="A2A_SESSION_NOT_FOUND")
+    if session.state != "active":
+        raise HTTPException(status_code=400, detail="A2A_SESSION_STATE_INVALID")
         
-    # Dev mode query token fallback (only if DEV_MODE=true)
-    if app_settings.dev_mode and token:
-         key_hash = key_store.hash_key(token)
-         key_data = key_store.lookup_by_hash(key_hash)
-         if key_data and not key_data.revoked:
-              return AuthContext(
-                  key_id=key_data.id,
-                  team_id=key_data.team_id,
-                  org_id=key_data.org_id,
-                  scopes=key_data.scopes,
-                  allowed_model_groups=key_data.allowed_model_groups,
-                  allowed_mcp_servers=key_data.allowed_mcp_servers
-              )
-
-    raise HTTPException(
-        status_code=401, 
-        detail={"error": {"code": -32000, "message": "Unauthorized", "data": {"details": "Missing Bearer token or Attestation headers"}}}
-    )
-
-@router.post("/", response_model=None)
-async def handle_jsonrpc(
-    request: Request,
-    payload: Dict[str, Any] = Body(...),
-    auth: AuthContext = Depends(get_integrated_auth),
-    routing_service: RoutingService = Depends(get_routing_service),
-    audit_store: AuditStore = Depends(get_audit_store),
-    rl_store: RateLimitStore = Depends(get_rate_limit_store),
-    usage_store: UsageStore = Depends(get_usage_store),
-    task_store: TaskStore = Depends(get_task_store),
-    mcp_client: McpClient = Depends(get_mcp_client),
-    cap_validator: Any = Depends(get_capability_validator),
-    x_talos_capability: Optional[str] = Header(None)
-):
-    """
-    JSON-RPC 2.0 Endpoint for Agent-to-Agent interaction.
-    """
-    dispatcher = A2ADispatcher(
-        auth=auth,
-        routing_service=routing_service,
-        audit_store=audit_store,
-        rl_store=rl_store,
-        usage_store=usage_store,
-        task_store=task_store,
-        mcp_client=mcp_client,
-        capability_validator=cap_validator
-    )
+    # Enforce isolation: actor == sender
+    if actor_id != req.frame.sender_id:
+        raise HTTPException(status_code=403, detail="Frame sender must be actor")
+        
+    # Enforce participation
+    if actor_id not in [session.initiator_id, session.responder_id]:
+        raise HTTPException(status_code=403, detail="Not a participant")
+        
+    # Derive recipient
+    recipient_id = session.responder_id if actor_id == session.initiator_id else session.initiator_id
     
-    response = await dispatcher.dispatch(payload, capability=x_talos_capability)
-    return response
+    # Validation
+    if req.frame.session_id != id:
+        raise HTTPException(status_code=400, detail="Session ID mismatch")
+        
+    try:
+        return fs.store_frame(req.frame, recipient_id)
+    except ValueError as e:
+        # Map specific errors
+        msg = str(e)
+        if "REPLAY" in msg:
+            raise HTTPException(status_code=409, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
 
-# SSE Endpoint (Phase A4)
-from fastapi.responses import StreamingResponse
-from fastapi import Query, HTTPException
-from app.settings import settings as app_settings
-from app.domain.a2a.streaming import stream_task_events
-from app.adapters.redis.client import get_redis_client
-# Actually, calling get_auth_context with a modified request is hard in a sub-dependency.
-# But we can call `get_auth_context` directly if we import it.
-import uuid
-
-async def get_sse_auth(
-    authorization: str | None = Header(default=None),
-    token: str | None = Query(default=None),
-    key_store: KeyStore = Depends(get_key_store)
-) -> AuthContext:
-    """Unified SSE Auth resolver."""
-    # This is redundant with get_integrated_auth, but kept for compatibility if needed.
-    # Preferably, just use get_integrated_auth.
-    return await get_integrated_auth(
-        auth_bearer=await get_auth_context_or_none(authorization, key_store),
-        token=token,
-        key_store=key_store
-    )
-
-@router.get("/tasks/{task_id}/events")
-async def stream_events(
-    request: Request,
-    task_id: str,
-    after_cursor: str | None = Query(default=None),
-    auth: AuthContext = Depends(get_integrated_auth),
-    task_store: TaskStore = Depends(get_task_store)
+@router.get("/sessions/{id}/frames")
+def list_frames(
+    id: str,
+    cursor: Optional[str] = None,
+    limit: int = 100,
+    fs: A2AFrameStore = Depends(get_a2a_frame_store),
+    actor_id: str = Depends(get_actor_id)
 ):
-    request_id = str(uuid.uuid4()) # Generate request ID for the stream session
-    
-    if "a2a.stream" not in auth.scopes:
-         raise HTTPException(
-             status_code=403, 
-             detail={
-                 "error": {
-                     "talos_code": "RBAC_DENIED", 
-                     "message": "Missing 'a2a.stream' scope", 
-                     "request_id": request_id
-                 }
-             }
-         )
-         
-    redis_client = await get_redis_client()
-    if not redis_client:
-         raise HTTPException(
-             status_code=503, 
-             detail={
-                 "error": {
-                     "talos_code": "SERVICE_UNAVAILABLE", 
-                     "message": "Streaming unavailable", 
-                     "request_id": request_id
-                 }
-             }
-         )
-         
-    return StreamingResponse(
-        stream_task_events(
-            task_id=task_id, 
-            team_id=auth.team_id, 
-            task_store=task_store, 
-            redis_client=redis_client,
-            request_id=request_id,
-            after_cursor=after_cursor
-        ),
-        media_type="text/event-stream"
-    )
+    # Recipient isolation
+    frames, next_cursor = fs.list_frames(id, actor_id, cursor, limit)
+    # Wrap response if needed or just list
+    return {"items": frames, "next_cursor": next_cursor}
+
+@router.post("/groups", status_code=201)
+def create_group(
+    req: GroupCreateRequest,
+    gm: A2AGroupManager = Depends(get_a2a_group_manager),
+    actor_id: str = Depends(get_actor_id)
+):
+    return gm.create_group(actor_id, req)
+
+@router.get("/groups/{id}")
+def get_group(
+    id: str,
+    gm: A2AGroupManager = Depends(get_a2a_group_manager),
+    actor_id: str = Depends(get_actor_id)
+):
+    group = gm.get_group(id)
+    if not group:
+         raise HTTPException(status_code=404, detail="A2A_GROUP_NOT_FOUND")
+    return group
+
+@router.post("/groups/{id}/members")
+def add_group_member(
+    id: str,
+    req: GroupMemberAddRequest,
+    gm: A2AGroupManager = Depends(get_a2a_group_manager),
+    actor_id: str = Depends(get_actor_id)
+):
+    try:
+        return gm.add_member(id, actor_id, req)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.delete("/groups/{id}/members/{pid}")
+def remove_group_member(
+    id: str,
+    pid: str,
+    gm: A2AGroupManager = Depends(get_a2a_group_manager),
+    actor_id: str = Depends(get_actor_id)
+):
+    try:
+        return gm.remove_member(id, actor_id, pid)
+    except PermissionError as e:
+         raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+         raise HTTPException(status_code=400, detail=str(e))
+
+@router.delete("/groups/{id}")
+def close_group(
+    id: str,
+    gm: A2AGroupManager = Depends(get_a2a_group_manager),
+    actor_id: str = Depends(get_actor_id)
+):
+    try:
+        res = gm.close_group(id, actor_id)
+        if not res:
+            raise HTTPException(status_code=404, detail="A2A_GROUP_NOT_FOUND")
+        return res
+    except PermissionError as e:
+         raise HTTPException(status_code=403, detail=str(e))
