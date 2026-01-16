@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Request, Body, Header, Query
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from app.middleware.auth_public import AuthContext, get_auth_context_or_none
 from app.middleware.attestation import get_attestation_auth

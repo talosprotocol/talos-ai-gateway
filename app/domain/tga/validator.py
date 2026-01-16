@@ -1,8 +1,8 @@
+"""TGA Capability Validator using PyJWT for EdDSA/Ed25519 support."""
 from typing import Optional
-from jose import jws, JWTError
+import jwt
 from .models import TgaCapability, TgaCapabilityConstraints
 import hashlib
-import json
 import time
 
 class CapabilityValidationError(Exception):
@@ -18,7 +18,7 @@ class CapabilityValidator:
     
     def __init__(self, supervisor_public_key: str):
         """
-        :param supervisor_public_key: Public key in PEM or JWK format (Ed25519).
+        :param supervisor_public_key: Public key in PEM format (Ed25519).
         """
         self.public_key = supervisor_public_key
 
@@ -27,15 +27,50 @@ class CapabilityValidator:
         Decodes the JWS token and verifies its EdDSA signature.
         """
         try:
-            # Jose jws.verify handles EdDSA if cryptography is available
-            payload_bytes = jws.verify(token, self.public_key, algorithms=['EdDSA'])
-            payload_dict = json.loads(payload_bytes.decode('utf-8'))
+            # PyJWT handles EdDSA with cryptography backend
+            from cryptography.hazmat.primitives.serialization import load_pem_public_key
             
-            cap = TgaCapability.model_validate(payload_dict)
+            # Load the public key if it's a PEM string
+            if isinstance(self.public_key, str):
+                if self.public_key.startswith("-----BEGIN"):
+                    pub_key = load_pem_public_key(self.public_key.encode('utf-8'))
+                else:
+                    # Assume it's a placeholder for dev mode
+                    raise CapabilityValidationError("Invalid public key format", "CONFIG_ERROR")
+            else:
+                pub_key = self.public_key
+                
+            payload = jwt.decode(
+                token, 
+                pub_key, 
+                algorithms=['EdDSA'],
+                audience='talos-gateway'
+            )
+            
+            # Convert nested constraints dict to Pydantic model
+            constraints_dict = payload.get("constraints", {})
+            constraints = TgaCapabilityConstraints(**constraints_dict)
+            
+            cap = TgaCapability(
+                iss=payload.get("iss"),
+                aud=payload.get("aud"),
+                iat=payload.get("iat"),
+                nbf=payload.get("nbf"),
+                exp=payload.get("exp"),
+                nonce=payload.get("nonce"),
+                trace_id=payload.get("trace_id"),
+                plan_id=payload.get("plan_id"),
+                constraints=constraints
+            )
+            
             self._validate_claims(cap)
             return cap
             
-        except JWTError as e:
+        except jwt.ExpiredSignatureError:
+            raise CapabilityValidationError("Capability expired", "EXPIRED")
+        except jwt.InvalidAudienceError:
+            raise CapabilityValidationError("Invalid audience", "AUDIENCE_MISMATCH")
+        except jwt.PyJWTError as e:
             raise CapabilityValidationError(f"Invalid capability signature or format: {str(e)}", "SIGNATURE_INVALID")
         except Exception as e:
             raise CapabilityValidationError(f"Capability decoding failed: {str(e)}")
@@ -67,12 +102,7 @@ class CapabilityValidator:
             )
             
         # 2. Read-Only Enforcement
-        # This assumes the caller provides a way to identify mutation tools, 
-        # but the constraint itself is binary. 
-        # If capability is read-only, and the tool name indicates a mutation (e.g. create-*), we deny.
-        # (This logic might be refined with a more explicit tool registry).
         if con.read_only:
-            # Heuristic for now; in production this would look up the tool's classification.
             mutation_prefixes = ["create-", "update-", "delete-", "write-", "apply-"]
             if any(tool_name.startswith(p) for p in mutation_prefixes):
                  raise CapabilityValidationError(f"Mutation tool '{tool_name}' forbidden in READ_ONLY capability", "READ_ONLY_VIOLATION")
@@ -81,7 +111,6 @@ class CapabilityValidator:
         if con.arg_constraints:
             # In a real implementation, we would validate 'args' against the 
             # schema identified by 'arg_constraints'. 
-            # For now, we record that this check is required.
             pass
 
     def calculate_capability_digest(self, token: str) -> str:
