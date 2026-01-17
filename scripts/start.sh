@@ -18,9 +18,28 @@ if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
 fi
 
 # Start service
+# Start service
 echo "Starting $SERVICE_NAME on port $PORT..."
+
+# Map TALOS_ENV to MODE if not set
+if [ -z "${MODE:-}" ]; then
+    if [ "$TALOS_ENV" = "production" ]; then
+        export MODE="prod"
+    else
+        export MODE="dev"
+    fi
+fi
+
+# Phase 11 Hardening Checks (Script-level pre-check)
+if [ "$MODE" = "prod" ]; then
+    if [ -z "${REDIS_URL:-}" ]; then
+        echo "WARNING: MODE=prod but REDIS_URL is not set. Service may fail to start due to Phase 11 checks."
+    fi
+fi
+
 TALOS_ENV="${TALOS_ENV:-production}" \
 TALOS_RUN_ID="${TALOS_RUN_ID:-default}" \
+MODE="$MODE" \
 uvicorn main:app --port "$PORT" --host 0.0.0.0 > "$LOG_FILE" 2>&1 &
 
 
