@@ -20,10 +20,20 @@ class A2ASessionManager:
     def __init__(self, db: Session):
         self.db = db
 
-    def _advisory_lock(self, session_id: str):
+    def _advisory_lock(self, session_id: str) -> None:
+        """Acquire transaction-scoped advisory lock for single-writer concurrency.
+        
+        Uses pg_try_advisory_xact_lock for deterministic failure instead of blocking.
+        Raises ValueError with A2A_LOCK_CONTENTION if lock cannot be acquired.
+        """
         # Deterministic int64 hash for lock ID
         lock_id = int(hashlib.sha256(session_id.encode()).hexdigest()[:15], 16)
-        self.db.execute(text("SELECT pg_advisory_xact_lock(:id)"), {"id": lock_id})
+        result = self.db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:id) AS acquired"),
+            {"id": lock_id}
+        ).fetchone()
+        if not result or not result.acquired:
+            raise ValueError("A2A_LOCK_CONTENTION")
 
     def _append_event(self, session_id: str, event_type: str, actor_id: str, event_data: dict, prev_digest: Optional[str] = None) -> A2ASessionEvent:
         # Determine sequence

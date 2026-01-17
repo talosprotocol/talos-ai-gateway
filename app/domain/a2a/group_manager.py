@@ -18,10 +18,20 @@ class A2AGroupManager:
     def __init__(self, db: Session):
         self.db = db
 
-    def _advisory_lock(self, group_id: str):
-        # Deterministic int64 hash for lock ID
-        lock_id = int(hashlib.sha256(group_id.encode()).hexdigest()[:15], 16)
-        self.db.execute(text("SELECT pg_advisory_xact_lock(:id)"), {"id": lock_id})
+    def _advisory_lock(self, group_id: str) -> None:
+        """Acquire transaction-scoped advisory lock for single-writer concurrency.
+        
+        Uses pg_try_advisory_xact_lock for deterministic failure instead of blocking.
+        Raises ValueError with A2A_LOCK_CONTENTION if lock cannot be acquired.
+        """
+        # Deterministic int64 hash for lock ID (use different prefix for groups)
+        lock_id = int(hashlib.sha256(b"group:" + group_id.encode()).hexdigest()[:15], 16)
+        result = self.db.execute(
+            text("SELECT pg_try_advisory_xact_lock(:id) AS acquired"),
+            {"id": lock_id}
+        ).fetchone()
+        if not result or not result.acquired:
+            raise ValueError("A2A_LOCK_CONTENTION")
 
     def _append_event(self, group_id: str, event_type: str, actor_id: str, event_data: dict, target_id: Optional[str] = None, prev_digest: Optional[str] = None) -> A2AGroupEvent:
         last_event = self.db.query(A2AGroupEvent).filter(
