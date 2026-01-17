@@ -42,9 +42,24 @@ def db_session():
 class TestSessionLifecycle:
     """Test session create → accept → close flow."""
 
+    def _make_create_req(self, responder_id: str = "bob-did") -> SessionCreateRequest:
+        """Create a valid SessionCreateRequest with dummy ratchet state."""
+        return SessionCreateRequest(
+            responder_id=responder_id,
+            ratchet_state_blob_b64u="dGVzdC1yYXRjaGV0LXN0YXRl",  # base64url
+            ratchet_state_digest="a" * 64,  # valid hex64
+        )
+
+    def _make_accept_req(self) -> SessionAcceptRequest:
+        """Create a valid SessionAcceptRequest."""
+        return SessionAcceptRequest(
+            ratchet_state_blob_b64u="dGVzdC1yYXRjaGV0LXN0YXRl",
+            ratchet_state_digest="b" * 64,
+        )
+
     def test_create_session(self, db_session):
         sm = A2ASessionManager(db_session)
-        req = SessionCreateRequest(responder_id="bob-did")
+        req = self._make_create_req()
         
         session = sm.create_session("alice-did", req)
         
@@ -55,39 +70,39 @@ class TestSessionLifecycle:
 
     def test_accept_session(self, db_session):
         sm = A2ASessionManager(db_session)
-        req = SessionCreateRequest(responder_id="bob-did")
+        req = self._make_create_req()
         session = sm.create_session("alice-did", req)
         
         # Mock advisory lock for SQLite
         with patch.object(sm, '_advisory_lock'):
-            accept_req = SessionAcceptRequest()
+            accept_req = self._make_accept_req()
             session = sm.accept_session(session.session_id, "bob-did", accept_req)
         
         assert session.state == "active"
 
     def test_accept_wrong_responder_fails(self, db_session):
         sm = A2ASessionManager(db_session)
-        req = SessionCreateRequest(responder_id="bob-did")
+        req = self._make_create_req()
         session = sm.create_session("alice-did", req)
         
         with patch.object(sm, '_advisory_lock'):
             with pytest.raises(PermissionError, match="Not the designated responder"):
-                sm.accept_session(session.session_id, "eve-did", SessionAcceptRequest())
+                sm.accept_session(session.session_id, "eve-did", self._make_accept_req())
 
     def test_close_session(self, db_session):
         sm = A2ASessionManager(db_session)
-        req = SessionCreateRequest(responder_id="bob-did")
+        req = self._make_create_req()
         session = sm.create_session("alice-did", req)
         
         with patch.object(sm, '_advisory_lock'):
-            sm.accept_session(session.session_id, "bob-did", SessionAcceptRequest())
+            sm.accept_session(session.session_id, "bob-did", self._make_accept_req())
             session = sm.close_session(session.session_id, "alice-did")
         
         assert session.state == "closed"
 
     def test_invalid_state_transition_fails(self, db_session):
         sm = A2ASessionManager(db_session)
-        req = SessionCreateRequest(responder_id="bob-did")
+        req = self._make_create_req()
         session = sm.create_session("alice-did", req)
         
         with patch.object(sm, '_advisory_lock'):
@@ -95,7 +110,7 @@ class TestSessionLifecycle:
             
             # Try to accept a closed session
             with pytest.raises(ValueError, match="Invalid state transition"):
-                sm.accept_session(session.session_id, "bob-did", SessionAcceptRequest())
+                sm.accept_session(session.session_id, "bob-did", self._make_accept_req())
 
 
 class TestFrameValidation:
@@ -103,6 +118,10 @@ class TestFrameValidation:
 
     def _make_valid_frame(self, session_id: str, sender_id: str, sender_seq: int) -> EncryptedFrame:
         """Create a valid frame with correct digests."""
+        # UUIDv7 format: xxxxxxxx-xxxx-7xxx-yxxx-xxxxxxxxxxxx
+        if session_id == "sess-1":
+            session_id = "01234567-89ab-7cde-8f01-23456789abcd"
+            
         header_b64u = "eyJhbGciOiJFZERTQSJ9"  # {"alg":"EdDSA"}
         ciphertext_b64u = "dGVzdC1jaXBoZXJ0ZXh0"  # "test-ciphertext"
         
@@ -129,7 +148,8 @@ class TestFrameValidation:
             header_b64u=header_b64u,
             ciphertext_b64u=ciphertext_b64u,
             frame_digest=frame_digest,
-            ciphertext_hash=ciphertext_hash
+            ciphertext_hash=ciphertext_hash,
+            created_at=datetime.utcnow(),
         )
 
     def test_store_valid_frame(self, db_session):
@@ -138,7 +158,8 @@ class TestFrameValidation:
         
         stored = fs.store_frame(frame, "bob")
         
-        assert stored.session_id == "sess-1"
+        # UUID is normalized in _make_valid_frame
+        assert stored.session_id == "01234567-89ab-7cde-8f01-23456789abcd"
         assert stored.sender_seq == 0
 
     def test_replay_detection(self, db_session):
@@ -224,6 +245,19 @@ class TestGroupLifecycle:
 class TestConcurrency:
     """Test single-writer enforcement via advisory locks."""
 
+    def _make_create_req(self, responder_id: str = "bob-did") -> SessionCreateRequest:
+        return SessionCreateRequest(
+            responder_id=responder_id,
+            ratchet_state_blob_b64u="dGVzdC1yYXRjaGV0LXN0YXRl",
+            ratchet_state_digest="a" * 64,
+        )
+
+    def _make_accept_req(self) -> SessionAcceptRequest:
+        return SessionAcceptRequest(
+            ratchet_state_blob_b64u="dGVzdC1yYXRjaGV0LXN0YXRl",
+            ratchet_state_digest="b" * 64,
+        )
+
     def test_lock_contention_error_code(self, db_session):
         """Verify A2A_LOCK_CONTENTION is raised when lock fails."""
         sm = A2ASessionManager(db_session)
@@ -232,12 +266,12 @@ class TestConcurrency:
         def mock_lock_fail(session_id):
             raise ValueError("A2A_LOCK_CONTENTION")
         
+        req = self._make_create_req()
+        session = sm.create_session("alice-did", req)
+        
         with patch.object(sm, '_advisory_lock', side_effect=mock_lock_fail):
-            req = SessionCreateRequest(responder_id="bob-did")
-            session = sm.create_session("alice-did", req)
-            
             with pytest.raises(ValueError, match="A2A_LOCK_CONTENTION"):
-                sm.accept_session(session.session_id, "bob-did", SessionAcceptRequest())
+                sm.accept_session(session.session_id, "bob-did", self._make_accept_req())
 
 
 class TestErrorCodes:
