@@ -1,0 +1,107 @@
+version: "3.9"
+
+services:
+  postgres-primary:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: talos
+      POSTGRES_PASSWORD: talos
+      POSTGRES_DB: talos
+      POSTGRES_HOST_AUTH_METHOD: trust
+    command: |
+      bash -c "
+      # Hack to allow replication
+      mkdir -p /var/lib/postgresql/data
+      chmod 700 /var/lib/postgresql/data
+      # We need to run entrypoint in background to let it init DB, then patch HBA
+      docker-entrypoint.sh postgres -c wal_level=logical -c max_wal_senders=10 -c max_replication_slots=10 &
+      PID=\$!
+      sleep 10
+      echo 'host replication all 0.0.0.0/0 trust' >> /var/lib/postgresql/data/pg_hba.conf
+      # Reload config using Signal
+      kill -s HUP \$(head -1 /var/lib/postgresql/data/postmaster.pid) || true
+      wait \$PID
+      "
+    volumes:
+      - pgdata-primary:/var/lib/postgresql/data
+    ports:
+      - "5452:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U talos"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-replica:
+    image: postgres:15
+    environment:
+      PGUSER: talos
+      PGPASSWORD: talos
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    command: |
+      bash -c "
+      until pg_isready -h postgres-primary -p 5432 -U talos; do echo waiting for primary; sleep 1; done;
+      if [ ! -s /var/lib/postgresql/data/PG_VERSION ]; then
+        echo 'Cloning from primary...'
+        pg_basebackup -h postgres-primary -p 5432 -U talos -D /var/lib/postgresql/data -Fp -Xs -P -R
+      fi
+      docker-entrypoint.sh postgres -c hot_standby=on
+      "
+    volumes:
+      - pgdata-replica:/var/lib/postgresql/data
+    ports:
+      - "5453:5432"
+
+  gateway-region-a:
+    build: .
+    environment:
+      SURFACE_INVENTORY_PATH: /app/gateway_surface.json
+      TALOS_KEY_PEPPER: "dev-pepper-change-in-prod"
+      DATABASE_WRITE_URL: postgresql://talos:talos@postgres-primary:5432/talos
+      DATABASE_READ_URL: postgresql://talos:talos@postgres-primary:5432/talos
+      REDIS_URL: redis://redis:6379/0
+      REGION_ID: region-a
+      RUN_MIGRATIONS: "true"
+      MODE: dev
+      DEV_MODE: "true"
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  gateway-region-b:
+    build: .
+    environment:
+      SURFACE_INVENTORY_PATH: /app/gateway_surface.json
+      TALOS_KEY_PEPPER: "dev-pepper-change-in-prod"
+      DATABASE_WRITE_URL: postgresql://talos:talos@postgres-primary:5432/talos
+      DATABASE_READ_URL: postgresql://talos:talos@postgres-replica:5432/talos
+      REDIS_URL: redis://redis:6379/0
+      REGION_ID: region-b
+      RUN_MIGRATIONS: "false"
+      MODE: dev
+      DEV_MODE: "true"
+      READ_FALLBACK_ENABLED: "true"
+    ports:
+      - "8002:8000"
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      postgres-replica:
+        condition: service_started
+      redis:
+        condition: service_started
+
+  redis:
+    image: redis:7
+    ports:
+      - "6380:6379"
+
+volumes:
+  pgdata-primary:
+  pgdata-replica:

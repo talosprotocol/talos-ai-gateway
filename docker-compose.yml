@@ -10,6 +10,11 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U talos"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7
@@ -20,12 +25,23 @@ services:
     build: .
     ports:
       - "8000:8000"
+    volumes:
+      - .:/app
+      - ./gateway_surface.json:/app/gateway_surface.json
     environment:
       DATABASE_URL: postgresql://talos:talos@postgres:5432/talos
+      DATABASE_WRITE_URL: postgresql://talos:talos@postgres:5432/talos
+      DATABASE_READ_URL: postgresql://talos:talos@postgres:5432/talos
       REDIS_URL: redis://redis:6379/0
+      DEV_MODE: "true"
+      TALOS_KEY_PEPPER: "dev-pepper-change-in-prod"
+      RUN_MIGRATIONS: "true"
+      SURFACE_INVENTORY_PATH: /app/gateway_surface.json
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
 volumes:
   pgdata:

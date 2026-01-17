@@ -1,0 +1,61 @@
+{
+  "version": "1.0",
+  "items": [
+    {
+      "id": "llm.chat.completions",
+      "type": "http",
+      "http_match": {
+        "method": "POST",
+        "path_template": "/v1/chat/completions"
+      },
+      "required_scopes": ["llm.invoke"],
+      "attestation_required": false,
+      "audit_action": "llm.invoke",
+      "data_classification": "public",
+      "audit_meta_allowlist": ["model", "max_tokens", "temperature", "finish_reason", "latency_ms", "usage"],
+      "description": "Invoke LLM Chat Completion"
+    },
+    {
+      "id": "llm.models.list",
+      "type": "http",
+      "http_match": {
+        "method": "GET",
+        "path_template": "/v1/models"
+      },
+      "required_scopes": ["llm.read"],
+      "attestation_required": false,
+      "audit_action": "llm.models.read",
+      "data_classification": "public",
+      "audit_meta_allowlist": [],
+      "description": "List available models"
+    },
+    {
+      "id": "mcp.tools.call",
+      "type": "http",
+      "http_match": {
+        "method": "POST",
+        "path_template": "/v1/mcp/servers/{server_id}/tools/{tool_name}:call"
+      },
+      "required_scopes": ["mcp.invoke"],
+      "attestation_required": true,
+      "audit_action": "mcp.tools.execute",
+      "data_classification": "sensitive",
+      "audit_meta_allowlist": ["server_id", "tool_name", "latency_ms", "error"],
+      "description": "Call an MCP Tool"
+    },
+    {
+      "id": "a2a.jsonrpc",
+      "type": "http",
+      "http_match": {
+        "method": "POST",
+        "path_template": "/a2a/v1/"
+      },
+      "required_scopes": ["a2a.invoke"],
+      "attestation_required": true,
+      "audit_action": "a2a.invoke",
+      "data_classification": "sensitive",
+      "audit_meta_allowlist": ["method", "id", "latency_ms", "error"],
+      "description": "Agent-to-Agent JSON-RPC Endpoint"
+    }
+  ]
+}

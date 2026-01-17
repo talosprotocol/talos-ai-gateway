@@ -38,7 +38,7 @@ class VirtualKey(Base):
     
     id = Column(String(255), primary_key=True)
     team_id = Column(String(255), ForeignKey("teams.id"), nullable=False)
-    key_hash = Column(String(64), nullable=False, unique=True, index=True)
+    key_hash = Column(String(128), nullable=False, unique=True, index=True)
     scopes = Column(JSON, default=list)
     allowed_model_groups = Column(JSON, default=list)
     allowed_mcp_servers = Column(JSON, default=list)
@@ -370,3 +370,19 @@ class A2AGroupEvent(Base):
     target_id = Column(String(255), nullable=True)
     
     __table_args__ = (UniqueConstraint("group_id", "seq", name="uq_group_event_seq"),)
+
+class SecretsKeyring(Base):
+    """Key Encryption Key (KEK) Registry for Secrets."""
+    __tablename__ = "secrets_keyring"
+    
+    id = Column(String(36), primary_key=True) # Typically "master" or tenant_id
+    active_kek_id = Column(String(64), nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # We might store the KEK material here encrypted by Master Key (DEK), 
+    # OR reference external KMS. For Phase 12 MVP, we assume KEK material 
+    # is implicit or managed by LocalKekProvider, and this table just tracks VERSIONS.
+    # But usually this table WOULD contain the actual KEK (wrapped).
+    # Since LocalKekProvider uses env var MASTER_KEY, we will just track metadata here.
+

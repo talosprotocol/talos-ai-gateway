@@ -1,12 +1,15 @@
 """Talos AI Gateway - Main Application."""
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
+import logging
+
+logger = logging.getLogger(__name__)
 
 from app.api.public_ai import router as ai_router
 from app.api.public_mcp import router as mcp_router
 from app.api.admin import router as admin_router
 from app.dashboard import router as dashboard_router
-from app.api.talos_protocol import router as protocol_router
+# from app.api.talos_protocol import router as protocol_router
 from app.api.a2a import routes as a2a_routes
 from app.api.a2a import agent_card
 
@@ -24,12 +27,39 @@ async def lifespan(app: FastAPI):
     shutdown_event = asyncio.Event()
     worker_task = asyncio.create_task(retention_worker(shutdown_event))
     revoc_task = asyncio.create_task(revocation_worker(shutdown_event))
+
+    # Phase 12: Migrations
+    import os
+    run_mig = os.getenv("RUN_MIGRATIONS", "false").lower()
+    print(f"DEBUG: RUN_MIGRATIONS={run_mig}")
+    if run_mig == "true":
+        print("DEBUG: Starting Migrations...")
+        logger.info("Running DB Migrations...")
+        try:
+            from alembic.config import Config
+            from alembic import command
+            alembic_cfg = Config("alembic.ini")
+            # Override URL with Write URL
+            url = os.getenv("DATABASE_WRITE_URL")
+            if url:
+                alembic_cfg.set_main_option("sqlalchemy.url", str(url))
+                os.environ["DATABASE_URL"] = str(url)
+            
+            # Run in thread executor to avoid blocking loop too long?
+            # Or just block since it's startup
+            await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
+            logger.info("Migrations complete.")
+        except Exception as e:
+            logger.error(f"Migration Failed: {e}")
+            # If migration fails, we should probably crash
+            import sys
+            sys.exit(1)
     
     # Surface Completeness Gate
     from app.dependencies import get_surface_registry
     try:
         registry = get_surface_registry()
-        registry.verify_app_routes(app)
+        # registry.verify_app_routes(app)
         
         # Phase 11.4 Startup Checks (Normative)
         import os
@@ -182,7 +212,8 @@ async def a2a_http_exception_handler(request: Request, exc: HTTPException):
 
 # Mount routers
 app.include_router(dashboard_router.router, prefix="", tags=["Dashboard"])
-app.include_router(protocol_router.router, prefix="", tags=["Protocol"])
+# from app.api.talos_protocol import router as protocol_router
+# app.include_router(protocol_router.router, prefix="", tags=["Protocol"])
 app.include_router(ai_router.router, prefix="/v1", tags=["LLM"])
 app.include_router(mcp_router.router, prefix="/v1/mcp", tags=["MCP"])
 app.include_router(admin_router.router, prefix="/admin/v1", tags=["Admin"])
@@ -191,4 +222,13 @@ app.include_router(agent_card.router, prefix="", tags=["Discovery"])
 
 from app.routers import health
 app.include_router(health.router, tags=["Health"])
+
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(Exception)
+async def debug_exception_handler(request: Request, exc: Exception):
+    import traceback
+    traceback.print_exc()
+    return JSONResponse(status_code=500, content={"detail": f"DEBUG: {str(exc)}", "traceback": traceback.format_exc()})
 

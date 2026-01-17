@@ -101,14 +101,8 @@ class PostgresKeyStore(KeyStore):
         # Database lookup
         from ..postgres.models import VirtualKey
         
-        # Extract hash from {pepper_id}:{hash} format
-        parts = key_hash.split(":", 1)
-        if len(parts) == 2:
-            _, hash_only = parts
-        else:
-            hash_only = key_hash
-
-        vk = self._db.query(VirtualKey).filter(VirtualKey.key_hash == hash_only).first()
+        # Query with full hash format including pepper_id prefix
+        vk = self._db.query(VirtualKey).filter(VirtualKey.key_hash == key_hash).first()
         
         if not vk:
             if self._redis:
@@ -186,7 +180,7 @@ def get_key_store(db: Session = None, redis_client=None) -> KeyStore:
     """
     dev_mode = os.getenv("DEV_MODE", "false").lower() in ("true", "1", "yes")
     pepper = os.getenv("TALOS_KEY_PEPPER")
-    pepper_id = os.getenv("TALOS_PEPPER_ID", "v1")
+    pepper_id = os.getenv("TALOS_PEPPER_ID", "p1")
     
     if not dev_mode:
         if not pepper:

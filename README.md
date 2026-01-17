@@ -4,13 +4,16 @@ Unified LLM Inference + MCP Tool Gateway with RBAC and Audit.
 
 ## Features
 
+- **Multi-Region Support**: Single-primary, multi-region read with automatic replica fallback
+- **Advanced Upstreams**: Native support for Ollama (local/cloud) with API key rotation
 - **LLM Inference**: OpenAI-compatible `/v1/chat/completions`
 - **MCP Discovery**: Dynamic tool discovery and invocation
-- **RBAC**: Deny-by-default admin control plane
+- **RBAC**: Deny-by-default admin control plane with wildcard scope support
 - **Virtual Keys**: Unified auth for data plane
 - **TGA Capabilities**: Cryptographically signed tool authorization (JWS/EdDSA)
-- **Rate Limiting**: Token bucket per key/team
-- **Audit**: Event emission for all operations
+- **Secrets Encryption**: AES-GCM envelope encryption for all upstream credentials
+- **Rate Limiting**: Distributed token bucket (Redis) per key/team
+- **Audit**: Deterministic hash-chained event logs for all operations
 
 ## Quick Start
 
@@ -52,9 +55,12 @@ Environment variables:
 
 | Variable                    | Default                                         | Description                                      |
 | --------------------------- | ----------------------------------------------- | ------------------------------------------------ |
-| `DATABASE_URL`              | `postgresql://talos:talos@localhost:5432/talos` | Postgres                                         |
-| `REDIS_URL`                 | `redis://localhost:6379/0`                      | Redis                                            |
-| `MASTER_KEY`                | (required in prod)                              | Encryption key                                   |
+| `DATABASE_WRITE_URL`        | `postgresql://talos:talos@localhost:5432/talos` | Primary DB for mutations                         |
+| `DATABASE_READ_URL`         | (defaults to write URL)                         | Local replica for eventual consistency reads     |
+| `REGION_ID`                 | `local`                                         | Deployment region identifier                     |
+| `REDIS_URL`                 | `redis://localhost:6379/0`                      | Redis for rate limiting and caching              |
+| `TALOS_MASTER_KEY`          | (required in prod)                              | AEAD Master Key for Secret Storage (32-byte hex) |
+| `TALOS_KEK_ID`              | `v1`                                            | Key version for rotation                         |
 | `TGA_SUPERVISOR_PUBLIC_KEY` | (optional)                                      | Ed25519 public key for TGA capability validation |
 
 ## Architecture

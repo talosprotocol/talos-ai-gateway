@@ -10,10 +10,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies
+# Install python dependencies
 COPY pyproject.toml .
-# Note: If talos-sdk-py is a dependency, it should be installed here or in production stage
-# For monorepo builds, we assume pre-installation or requirements handling external to this specific file
-# if strictly isolated.
+# Monorepo: Copy local SDK
+COPY talos-sdk-copy/ talos-sdk-copy/
+RUN pip install ./talos-sdk-copy
 RUN pip install --no-cache-dir .
 
 # ==========================================
@@ -50,6 +51,7 @@ COPY app/ app/
 COPY alembic/ alembic/
 COPY alembic.ini .
 COPY scripts/ scripts/
+COPY gateway_surface.json gateway_surface.json
 
 # Set permissions
 RUN chown -R talos:talos /app

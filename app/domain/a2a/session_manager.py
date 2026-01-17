@@ -17,18 +17,20 @@ logger = logging.getLogger(__name__)
 A2A_SESSION_DEFAULT_TTL = 86400  # 24 hours
 
 class A2ASessionManager:
-    def __init__(self, db: Session):
-        self.db = db
+    # Phase 12: Accept Split DB
+    def __init__(self, write_db: Session, read_db: Session = None):
+        self.write_db = write_db
+        # If read_db not provided (e.g. unit tests not updated), default to write_db
+        self.read_db = read_db if read_db else write_db
 
     def _advisory_lock(self, session_id: str) -> None:
         """Acquire transaction-scoped advisory lock for single-writer concurrency.
         
-        Uses pg_try_advisory_xact_lock for deterministic failure instead of blocking.
-        Raises ValueError with A2A_LOCK_CONTENTION if lock cannot be acquired.
+        Uses pg_try_advisory_xact_lock on WRITE DB.
         """
         # Deterministic int64 hash for lock ID
         lock_id = int(hashlib.sha256(session_id.encode()).hexdigest()[:15], 16)
-        result = self.db.execute(
+        result = self.write_db.execute(
             text("SELECT pg_try_advisory_xact_lock(:id) AS acquired"),
             {"id": lock_id}
         ).fetchone()
@@ -36,8 +38,8 @@ class A2ASessionManager:
             raise ValueError("A2A_LOCK_CONTENTION")
 
     def _append_event(self, session_id: str, event_type: str, actor_id: str, event_data: dict, prev_digest: Optional[str] = None) -> A2ASessionEvent:
-        # Determine sequence
-        last_event = self.db.query(A2ASessionEvent).filter(
+        # Determine sequence - MUST use WRITE DB for strong consistency during append
+        last_event = self.write_db.query(A2ASessionEvent).filter(
             A2ASessionEvent.session_id == session_id
         ).order_by(A2ASessionEvent.seq.desc()).first()
         
@@ -83,7 +85,7 @@ class A2ASessionManager:
             ts=ts,
             actor_id=actor_id
         )
-        self.db.add(event_obj)
+        self.write_db.add(event_obj)
         return event_obj
 
     def create_session(self, initiator_id: str, req: SessionCreateRequest) -> A2ASession:
@@ -91,7 +93,7 @@ class A2ASessionManager:
         
         expires_at = req.expires_at or (datetime.utcnow() + timedelta(seconds=A2A_SESSION_DEFAULT_TTL))
         
-        # Create Projection
+        # Create Projection on WRITE DB
         session = A2ASession(
             session_id=session_id,
             state="pending",
@@ -102,8 +104,8 @@ class A2ASessionManager:
             expires_at=expires_at
         )
         
-        self.db.add(session)
-        self.db.flush()
+        self.write_db.add(session)
+        self.write_db.flush()
         
         # Append session_opened event
         self._append_event(session_id, "session_opened", initiator_id, {})
@@ -111,7 +113,8 @@ class A2ASessionManager:
         return session
 
     def get_session(self, session_id: str) -> Optional[A2ASession]:
-        return self.db.query(A2ASession).filter(A2ASession.session_id == session_id).first()
+        # STRONG READ: Must use WRITE_DB for single session fetch by ID
+        return self.write_db.query(A2ASession).filter(A2ASession.session_id == session_id).first()
 
     def accept_session(self, session_id: str, responder_id: str, req: SessionAcceptRequest) -> A2ASession:
         self._advisory_lock(session_id)
