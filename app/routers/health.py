@@ -1,8 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from app.adapters.postgres.session import get_db
-from app.dependencies import get_redis_client
+from app.dependencies import get_redis_client, get_read_db
 import logging
 
 router = APIRouter()
@@ -14,7 +13,7 @@ async def liveness():
     return {"status": "ok", "checks": {"api": "ok"}}
 
 @router.get("/health/ready")
-async def readiness(db: Session = Depends(get_db)):
+async def readiness(db: Session = Depends(get_read_db)):
     """Readiness probe: Dependencies connected."""
     health = {"status": "ok", "checks": {}}
     

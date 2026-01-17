@@ -217,17 +217,19 @@ async def chat_completions(
         })
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         latency_ms = int((time.time() - start_time) * 1000)
         record_usage(usage_store, auth, model_group_id, "error", latency_ms)
         audit(audit_store, "invoke_result", "llm", auth.key_id, model_group_id, "error", error_code="INTERNAL", details={"message": str(e)})
         raise HTTPException(status_code=500, detail={
-            "error": {"code": "INTERNAL", "message": "Internal gateway error"}
+            "error": {"code": "INTERNAL", "message": f"Internal gateway error: {str(e)}"}
         })
 
 
 @router.get("/models")
 async def list_models(
-    auth: AuthContext = Depends(require_scope("llm.invoke")),
+    auth: AuthContext = Depends(require_scope("llm.read")),
     store: ModelGroupStore = Depends(get_model_group_store)
 ):
     """List allowed models for the authenticated key."""

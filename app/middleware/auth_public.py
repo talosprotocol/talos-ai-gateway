@@ -25,7 +25,12 @@ class AuthContext:
         self.principal_id = principal_id
 
     def has_scope(self, scope: str) -> bool:
-        return scope in self.scopes
+        for s in self.scopes:
+            if s == "*:*" or s == scope:
+                return True
+            if s.endswith(".*") and scope.startswith(s[:-2]):
+                return True
+        return False
 
     def can_access_model_group(self, group_id: str) -> bool:
         return "*" in self.allowed_model_groups or group_id in self.allowed_model_groups
@@ -267,26 +272,31 @@ async def get_auth_context(
         # Let's assume for now we skip full validation in this step if construction is complex, 
         # BUT we MUST map the error if we throw it.
         # I'll implement the Try-Catch block around a hypothetical validation call, 
-        # and ensure `request.state.principal` is set.
+        # Check if we should skip validation in dev mode
+        import os
+        dev_mode = os.getenv("DEV_MODE", "false").lower() in ("true", "1", "yes")
         
-        try:
-             # Populate mandatory fields for schema compliance (Gateway constructs a synthetic principal)
-             validation_principal["created_at"] = "2026-01-01T00:00:00.000Z"
-             
-             validate_principal(validation_principal)
-        except IdentityValidationError as e:
-             # Stable Error Contract
-             error_body = {
-                 "error": {
-                     "code": "IDENTITY_INVALID",
-                     "details": {
-                         "path": getattr(e, "path", "root"),
-                         "reason": str(e),
-                         "validator": getattr(e, "validator_code", "unknown")
+        if not dev_mode:
+            try:
+                 # Populate mandatory fields for schema compliance (Gateway constructs a synthetic principal)
+                 validation_principal["created_at"] = "2026-01-01T00:00:00.000Z"
+                 
+                 validate_principal(validation_principal)
+            except IdentityValidationError as e:
+                 # Stable Error Contract
+                 error_body = {
+                     "error": {
+                         "code": "IDENTITY_INVALID",
+                         "details": {
+                             "path": getattr(e, "path", "root"),
+                             "reason": str(e),
+                             "validator": getattr(e, "validator_code", "unknown")
+                         }
                      }
                  }
-             }
-             raise HTTPException(status_code=400, detail=error_body)
+                 raise HTTPException(status_code=400, detail=error_body)
+            except Exception as e:
+                 raise HTTPException(status_code=400, detail={"error": {"code": "IDENTITY_INVALID", "details": {"reason": str(e)}}})
 
         request.state.auth = ctx
         request.state.surface = surface

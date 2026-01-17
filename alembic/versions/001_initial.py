@@ -37,7 +37,7 @@ def upgrade() -> None:
     op.create_table('virtual_keys',
         sa.Column('id', sa.String(255), primary_key=True),
         sa.Column('team_id', sa.String(255), sa.ForeignKey('teams.id'), nullable=False),
-        sa.Column('key_hash', sa.String(64), nullable=False, unique=True, index=True),
+        sa.Column('key_hash', sa.String(128), nullable=False, unique=True, index=True),
         sa.Column('scopes', sa.JSON(), nullable=True),
         sa.Column('allowed_model_groups', sa.JSON(), nullable=True),
         sa.Column('allowed_mcp_servers', sa.JSON(), nullable=True),
@@ -163,9 +163,13 @@ def upgrade() -> None:
     # Secrets (name PK)
     op.create_table('secrets',
         sa.Column('name', sa.String(255), primary_key=True),
-        sa.Column('encrypted_value', sa.Text(), nullable=False),
+        sa.Column('ciphertext', sa.Text(), nullable=False),
+        sa.Column('nonce', sa.String(32), nullable=False),
+        sa.Column('tag', sa.String(32), nullable=False),
+        sa.Column('key_id', sa.String(64), nullable=False),
         sa.Column('version', sa.Integer(), nullable=False, server_default='1'),
         sa.Column('created_at', sa.DateTime(), nullable=True),
+        sa.Column('rotated_at', sa.DateTime(), nullable=True),
         sa.Column('updated_at', sa.DateTime(), nullable=True),
     )
 
@@ -178,8 +182,11 @@ def upgrade() -> None:
         sa.Column('resource_type', sa.String(50), nullable=False),
         sa.Column('resource_id', sa.String(255), nullable=True),
         sa.Column('request_id', sa.String(36), nullable=True),
+        sa.Column('schema_id', sa.String(100), default='talos.audit.v1'),
+        sa.Column('schema_version', sa.Integer(), default=1),
         sa.Column('details', sa.JSON(), nullable=True),
         sa.Column('status', sa.String(20), nullable=True),
+        sa.Column('event_hash', sa.String(64), index=True),
     )
 
     # Config Versions
