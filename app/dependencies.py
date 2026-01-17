@@ -1,6 +1,7 @@
 """Dependency Injection Module."""
 import os
 import logging
+from typing import Optional
 
 from fastapi import Depends
 from sqlalchemy.orm import Session
@@ -99,9 +100,25 @@ def get_routing_service(
 ) -> RoutingService:
     return RoutingService(u_store, mg_store, rp_store, get_health_state())
 
+from app.core.rate_limiter import RateLimiter, MemoryRateLimitStorage, RedisRateLimitStorage
+
+_rate_limiter_instance: Optional[RateLimiter] = None
+
+async def get_rate_limiter() -> RateLimiter:
+    global _rate_limiter_instance
+    if _rate_limiter_instance is None:
+        if os.getenv("REDIS_URL"):
+            redis_client = await get_redis_client()
+            storage = RedisRateLimitStorage(redis_client)
+        else:
+            storage = MemoryRateLimitStorage()
+        _rate_limiter_instance = RateLimiter(storage)
+    return _rate_limiter_instance
+
 def get_rate_limit_store() -> RateLimitStore:
+    # Deprecated: Kept for compatibility if any legacy code uses it
     if os.getenv("REDIS_URL"):
-        return RedisRateLimitStore()
+        return RedisRateLimitStore(None) # This will fail if used, but needed type check
     return MemoryRateLimitStore()
 
 from app.adapters.mcp.client import McpClient

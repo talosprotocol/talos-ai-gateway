@@ -24,6 +24,8 @@ async def close_redis():
         await _redis_client.close()
         _redis_client = None
 
+close_redis_client = close_redis
+
 
 # Rate Limit Keys
 def rate_limit_key(team_id: str, key_id: str, surface: str, target: str) -> str:
