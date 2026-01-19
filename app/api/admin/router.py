@@ -10,7 +10,8 @@ import json
 
 from app.dependencies import (
     get_upstream_store, get_model_group_store, get_secret_store, 
-    get_mcp_store, get_audit_store, get_routing_policy_store, get_usage_store
+    get_mcp_store, get_audit_store, get_routing_policy_store, get_usage_store,
+    get_read_audit_store, get_read_usage_store, get_read_mcp_store, get_read_secret_store
 )
 from app.domain.interfaces import (
     UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, 
@@ -426,7 +427,7 @@ async def get_llm_health(
 @router.get("/mcp/servers")
 async def list_mcp_servers(
     principal: dict = Depends(require_permission("mcp.read")),
-    store: McpStore = Depends(get_mcp_store)
+    store: McpStore = Depends(get_read_mcp_store)
 ):
     """List all MCP servers."""
     return {"servers": store.list_servers()}
@@ -507,7 +508,7 @@ async def delete_mcp_server(
 async def list_mcp_policies(
     team_id: Optional[str] = None, 
     principal: dict = Depends(require_permission("mcp.read")),
-    store: McpStore = Depends(get_mcp_store)
+    store: McpStore = Depends(get_read_mcp_store)
 ):
     if not team_id:
         return {"policies": []} # Required support listing all? Store might need impl
@@ -554,7 +555,7 @@ async def delete_mcp_policy(
 @router.get("/secrets")
 async def list_secrets(
     principal: dict = Depends(require_permission("keys.read")),
-    store: SecretStore = Depends(get_secret_store)
+    store: SecretStore = Depends(get_read_secret_store)
 ):
     return {"secrets": store.list_secrets()}
 
@@ -689,7 +690,7 @@ async def reload_config(
 async def get_stats(
     window_hours: int = 24,
     principal: RbacContext = Depends(require_permission("audit.read")),
-    store: UsageStore = Depends(get_usage_store)
+    store: UsageStore = Depends(get_read_usage_store)
 ):
     """Get aggregated usage stats for the dashboard."""
     return store.get_stats(window_hours)
@@ -699,7 +700,7 @@ async def get_stats(
 async def get_audit_stats(
     window_hours: int = 24,
     principal: RbacContext = Depends(require_permission("audit.read")),
-    store: AuditStore = Depends(get_audit_store)
+    store: AuditStore = Depends(get_read_audit_store)
 ):
     """Get aggregated audit stats (denials, volume series) for the dashboard."""
     return store.get_dashboard_stats(window_hours)

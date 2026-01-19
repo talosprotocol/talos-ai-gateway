@@ -130,6 +130,13 @@ def get_secret_store(
     if DEV_MODE: return SecretJsonStore()
     return PostgresSecretStore(db, kek)
 
+def get_read_secret_store(
+    db: Session = Depends(get_read_db),
+    kek: KekProvider = Depends(get_kek_provider)
+) -> SecretStore:
+    if DEV_MODE: return SecretJsonStore()
+    return PostgresSecretStore(db, kek)
+
 from app.domain.secrets.manager import SecretsManager
 def get_secrets_manager(
     store: SecretStore = Depends(get_secret_store),
@@ -141,7 +148,15 @@ def get_mcp_store(db: Session = Depends(get_write_db)) -> McpStore:
     if DEV_MODE: return McpJsonStore()
     return PostgresMcpStore(db)
 
+def get_read_mcp_store(db: Session = Depends(get_read_db)) -> McpStore:
+    if DEV_MODE: return McpJsonStore()
+    return PostgresMcpStore(db)
+
 def get_audit_store(db: Session = Depends(get_write_db)) -> AuditStore:
+    if DEV_MODE: return AuditJsonStore()
+    return PostgresAuditStore(db)
+
+def get_read_audit_store(db: Session = Depends(get_read_db)) -> AuditStore:
     if DEV_MODE: return AuditJsonStore()
     return PostgresAuditStore(db)
 
@@ -152,6 +167,10 @@ from app.adapters.postgres.stores import PostgresUsageStore
 from app.adapters.json_store.stores import UsageJsonStore
 
 def get_usage_store(db: Session = Depends(get_write_db)) -> UsageStore:
+    if DEV_MODE: return UsageJsonStore()
+    return PostgresUsageStore(db)
+
+def get_read_usage_store(db: Session = Depends(get_read_db)) -> UsageStore:
     if DEV_MODE: return UsageJsonStore()
     return PostgresUsageStore(db)
 
