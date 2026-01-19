@@ -4,6 +4,7 @@ Implements crash-safe TGA execution with Moore machine state transitions.
 Recovery reconstructs state from append-only log without double-execution.
 """
 import hashlib
+from app.utils.id import uuid7
 import json
 import logging
 from dataclasses import dataclass
@@ -362,7 +363,7 @@ class TgaRuntime:
         """Generate a mock UUID v7 for testing."""
         import uuid
         # Use UUID4 as placeholder (production would use proper UUIDv7)
-        return str(uuid.uuid4()).replace("-", "")[:36]
+        return uuid7().replace("-", "")[:36]
     
     def _create_tool_call(
         self, 
@@ -372,7 +373,7 @@ class TgaRuntime:
         """Create a tool_call artifact from plan and decision."""
         import uuid
         return {
-            "tool_call_id": str(uuid.uuid4()),
+            "tool_call_id": uuid7(),
             "trace_id": plan.trace_id,
             "plan_id": plan.plan_id,
             "capability": decision.get("capability", {}),

@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional
 import os
 
 # Timeout configuration
-DEFAULT_TIMEOUT = 30.0
+DEFAULT_TIMEOUT = 180.0
 OLLAMA_DEFAULT_HOST = "http://localhost:11434/v1"
 
 

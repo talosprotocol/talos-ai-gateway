@@ -9,9 +9,10 @@ from app.dependencies import get_rate_limiter
 class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(self, app: ASGIApp):
         super().__init__(app)
-        # Default limits - should be moved to config
-        self.auth_limit = "100/60" # 100 req/min for authenticated
-        self.anon_limit = "10/60"  # 10 req/min for anonymous
+        # Default limits from Env (Locked Spec)
+        import os
+        self.default_rps = int(os.getenv("RATE_LIMIT_DEFAULT_RPS", "5"))
+        self.default_burst = int(os.getenv("RATE_LIMIT_DEFAULT_BURST", "10"))
 
     async def dispatch(self, request: Request, call_next):
         # 1. Skip health checks or metrics if needed (optional)
@@ -31,21 +32,27 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Wait, Phase 7 implemented `RBACMiddleware`. Let's assume RBAC/Auth Middleware runs before.
         # If RBAC middleware does authentication, then `request.state.principal` might be available.
         
+        
+        # Use defaults (TODO: Look up Surface Registry overrides)
+        rps = self.default_rps
+        burst = self.default_burst
+        
         principal = getattr(request.state, "principal", None)
         
         if principal:
             key = f"auth:{principal}"
-            limit = self.auth_limit
+            # Logic to fetch per-user override could be here
         else:
-            # Fallback to IP
+            # Fallback to IP (Hashed per Locked Spec)
+            import hashlib
             ip = request.client.host if request.client else "unknown"
-            key = f"ip:{ip}"
-            limit = self.anon_limit
+            ip_hash = hashlib.sha256(ip.encode()).hexdigest()
+            key = f"ip:{ip_hash}"
 
         # 3. Check Limit
         limiter = await get_rate_limiter()
         try:
-            allowed, headers = await limiter.check(key, limit)
+            allowed, headers = await limiter.check_throughput(key, float(rps), burst)
         except RuntimeError as e:
             # Handle runtime failures (e.g. Redis down)
             # The lower level already checks MODE for fail-open logic.

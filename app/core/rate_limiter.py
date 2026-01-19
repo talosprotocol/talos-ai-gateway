@@ -143,7 +143,29 @@ class RateLimiter:
                 "X-RateLimit-Reset": str(int(time.time() + reset_after))
             }
             
+            if not allowed:
+                 import math
+                 headers["Retry-After"] = str(int(math.ceil(reset_after)))
+            
             return allowed, headers
         except ValueError:
             logger.error(f"Invalid limit format: {limit}")
             return True, {}
+
+    async def check_throughput(self, key: str, rps: float, burst: int) -> Tuple[bool, dict]:
+        """
+        Check rate limit using RPS and Burst directly.
+        """
+        allowed, remaining, reset_after = await self.storage.consume(key, burst, rps)
+        
+        headers = {
+            "X-RateLimit-Limit": str(burst),
+            "X-RateLimit-Remaining": str(remaining),
+            "X-RateLimit-Reset": str(int(time.time() + reset_after))
+        }
+        
+        if not allowed:
+             import math
+             headers["Retry-After"] = str(int(math.ceil(reset_after)))
+        
+        return allowed, headers

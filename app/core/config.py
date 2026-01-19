@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     
     # Cache
     REDIS_URL: str = "redis://localhost:6379/0"
+    OLLAMA_URL: str = "http://localhost:11434"
     
     # Observability
     TRACING_ENABLED: bool = False

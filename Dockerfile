@@ -11,7 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install python dependencies
 # Install python dependencies
-COPY pyproject.toml .
+# Install python dependencies
+COPY services/ai-gateway/pyproject.toml .
 # Monorepo: Copy local SDK
 COPY talos-sdk-copy/ talos-sdk-copy/
 RUN pip install ./talos-sdk-copy
@@ -47,11 +48,12 @@ COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/pytho
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy application code
-COPY app/ app/
-COPY alembic/ alembic/
-COPY alembic.ini .
-COPY scripts/ scripts/
-COPY gateway_surface.json gateway_surface.json
+COPY services/ai-gateway/app/ app/
+COPY services/ai-gateway/alembic/ alembic/
+COPY services/ai-gateway/alembic.ini .
+COPY services/ai-gateway/scripts/ scripts/
+COPY services/ai-gateway/config/ config/
+COPY services/ai-gateway/gateway_surface.json gateway_surface.json
 
 # Set permissions
 RUN chown -R talos:talos /app
