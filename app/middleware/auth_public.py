@@ -1,6 +1,6 @@
 
 from fastapi import Request, Depends, Header, HTTPException
-from typing import Optional
+from typing import Optional, Dict, Any
 from app.dependencies import get_key_store, get_attestation_verifier, get_principal_store, get_surface_registry, get_audit_logger, get_policy_engine
 from app.adapters.postgres.key_store import KeyStore
 from app.middleware.attestation_http import AttestationVerifier, AttestationError
@@ -15,7 +15,16 @@ class AuthContext:
     """Authentication context for requests."""
     def __init__(self, key_id: str, team_id: str, org_id: str, scopes: list, 
                  allowed_model_groups: list, allowed_mcp_servers: list,
-                 principal_id: Optional[str] = None):
+                 principal_id: Optional[str] = None,
+                 # Phase 15: Budget Context
+                 budget_mode: str = "off",
+                 team_budget_mode: str = "off",
+                 overdraft_usd: str = "0",
+                 team_overdraft_usd: str = "0",
+                 max_tokens_default: Optional[int] = None,
+                 team_max_tokens_default: Optional[int] = None,
+                 budget_metadata: Optional[Dict[str, Any]] = None,
+                 team_budget_metadata: Optional[Dict[str, Any]] = None):
         self.key_id = key_id
         self.team_id = team_id
         self.org_id = org_id
@@ -23,6 +32,17 @@ class AuthContext:
         self.allowed_model_groups = allowed_model_groups
         self.allowed_mcp_servers = allowed_mcp_servers
         self.principal_id = principal_id
+        
+        # Budget
+        self.budget_mode = budget_mode
+        self.team_budget_mode = team_budget_mode
+        self.overdraft_usd = overdraft_usd
+        self.team_overdraft_usd = team_overdraft_usd
+        self.max_tokens_default = max_tokens_default
+        self.team_max_tokens_default = team_max_tokens_default
+        self.budget_metadata = budget_metadata or {}
+        self.team_budget_metadata = team_budget_metadata or {}
+
 
     def has_scope(self, scope: str) -> bool:
         for s in self.scopes:
@@ -233,7 +253,16 @@ async def get_auth_context(
             scopes=key_data.scopes,
             allowed_model_groups=key_data.allowed_model_groups,
             allowed_mcp_servers=key_data.allowed_mcp_servers,
-            principal_id=principal_id
+            principal_id=principal_id,
+            # Pass budget data
+            budget_mode=key_data.budget_mode,
+            team_budget_mode=key_data.team_budget_mode,
+            overdraft_usd=key_data.overdraft_usd,
+            team_overdraft_usd=key_data.team_overdraft_usd,
+            max_tokens_default=key_data.max_tokens_default,
+            team_max_tokens_default=key_data.team_max_tokens_default,
+            budget_metadata=key_data.budget,
+            team_budget_metadata=key_data.team_budget
         )
         
         # 4. Construct & Validate Principal for SDK Hardening

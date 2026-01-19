@@ -1,5 +1,5 @@
 """SQLAlchemy Models for Control Plane."""
-from sqlalchemy import Column, String, JSON, Integer, DateTime, Boolean, ForeignKey, Index, CheckConstraint, Float, Text, UniqueConstraint, desc
+from sqlalchemy import Column, String, JSON, Integer, DateTime, Boolean, ForeignKey, Index, CheckConstraint, Float, Text, UniqueConstraint, desc, Numeric, Date
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime
 
@@ -28,6 +28,13 @@ class Team(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
+    # Phase 15: Budget & Metadata
+    budget_mode = Column(String(20), default="off", nullable=False)
+    overdraft_usd = Column(Numeric(18, 8), default=0, nullable=False)
+    max_tokens_default = Column(Integer, nullable=True)
+    budget = Column(JSON, default=dict) # Config Metadata
+    
+    
     org = relationship("Org", back_populates="teams")
     keys = relationship("VirtualKey", back_populates="team")
 
@@ -43,7 +50,13 @@ class VirtualKey(Base):
     allowed_model_groups = Column(JSON, default=list)
     allowed_mcp_servers = Column(JSON, default=list)
     rate_limits = Column(JSON, default=dict)
-    budget = Column(JSON, default=dict)
+    
+    # Phase 15: Budget
+    budget_mode = Column(String(20), default="off", nullable=False)
+    overdraft_usd = Column(Numeric(18, 8), default=0, nullable=False)
+    max_tokens_default = Column(Integer, nullable=True)
+    budget = Column(JSON, default=dict) # Config Metadata
+    
     expires_at = Column(DateTime, nullable=True)
     revoked = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -188,7 +201,9 @@ class UsageEvent(Base):
     target = Column(String(100))  # model_group_id or mcp_server_id
     input_tokens = Column(Integer, default=0)
     output_tokens = Column(Integer, default=0)
-    cost_usd = Column(Float, default=0.0)
+    cost_usd = Column(Numeric(18, 8), default=0.0) # Phase 15: Numeric
+    pricing_version = Column(String(36))
+    token_count_source = Column(String(20)) # provider_reported, estimated, unknown
     latency_ms = Column(Integer, default=0)
     status = Column(String(20))  # success, denied, error
 
@@ -197,15 +212,31 @@ class Secret(Base):
     """Secret storage with AES-GCM envelope encryption."""
     __tablename__ = "secrets"
     
-    name = Column(String(255), primary_key=True)
-    ciphertext = Column(Text, nullable=False)  # Base64-encoded encrypted value
-    nonce = Column(String(32), nullable=False)  # Base64-encoded 96-bit nonce
-    tag = Column(String(32), nullable=False)    # Base64-encoded 128-bit authentication tag
-    key_id = Column(String(64), nullable=False)  # KEK version identifier
+    id = Column(String(36), primary_key=True)  # UUID7 stable identifier
+    name = Column(String(255), nullable=False, unique=True, index=True)
+    ciphertext = Column(Text, nullable=False)  # Base64URL-encoded (v1)
+    nonce = Column(String(64), nullable=False)  # Base64URL-encoded (v1)
+    tag = Column(String(64), nullable=False)    # Base64URL-encoded (v1)
+    aad = Column(Text, nullable=True)           # Optional bound context (b64u)
+    key_id = Column(String(64), nullable=False, index=True)  # KEK version identifier
     version = Column(Integer, default=1, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     rotated_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class RotationOperation(Base):
+    """Tracks status of bulk secret rotation jobs."""
+    __tablename__ = "rotation_operations"
+    
+    id = Column(String(36), primary_key=True)  # UUID7
+    status = Column(String(20), nullable=False) # running, completed, failed
+    target_kek_id = Column(String(64), nullable=False)
+    cursor = Column(String(255), nullable=True) # Last successfully rotated secret name
+    stats = Column(JSON, default=dict)          # {scanned, rotated, failed}
+    started_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    last_error = Column(Text, nullable=True)
 
 
 class AuditEvent(Base):
@@ -218,7 +249,7 @@ class AuditEvent(Base):
     action = Column(String(50), nullable=False)  # create, update, delete
     resource_type = Column(String(50), nullable=False)
     resource_id = Column(String(255))
-    request_id = Column(String(36), index=True)
+    request_id = Column(String(36), index=True, unique=True) # Phase 15: Unique
     schema_id = Column(String(100), default="talos.audit.v1")
     schema_version = Column(Integer, default=1)
     details = Column(JSON, default=dict)
@@ -380,9 +411,72 @@ class SecretsKeyring(Base):
     version = Column(Integer, nullable=False, default=1)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # We might store the KEK material here encrypted by Master Key (DEK), 
-    # OR reference external KMS. For Phase 12 MVP, we assume KEK material 
-    # is implicit or managed by LocalKekProvider, and this table just tracks VERSIONS.
-    # But usually this table WOULD contain the actual KEK (wrapped).
+    # but usually this table WOULD contain the actual KEK (wrapped).
     # Since LocalKekProvider uses env var MASTER_KEY, we will just track metadata here.
+
+
+# Phase 15: Budget Ledger Models
+
+class BudgetScope(Base):
+    """Budget Scope Ledger (Team or VirtualKey)."""
+    __tablename__ = "budget_scopes"
+    
+    id = Column(String(36), primary_key=True)
+    scope_type = Column(String(20), nullable=False)  # team, virtual_key
+    scope_id = Column(String(255), nullable=False)
+    period_start = Column(Date, nullable=False)
+    
+    limit_usd = Column(Numeric(18, 8), default=0, nullable=False)
+    used_usd = Column(Numeric(18, 8), default=0, nullable=False)
+    reserved_usd = Column(Numeric(18, 8), default=0, nullable=False)
+    overdraft_usd = Column(Numeric(18, 8), default=0, nullable=False)
+    last_alert_at = Column(DateTime, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("scope_type", "scope_id", "period_start", name="uq_budget_scope_period"),
+        CheckConstraint("reserved_usd >= 0", name="check_reserved_usd_pos"),
+        CheckConstraint("used_usd >= 0", name="check_used_usd_pos"),
+        CheckConstraint("limit_usd >= 0", name="check_limit_usd_pos"),
+        CheckConstraint("overdraft_usd >= 0", name="check_overdraft_usd_pos"),
+        Index("idx_budget_scope_lookup", "scope_type", "scope_id"),
+    )
+
+
+class BudgetReservation(Base):
+    """Active budget reservation."""
+    __tablename__ = "budget_reservations"
+    
+    id = Column(String(36), primary_key=True)
+    request_id = Column(String(36), unique=True, nullable=False)
+    scope_team_id = Column(String(255), nullable=False)
+    scope_key_id = Column(String(255), nullable=False)
+    reserved_usd = Column(Numeric(18, 8), nullable=False)
+    status = Column(String(20), nullable=False) # active, settled, released
+    expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class UsageRollupDaily(Base):
+    """Daily usage rollup for reporting and cache warming."""
+    __tablename__ = "usage_rollups_daily"
+    
+    id = Column(String(36), primary_key=True)
+    day = Column(Date, nullable=False)
+    team_id = Column(String(255), nullable=False, index=True)
+    key_id = Column(String(255), nullable=False, index=True)
+    
+    used_usd = Column(Numeric(18, 8), default=0, nullable=False)
+    input_tokens = Column(Integer, default=0, nullable=False)
+    output_tokens = Column(Integer, default=0, nullable=False)
+    request_count = Column(Integer, default=0, nullable=False)
+    
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("day", "team_id", "key_id", name="uq_usage_rollup_day"),
+    )
+
 

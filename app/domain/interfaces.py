@@ -48,9 +48,13 @@ class SecretStore(ABC):
     @abstractmethod
     def get_secret_value(self, name: str) -> Optional[str]: pass
     @abstractmethod
-    def set_secret(self, name: str, value: str) -> None: pass
+    def set_secret(self, name: str, value: str, expected_kek_id: Optional[str] = None) -> bool: pass
     @abstractmethod
     def delete_secret(self, name: str) -> bool: pass
+    @abstractmethod
+    def get_stale_counts(self) -> Dict[str, int]: pass
+    @abstractmethod
+    def get_secrets_batch(self, batch_size: int, cursor: Optional[str] = None) -> List[Dict[str, Any]]: pass
 
 class McpStore(ABC):
     @abstractmethod
@@ -137,3 +141,13 @@ class TaskStore(ABC):
     def get_task(self, task_id: str, team_id: str) -> Optional[A2ATaskRecord]: pass
     @abstractmethod
     def delete_expired_tasks(self, cutoff_date: datetime) -> List[str]: pass
+
+class RotationOperationStore(ABC):
+    @abstractmethod
+    def create_operation(self, op: Dict[str, Any]) -> None: pass
+    @abstractmethod
+    def get_operation(self, op_id: str) -> Optional[Dict[str, Any]]: pass
+    @abstractmethod
+    def update_operation(self, op_id: str, updates: Dict[str, Any]) -> None: pass
+    @abstractmethod
+    def get_active_operation(self) -> Optional[Dict[str, Any]]: pass

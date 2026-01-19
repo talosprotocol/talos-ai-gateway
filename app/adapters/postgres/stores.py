@@ -6,10 +6,13 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import desc
 from app.utils.id import uuid7
 import json
-from app.domain.interfaces import UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, RoutingPolicyStore, PrincipalStore
+from app.domain.interfaces import (
+    UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, 
+    RoutingPolicyStore, PrincipalStore, RotationOperationStore
+)
 from app.adapters.postgres.models import (
     LlmUpstream, ModelGroup, Secret, McpServer, McpPolicy, AuditEvent, 
-    Deployment, Principal, RoutingPolicy, UsageEvent
+    Deployment, Principal, RoutingPolicy, UsageEvent, RotationOperation
 )
 
 logger = logging.getLogger(__name__)
@@ -387,4 +390,30 @@ class PostgresPrincipalStore(PrincipalStore):
 
     def get_principal(self, principal_id: str) -> Optional[Dict[str, Any]]:
         obj = self.db.query(Principal).filter(Principal.id == principal_id).first()
+        return to_dict(obj)
+
+
+class PostgresRotationStore(RotationOperationStore):
+    def __init__(self, db: Session):
+        self.db = db
+
+    def create_operation(self, op: Dict[str, Any]) -> None:
+        obj = RotationOperation(**op)
+        self.db.add(obj)
+        self.db.commit()
+
+    def get_operation(self, op_id: str) -> Optional[Dict[str, Any]]:
+        obj = self.db.query(RotationOperation).filter(RotationOperation.id == op_id).first()
+        return to_dict(obj)
+
+    def update_operation(self, op_id: str, updates: Dict[str, Any]) -> None:
+        obj = self.db.query(RotationOperation).filter(RotationOperation.id == op_id).first()
+        if obj:
+            for k, v in updates.items():
+                if hasattr(obj, k):
+                    setattr(obj, k, v)
+            self.db.commit()
+
+    def get_active_operation(self) -> Optional[Dict[str, Any]]:
+        obj = self.db.query(RotationOperation).filter(RotationOperation.status == "running").first()
         return to_dict(obj)

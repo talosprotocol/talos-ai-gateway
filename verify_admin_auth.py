@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 sys.path.append(os.getcwd())
 
 from app.main import app
-from app.adapters.postgres.session import SessionLocal
+from app.dependencies import SessionLocal
 from app.adapters.postgres.models import Role, RoleBinding, Principal
 
 def seed_rbac():

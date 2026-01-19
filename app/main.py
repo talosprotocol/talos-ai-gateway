@@ -16,6 +16,7 @@ from app.api.a2a import agent_card
 import asyncio
 from app.jobs.retention import retention_worker
 from app.jobs.revocation import revocation_worker
+from app.jobs.rotation_worker import rotation_worker
 from app.logging_hardening import setup_logging_redaction
 
 # Initialize logging redaction filters early
@@ -27,6 +28,7 @@ async def lifespan(app: FastAPI):
     shutdown_event = asyncio.Event()
     worker_task = asyncio.create_task(retention_worker(shutdown_event))
     revoc_task = asyncio.create_task(revocation_worker(shutdown_event))
+    rotation_task = asyncio.create_task(rotation_worker(shutdown_event))
 
     # Phase 12: Migrations
     import os
@@ -114,6 +116,7 @@ async def lifespan(app: FastAPI):
         await asyncio.gather(
             asyncio.wait_for(worker_task, timeout=5.0),
             asyncio.wait_for(revoc_task, timeout=5.0),
+            asyncio.wait_for(rotation_task, timeout=5.0),
             return_exceptions=True
         )
     except asyncio.TimeoutError:

@@ -3,7 +3,7 @@ from fastapi import Header, HTTPException, Depends
 from typing import Optional, Set
 from dataclasses import dataclass
 
-from app.adapters.postgres.session import get_db
+from app.dependencies import get_db
 from app.adapters.postgres.models import RoleBinding, Role
 from sqlalchemy.orm import Session
 from app.domain.auth import get_admin_validator

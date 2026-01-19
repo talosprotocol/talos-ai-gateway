@@ -2,104 +2,273 @@
 import os
 import logging
 import time
+import threading
 from typing import Optional, Generator
+from dataclasses import dataclass, field
 
-from fastapi import Depends, Request, Response
+from fastapi import Depends, Request, Response, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# --- Database Connection Logic (Phase 12) ---
+# --- Phase 12: Multi-Region DB Routing (Hardened) ---
 
-# We use create_engine for global pool management
-_write_engine = create_engine(str(settings.DATABASE_WRITE_URL), pool_pre_ping=True, pool_size=10)
+# Engine creation with proper timeouts
+_connect_args = {
+    "connect_timeout": getattr(settings, "DATABASE_CONNECT_TIMEOUT_MS", 3000) // 1000,
+    "options": f"-c statement_timeout={getattr(settings, 'DATABASE_READ_TIMEOUT_MS', 1000)}"
+}
+
+_write_engine = create_engine(
+    str(settings.DATABASE_WRITE_URL), 
+    pool_pre_ping=True, 
+    pool_size=10,
+    pool_timeout=5
+)
+
 _read_engine = None
+_read_engine_is_distinct = False
 
-if settings.DATABASE_READ_URL and settings.DATABASE_READ_URL != settings.DATABASE_WRITE_URL:
+if settings.DATABASE_READ_URL and str(settings.DATABASE_READ_URL) != str(settings.DATABASE_WRITE_URL):
     try:
-        _read_engine = create_engine(str(settings.DATABASE_READ_URL), pool_pre_ping=True, pool_size=10)
-        logger.info(f"Initialized Read DB: {settings.DATABASE_READ_URL}")
+        _read_engine = create_engine(
+            str(settings.DATABASE_READ_URL), 
+            pool_pre_ping=True, 
+            pool_size=10,
+            pool_timeout=5,
+            connect_args=_connect_args
+        )
+        _read_engine_is_distinct = True
+        logger.info(f"Initialized distinct Read DB: {settings.DATABASE_READ_URL}")
     except Exception as e:
         logger.error(f"Failed to initialize Read DB engine: {e}")
+        _read_engine = _write_engine
 else:
-    _read_engine = _write_engine # Default to write (Primary)
+    _read_engine = _write_engine
 
-# Helper for standard get_db (Deprecated/Legacy)
-# We map get_db to get_write_db for backward compatibility with older stores
+
+# --- Circuit Breaker State (Concurrency-Safe) ---
+
+@dataclass
+class CircuitBreakerState:
+    """Thread-safe circuit breaker state."""
+    failures: int = 0
+    circuit_open_until: float = 0.0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    
+    failure_threshold: int = field(default_factory=lambda: getattr(settings, "READ_FAILURE_THRESHOLD", 3))
+    open_duration: float = field(default_factory=lambda: getattr(settings, "CIRCUIT_OPEN_DURATION_SECONDS", 30.0))
+
+    def record_failure(self) -> bool:
+        """Record a failure, return True if circuit just opened."""
+        with self.lock:
+            self.failures += 1
+            if self.failures >= self.failure_threshold:
+                self.circuit_open_until = time.monotonic() + self.open_duration
+                logger.warning(f"Circuit breaker OPEN until {self.open_duration}s from now")
+                return True
+            return False
+    
+    def record_success(self):
+        """Record success, reset failure count."""
+        with self.lock:
+            self.failures = 0
+    
+    def is_open(self) -> bool:
+        """Check if circuit is currently open."""
+        with self.lock:
+            if self.circuit_open_until > 0 and time.monotonic() < self.circuit_open_until:
+                return True
+            # Circuit closed, reset
+            if self.circuit_open_until > 0 and time.monotonic() >= self.circuit_open_until:
+                self.circuit_open_until = 0
+                self.failures = 0
+            return False
+
+# Module-level singleton (will be attached to app.state in lifespan for multi-worker safety)
+_circuit_breaker = CircuitBreakerState()
+
+
+# --- Allowlist for Replica Reads ---
+# Only these dependency functions are permitted to use replica reads.
+# Any endpoint not using these explicitly will use primary by default.
+REPLICA_READ_ALLOWLIST = frozenset([
+    "get_read_mcp_store",
+    "get_read_usage_store", 
+    "get_read_audit_store",
+    # Health readiness check - safe for replica
+    "readiness",
+])
+
+
+# --- Backward Compatibility Aliases ---
+# These exports allow existing code to import from dependencies without changes
+from sqlalchemy.orm import sessionmaker
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_write_engine)
+engine = _write_engine  # Alias for backward compatibility
+
+
+# --- Database Dependencies ---
+
 def get_db(request: Request = None) -> Generator[Session, None, None]:
     """Legacy dependency yielding a Write DB session."""
     with Session(_write_engine) as session:
         yield session
 
-# Phase 12: Split Dependencies
+
 def get_write_db() -> Generator[Optional[Session], None, None]:
     """Yields a session strictly from the Primary Write DB."""
+    session = None
     try:
-        with Session(_write_engine) as session:
-            yield session
+        session = Session(_write_engine)
+        yield session
     except Exception as e:
+        # If this is a logic error thrown FROM the endpoint, re-raise it
+        # If it's a connection error during start, we may handle it in DEV_MODE
+        if session and session.is_active:
+             # Exception likely came from the endpoint
+             raise
+        
         if not (settings.MODE == "dev" or os.getenv("DEV_MODE", "false").lower() == "true"):
             logger.error(f"Failed to connect to Primary DB: {e}")
             raise
-        logger.warning(f"DB not available in DEV_MODE, yielding None: {e}")
-        yield None
+        logger.warning(f"DB not available in DEV_MODE: {e}")
+        # Only yield None if we haven't yielded yet
+        # But FastAPI expects exactly one yield for dependencies
+        # Actually, if we're here and haven't yielded, it's okay to yield None once.
+        # But if we ALREADY yielded and an exception was thrown IN, we must not yield again.
+        return 
+    finally:
+        if session:
+            session.close()
 
-def get_read_db(response: Response) -> Generator[Session, None, None]:
-    """Yields a session from Read DB (Replica), falling back to Write DB if needed.
+
+class ReadOnlyViolationError(Exception):
+    """Raised when a write is attempted on a read-only session."""
+    pass
+
+
+def get_read_db(request: Request, response: Response) -> Generator[Session, None, None]:
+    """Yields a session from Read DB (Replica), with circuit breaker and read-only enforcement."""
+    has_yielded = False
     
-    Normative Behavior:
-    - Attempts Read DB first.
-    - If configured and reachable, stamp 'X-Talos-Read-Source: replica'.
-    - If Unreachable & Fallback Enabled -> 'X-Talos-Read-Source: primary_fallback'.
-    - If Same as Write -> 'X-Talos-Read-Source: primary'.
-    """
+    # Pre-check: Is this endpoint allowed to use the replica?
+    # We check the URL path. In a more advanced version, we could use endpoint tags.
+    path = request.url.path
+    is_allowed = any(path.startswith(allowed) for allowed in settings.REPLICA_READ_ALLOWLIST)
     
-    # Check if Read is distinct
-    if _read_engine == _write_engine:
-        response.headers["X-Talos-Read-Source"] = "primary"
+    if not is_allowed:
+        response.headers["X-Talos-DB-Role"] = "primary"
+        response.headers["X-Talos-Read-Fallback"] = "0"
+        response.headers["X-Talos-Read-Reason"] = "not_allowlisted"
+        with Session(_write_engine) as session:
+            yield session
+        return
+    
+    # Case 1: No distinct replica configured
+    if not _read_engine_is_distinct:
+        response.headers["X-Talos-DB-Role"] = "primary"
+        response.headers["X-Talos-Read-Fallback"] = "0"
         with Session(_write_engine) as session:
             yield session
         return
 
-    # Attempt Replica
+    # Case 2: Circuit breaker is open
+    if _circuit_breaker.is_open():
+        response.headers["X-Talos-DB-Role"] = "primary"
+        response.headers["X-Talos-Read-Fallback"] = "1"
+        response.headers["X-Talos-Read-Reason"] = "circuit_open"
+        logger.info("read_db_fallback", extra={"reason": "circuit_open", "db_role": "primary"})
+        with Session(_write_engine) as session:
+            yield session
+        return
+
+    # Case 3: Attempt replica
     try:
-        # Pinging logic or just try connect
-        # NOTE: SQLAlchemy engine is lazy. We must try to connect to know.
+        # Test connection first
         conn = _read_engine.connect()
         conn.close()
         
-        response.headers["X-Talos-Read-Source"] = "replica"
         with Session(_read_engine) as session:
-            yield session
+            # Enforce read-only transaction
+            try:
+                session.execute(text("SET TRANSACTION READ ONLY"))
+            except Exception as e:
+                logger.warning(f"Could not set read-only transaction: {e}")
             
-    except Exception as e:
+            response.headers["X-Talos-DB-Role"] = "replica"
+            response.headers["X-Talos-Read-Fallback"] = "0"
+            
+            try:
+                has_yielded = True
+                yield session
+                _circuit_breaker.record_success()
+            except ProgrammingError as e:
+                # Check for read-only violation (misclassification)
+                error_str = str(e).lower()
+                if "read-only" in error_str or "cannot execute" in error_str:
+                    logger.error(f"MISCLASSIFIED_ENDPOINT: Write attempted on read-only session: {e}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail={
+                            "error": {
+                                "code": "MISCLASSIFIED_ENDPOINT",
+                                "message": "Write operation attempted on read-only database path. This is a bug."
+                            }
+                        }
+                    )
+                raise
+            except Exception:
+                raise
+                
+    except (OperationalError, TimeoutError, ConnectionError, OSError) as e:
+        if has_yielded:
+            raise
+            
+        # Availability errors - fallback is appropriate
+        opened = _circuit_breaker.record_failure()
+        
         if settings.READ_FALLBACK_ENABLED:
-            logger.warning(f"Read DB unreachable, falling back to Primary. Error: {e}")
-            response.headers["X-Talos-Read-Source"] = "primary_fallback"
+            reason = "connect_error"
+            if "timeout" in str(e).lower():
+                reason = "timeout"
+            elif "pool" in str(e).lower():
+                reason = "pool_exhausted"
             
-            # Metric increment logic here (mock)
-            # metrics.inc("read_db_fallback")
+            logger.warning(f"read_db_fallback", extra={"reason": reason, "error": str(e), "db_role": "primary"})
+            response.headers["X-Talos-DB-Role"] = "primary"
+            response.headers["X-Talos-Read-Fallback"] = "1"
+            response.headers["X-Talos-Read-Reason"] = reason
             
             with Session(_write_engine) as session:
                 yield session
         else:
-            logger.error("Read DB unreachable and Fallback DISABLED.")
-            raise e
+            logger.error(f"Read DB unreachable and fallback DISABLED: {e}")
+            raise HTTPException(status_code=503, detail="Database currently unavailable")
+
 
 # --- Original Dependencies (Updated mappings) ---
 
-from app.domain.interfaces import UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, RoutingPolicyStore
+from app.domain.interfaces import (
+    UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, 
+    RoutingPolicyStore, RotationOperationStore
+)
 from app.adapters.json_store.stores import (
     UpstreamJsonStore, ModelGroupJsonStore, SecretJsonStore, McpJsonStore, AuditJsonStore, RoutingPolicyJsonStore
 )
 from app.adapters.postgres.stores import (
-    PostgresUpstreamStore, PostgresModelGroupStore, PostgresMcpStore, PostgresAuditStore, PostgresRoutingPolicyStore
+    PostgresUpstreamStore, PostgresModelGroupStore, PostgresMcpStore, 
+    PostgresAuditStore, PostgresRoutingPolicyStore, PostgresRotationStore
 )
 
-DEV_MODE = settings.MODE == "dev"
+# DEV_MODE determines whether to use in-memory JSON stores (true) or Postgres (false)
+# Check both MODE=dev AND DEV_MODE env var - allows MODE=dev with Postgres stores
+DEV_MODE = settings.MODE == "dev" and os.getenv("DEV_MODE", "true").lower() == "true"
 
 def get_upstream_store(db: Session = Depends(get_write_db)) -> UpstreamStore:
     if DEV_MODE: return UpstreamJsonStore()
@@ -113,15 +282,18 @@ def get_routing_policy_store(db: Session = Depends(get_write_db)) -> RoutingPoli
     if DEV_MODE: return RoutingPolicyJsonStore()
     return PostgresRoutingPolicyStore(db)
 
-from app.adapters.secrets.local_provider import LocalKekProvider
+from app.adapters.secrets.multi_provider import MultiKekProvider
 from app.adapters.postgres.secret_store import PostgresSecretStore
 from app.domain.secrets.ports import KekProvider, SecretStore
 
+_kek_provider: Optional[MultiKekProvider] = None
+
 def get_kek_provider() -> KekProvider:
     """Factory for KEK provider."""
-    master_key = os.getenv("TALOS_MASTER_KEY") or settings.MASTER_KEY
-    key_id = os.getenv("TALOS_KEK_ID", "v1")
-    return LocalKekProvider(master_key, key_id)
+    global _kek_provider
+    if _kek_provider is None:
+        _kek_provider = MultiKekProvider()
+    return _kek_provider
 
 def get_secret_store(
     db: Session = Depends(get_write_db),
@@ -136,6 +308,13 @@ def get_read_secret_store(
 ) -> SecretStore:
     if DEV_MODE: return SecretJsonStore()
     return PostgresSecretStore(db, kek)
+
+def get_rotation_store(db: Session = Depends(get_write_db)) -> RotationOperationStore:
+    if DEV_MODE: 
+        # For dev mode, we could use a JSON store or just persistent memory if dev-mode-json is used
+        # For now, let's assume Postgres for rotation tracking as it's complex
+        return PostgresRotationStore(db)
+    return PostgresRotationStore(db)
 
 from app.domain.secrets.manager import SecretsManager
 def get_secrets_manager(
@@ -300,7 +479,16 @@ def get_policy_engine() -> PolicyEngine:
          _policy_engine_instance = DeterministicPolicyEngine(roles, {})
     return _policy_engine_instance
 
-def get_capability_validator() -> CapabilityValidator:
-    key = settings.TGA_SUPERVISOR_PUBLIC_KEY
     if not key: return CapabilityValidator(supervisor_public_key="dev-placeholder")
     return CapabilityValidator(supervisor_public_key=key)
+
+# --- Phase 15: Budget & Usage ---
+from app.domain.budgets.service import BudgetService
+from app.domain.usage.manager import UsageManager
+
+def get_budget_service(db: Session = Depends(get_write_db)) -> BudgetService:
+    return BudgetService(db)
+
+def get_usage_manager(db: Session = Depends(get_write_db)) -> UsageManager:
+    return UsageManager(db)
+

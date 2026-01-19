@@ -1,7 +1,7 @@
 import pytest
 import os
 from sqlalchemy.orm import sessionmaker
-from app.adapters.postgres.session import engine
+from app.dependencies import engine
 from app.adapters.postgres.secret_store import PostgresSecretStore
 from app.domain.secrets.models import EncryptedEnvelope
 from app.dependencies import get_kek_provider
