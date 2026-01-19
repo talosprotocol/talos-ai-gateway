@@ -1,5 +1,4 @@
 """PostgresSecretStore - Database-backed secret storage with envelope encryption."""
-import uuid
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
@@ -99,7 +98,7 @@ class PostgresSecretStore(SecretStore):
 
     def _emit_audit(self, action: str, resource_type: str, resource_id: str, details: Optional[Dict] = None) -> None:
         event = AuditEvent(
-            event_id=str(uuid.uuid4()),
+            event_id=uuid7(),
             timestamp=datetime.now(timezone.utc),
             principal_id=self._principal_id,
             action=action,

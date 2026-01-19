@@ -1,4 +1,4 @@
-import uuid
+from app.utils.id import uuid7
 import time
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
@@ -138,7 +138,7 @@ class A2ADispatcher:
         if "a2a.invoke" not in self.auth.scopes:
              raise JsonRpcException(-32000, "Permission denied", data={"talos_code": "RBAC_DENIED", "details": "Missing 'a2a.invoke' scope"})
         
-        task_id = str(uuid.uuid4())
+        task_id = uuid7()
         
         # 1. Persist QUEUED
         # Safe Metadata Only
@@ -232,7 +232,7 @@ class A2ADispatcher:
                 start_time = time.time()
                 
                 # Route
-                routing_req_id = str(uuid.uuid4())
+                routing_req_id = uuid7()
                 selection = self.routing.select_upstream(model_group_id, routing_req_id)
                 if not selection:
                     raise JsonRpcException(-32000, "No upstream available", data={"talos_code": "UPSTREAM_UNAVAILABLE"})
@@ -354,7 +354,7 @@ class A2ADispatcher:
 
     def _audit(self, action: str, outcome: str, resource_id: str = None, details: Dict = None, error_code: str = None):
         event = {
-            "event_id": str(uuid.uuid4()),
+            "event_id": uuid7(),
             "timestamp": datetime.now(timezone.utc),
             "team_id": self.auth.team_id,
             "principal_id": self.auth.key_id,
@@ -374,7 +374,7 @@ class A2ADispatcher:
 
     def _record_usage(self, target: str, status: str, latency: int, result: Dict = None):
         usage = {
-            "id": str(uuid.uuid4()),
+            "id": uuid7(),
             "key_id": self.auth.key_id,
             "team_id": self.auth.team_id,
             "org_id": self.auth.org_id,

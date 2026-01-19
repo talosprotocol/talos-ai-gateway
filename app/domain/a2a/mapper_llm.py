@@ -1,5 +1,5 @@
 from typing import List, Dict, Any, Optional
-import uuid
+from app.utils.id import uuid7
 from datetime import datetime, timezone
 
 # We use dicts representing the JSON structures for A2A to avoid tight coupling with specific Pydantic models
@@ -43,7 +43,7 @@ def map_llm_response_to_task(
     # Generate Task ID if not provided (though A2A request usually creates one implicitly? No, response has params task_id?)
     # For tasks.send sync, we return a COMPLETED task.
     
-    task_id = original_task_id or str(uuid.uuid7()) if hasattr(uuid, "uuid7") else str(uuid.uuid4())
+    task_id = original_task_id or uuid7()
     
     now_iso = datetime.now(timezone.utc).isoformat() + "Z"
     
@@ -57,7 +57,7 @@ def map_llm_response_to_task(
     # Create Artifact/Output
     # A2A Task has "artifacts" which can be the response text
     output_artifact = {
-        "artifact_id": str(uuid.uuid4()),
+        "artifact_id": uuid7(),
         "type": "text/plain",
         "name": "response.txt",
         "content": {

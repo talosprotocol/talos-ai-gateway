@@ -23,6 +23,8 @@ router = APIRouter()
 CATALOG_PATH = Path(__file__).parent.parent.parent.parent / "talos-contracts" / "catalog" / "provider_templates.json"
 _catalog_cache: Optional[dict] = None
 
+from app.domain.a2a.utils import uuid7
+
 def get_provider_catalog() -> dict:
     """Load provider catalog from contracts."""
     global _catalog_cache
@@ -88,7 +90,7 @@ from app.middleware.auth_admin import require_permission, get_rbac_context, Rbac
 def audit(store: AuditStore, action: str, resource_type: str, principal_id: str, 
           resource_id: str = None, outcome: str = "success", **details):
     event = {
-        "event_id": str(uuid.uuid4()),
+        "event_id": uuid7(),
         "timestamp": datetime.now(timezone.utc),
         "principal_id": principal_id,
         "action": action,
@@ -519,7 +521,7 @@ async def create_mcp_policy(
     store: McpStore = Depends(get_mcp_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ):
-    policy_id = data.get("id") or str(uuid.uuid4())
+    policy_id = data.get("id") or uuid7()
     data["id"] = policy_id
     data["created_at"] = datetime.utcnow().isoformat()
     
@@ -655,7 +657,7 @@ async def apply_config(
     if not val["valid"]:
          raise HTTPException(status_code=400, detail={"error": {"code": "VALIDATION_ERROR", "errors": val["errors"]}})
          
-    request_id = str(uuid.uuid4())
+    request_id = uuid7()
     applied = {"upstreams": 0, "model_groups": 0}
     
     for uid, upstream in data.get("upstreams", {}).items():
@@ -691,6 +693,16 @@ async def get_stats(
 ):
     """Get aggregated usage stats for the dashboard."""
     return store.get_stats(window_hours)
+
+
+@router.get("/audit/stats")
+async def get_audit_stats(
+    window_hours: int = 24,
+    principal: RbacContext = Depends(require_permission("audit.read")),
+    store: AuditStore = Depends(get_audit_store)
+):
+    """Get aggregated audit stats (denials, volume series) for the dashboard."""
+    return store.get_dashboard_stats(window_hours)
 
 
 @router.get("/me")

@@ -9,7 +9,7 @@
         "path_template": "/v1/chat/completions"
       },
       "required_scopes": ["llm.invoke"],
-      "attestation_required": false,
+      "attestation_required": true,
       "audit_action": "llm.invoke",
       "data_classification": "public",
       "audit_meta_allowlist": ["model", "max_tokens", "temperature", "finish_reason", "latency_ms", "usage"],

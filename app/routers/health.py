@@ -41,3 +41,22 @@ async def readiness(db: Session = Depends(get_read_db)):
         raise HTTPException(status_code=503, detail=health)
         
     return health
+
+@router.get("/health/ollama")
+async def health_ollama():
+    """Proxy health check for Ollama downstream."""
+    from app.core.config import settings
+    import httpx
+    
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(f"{settings.OLLAMA_URL}/api/tags")
+            if resp.status_code == 200:
+                return {"status": "ok", "service": "ollama"}
+            else:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=503, detail={"status": "failed", "upstream_code": resp.status_code})
+    except Exception as e:
+        logger.error(f"Ollama health check failed: {e}")
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail={"status": "failed", "error": str(e)})

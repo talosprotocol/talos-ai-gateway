@@ -76,6 +76,9 @@ class AuditStore(ABC):
     @abstractmethod
     def list_events(self, filters: Dict[str, Any], limit: int = 100) -> List[Dict[str, Any]]: pass
 
+    @abstractmethod
+    def get_dashboard_stats(self, window_hours: int = 24) -> Dict[str, Any]: pass
+
 from pydantic import BaseModel, Field
 
 class RateLimitResult(BaseModel):

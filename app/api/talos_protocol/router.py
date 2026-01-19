@@ -5,8 +5,8 @@ from app.domain.interfaces import SessionStore
 from app.adapters.postgres.key_store import KeyStore
 from app.adapters.redis.client import get_redis_client
 from talos_core_rs import Wallet
+from app.utils.id import uuid7
 import json
-import uuid
 import logging
 import base64
 import time
@@ -81,7 +81,7 @@ async def websocket_endpoint(
 
         # 5. Session Creation
         public_key_hex = public_key_bytes.hex()
-        session_id = str(uuid.uuid4())
+        session_id = uuid7()
         await store.create_session(session_id, public_key_hex)
         
         # Send HANDSHAKE_ACK with session_id

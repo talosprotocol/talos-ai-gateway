@@ -330,9 +330,9 @@ class AuditJsonStore(AuditStore):
                 data[k] = v.isoformat()
                 
         logger.info(f"AUDIT: {json.dumps(data)}")
-        # Optionally append to file
-        with open("audit.log", "a") as f:
-            f.write(json.dumps(data) + "\n")
+        # file write disabled in K8s to avoid read-only fs errors
+        # with open("audit.log", "a") as f:
+        #     f.write(json.dumps(data) + "\n")
 
     def list_events(self, filters: Dict[str, Any], limit: int = 100) -> List[Dict[str, Any]]:
         events = []
@@ -345,3 +345,28 @@ class AuditJsonStore(AuditStore):
                         pass
         # Filter logic omitted for brevity in Dev Mode
         return events[-limit:]
+
+    def get_dashboard_stats(self, window_hours: int = 24) -> Dict[str, Any]:
+        """Mock stats for JSON mode."""
+        # Generate some mock time-series data
+        from datetime import timedelta, timezone
+        now = datetime.now(timezone.utc)
+        series = []
+        for i in range(24):
+            t = now - timedelta(hours=23-i)
+            series.append({
+                "time": t.isoformat(),
+                "ok": 50 + i * 2,
+                "deny": 5 if i % 4 == 0 else 0,
+                "error": 1 if i % 8 == 0 else 0
+            })
+            
+        return {
+            "requests_24h": 1250,
+            "denial_reason_counts": {
+                "policy_violation": 42,
+                "rate_limit": 15,
+                "unauthorized": 8
+            },
+            "request_volume_series": series
+        }

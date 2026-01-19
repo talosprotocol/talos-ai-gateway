@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import desc
+from app.utils.id import uuid7
+import json
 from app.domain.interfaces import UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, RoutingPolicyStore, PrincipalStore
 from app.adapters.postgres.models import (
     LlmUpstream, ModelGroup, Secret, McpServer, McpPolicy, AuditEvent, 
@@ -95,7 +97,7 @@ class PostgresModelGroupStore(ModelGroupStore):
         # Create deployment rows
         for dep in deployments_data:
             d_row = Deployment(
-                id=str(uuid.uuid4()), # UUID for deployment row
+                id=uuid7(), # UUID for deployment row
                 model_group_id=obj.id, 
                 upstream_id=dep['upstream_id'], 
                 model_name=dep['model_name'], 
@@ -120,7 +122,7 @@ class PostgresModelGroupStore(ModelGroupStore):
             # add new
             for dep in deployments_data:
                 d_row = Deployment(
-                     id=str(uuid.uuid4()),
+                     id=uuid7(),
                      model_group_id=group_id,
                      upstream_id=dep['upstream_id'],
                      model_name=dep['model_name'],
@@ -332,6 +334,51 @@ class PostgresAuditStore(AuditStore):
         
         objs = q.order_by(desc(AuditEvent.timestamp)).limit(limit).all()
         return [to_dict(o) for o in objs]
+
+    def get_dashboard_stats(self, window_hours: int = 24) -> Dict[str, Any]:
+        from sqlalchemy import func
+        since = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+        
+        # 1. Total requests in window
+        total = self.db.query(func.count(AuditEvent.id)).filter(AuditEvent.timestamp >= since).scalar() or 0
+        
+        # 2. Denial reason counts
+        denial_res = self.db.query(
+            AuditEvent.details['denial_reason'].astext.label('reason'),
+            func.count(AuditEvent.id).label('count')
+        ).filter(
+            AuditEvent.timestamp >= since,
+            AuditEvent.status == 'deny'
+        ).group_by('reason').all()
+        
+        denial_counts = {r.reason: r.count for r in denial_res if r.reason}
+        
+        # 3. Time series data (grouped by hour)
+        # We'll use a simpler approach for now: group by hour truncated timestamp
+        # NOTE: This is slightly DB-specific (Postgres date_trunc)
+        series_res = self.db.query(
+            func.date_trunc('hour', AuditEvent.timestamp).label('hour'),
+            func.count(AuditEvent.id).filter(AuditEvent.status == 'success').label('ok'),
+            func.count(AuditEvent.id).filter(AuditEvent.status == 'deny').label('deny'),
+            func.count(AuditEvent.id).filter(AuditEvent.status == 'error').label('error')
+        ).filter(
+            AuditEvent.timestamp >= since
+        ).group_by('hour').order_by('hour').all()
+        
+        series = [
+            {
+                "time": s.hour.isoformat(),
+                "ok": s.ok,
+                "deny": s.deny,
+                "error": s.error
+            } for s in series_res
+        ]
+        
+        return {
+            "requests_24h": total,
+            "denial_reason_counts": denial_counts,
+            "request_volume_series": series
+        }
 
 
 class PostgresPrincipalStore(PrincipalStore):

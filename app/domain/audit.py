@@ -11,27 +11,7 @@ from app.domain.registry import SurfaceItem
 import asyncio
 from app.domain.sink import AuditSink, StdOutSink
 
-def uuid7() -> str:
-    """Generate a UUIDv7 string.
-    Layout: 48-bit ts | 4-bit ver | 12-bit rand_a | 2-bit var | 62-bit rand_b
-    """
-    ms = int(time.time() * 1000)
-    # unix_ts_ms (48 bits)
-    v7 = ms.to_bytes(8, byteorder='big')[2:] # skip first 2 bytes to get 6 bytes (48 bits)
-    
-    # rand_a (12 bits)
-    rand_a = secrets.token_bytes(2)
-    # ver (4 bits) = 7
-    v7 += bytes([(rand_a[0] & 0x0F) | 0x70, rand_a[1]])
-    
-    # rand_b (62 bits)
-    rand_b = secrets.token_bytes(8)
-    # var (2 bits) = 1b10 = 0x80
-    v7 += bytes([(rand_b[0] & 0x3F) | 0x80])
-    v7 += rand_b[1:]
-    
-    h = v7.hex()
-    return f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
+from app.utils.id import uuid7
 
 class AuditLogger:
     def __init__(self, sink: AuditSink = None):

@@ -73,6 +73,37 @@ async def get_auth_context(
             # "Default deny in prod"
             raise_talos_error("RBAC_DENIED", 403, "Unknown surface")
         
+        # Internal Service Bypass (DEV_MODE only)
+        # Allows internal pod-to-pod calls without full attestation for MVP demos
+        import os
+        internal_service = request.headers.get("x-talos-internal-service")
+        dev_mode = os.getenv("DEV_MODE", "false").lower() in ("true", "1", "yes")
+        
+        if internal_service and dev_mode:
+            # Internal service bypass - trusted pod-to-pod call
+            # Network policies ensure only internal pods can reach Gateway
+            request.state.auth = AuthContext(
+                key_id=f"internal:{internal_service}",
+                team_id="talos-system",
+                org_id="talos",
+                scopes=["*:*"],  # Full access for internal services
+                allowed_model_groups=["*"],
+                allowed_mcp_servers=["*"],
+                principal_id=f"service:{internal_service}"
+            )
+            request.state.surface = surface
+            request.state.principal = {
+                "schema_id": "talos.principal",
+                "schema_version": "v2",
+                "id": "01946765-c7e0-798c-8c65-22d7a64b91f5",
+                "principal_id": f"service:{internal_service}",
+                "team_id": "talos-system",
+                "type": "service_account",
+                "status": "active",
+                "auth_mode": "internal"
+            }
+            return request.state.auth
+        
         if not authorization:
             raise_talos_error("AUTH_INVALID", 401, "Missing Authorization header")
         

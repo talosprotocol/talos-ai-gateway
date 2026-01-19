@@ -2,7 +2,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from typing import List, Optional
-import uuid
+from app.utils.id import uuid7
+import json
 import time
 from datetime import datetime
 
@@ -24,11 +25,12 @@ from app.adapters.upstreams_ai.client import (
 )
 import os
 
+
 # Helper for audit - can be moved to dependency or service
 def audit(store: AuditStore, action: str, resource_type: str, principal_id: str, 
           resource_id: str = None, outcome: str = "success", **details):
     event = {
-        "event_id": str(uuid.uuid4()),
+        "event_id": uuid7(),
         "timestamp": datetime.utcnow(),
         "principal_id": principal_id,
         "action": action,
@@ -45,7 +47,8 @@ def audit(store: AuditStore, action: str, resource_type: str, principal_id: str,
 def record_usage(store: UsageStore, auth: AuthContext, model_group_id: str, 
                  status: str, latency_ms: int, input_tokens: int = 0, output_tokens: int = 0):
     store.record_usage({
-        "id": str(uuid.uuid4()),
+        "id": uuid7(),
+        "object": "chat.completion",
         "key_id": auth.key_id,
         "team_id": auth.team_id,
         "org_id": auth.org_id,
@@ -84,8 +87,10 @@ async def chat_completions(
     usage_store: UsageStore = Depends(get_usage_store)
 ):
     """OpenAI-compatible chat completions endpoint."""
-    request_id = str(uuid.uuid4())
+    request_id = uuid7()
     start_time = time.time()
+    
+    # Authenticate (Phase 7 RBAC)
     
     # Check if model group is allowed
     model_group_id = request.model

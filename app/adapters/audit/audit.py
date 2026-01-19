@@ -1,7 +1,7 @@
 """Audit event adapter."""
 from datetime import datetime, timezone
 from typing import Optional
-import uuid
+from app.utils.id import uuid7
 
 
 def emit_event(
@@ -22,7 +22,7 @@ def emit_event(
     For MVP, we print to stdout.
     """
     event = {
-        "event_id": str(uuid.uuid4()),
+        "event_id": uuid7(),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "principal_id": principal_id,
         "action": action,

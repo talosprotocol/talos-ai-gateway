@@ -35,10 +35,17 @@ def get_db(request: Request = None) -> Generator[Session, None, None]:
         yield session
 
 # Phase 12: Split Dependencies
-def get_write_db() -> Generator[Session, None, None]:
+def get_write_db() -> Generator[Optional[Session], None, None]:
     """Yields a session strictly from the Primary Write DB."""
-    with Session(_write_engine) as session:
-        yield session
+    try:
+        with Session(_write_engine) as session:
+            yield session
+    except Exception as e:
+        if not (settings.MODE == "dev" or os.getenv("DEV_MODE", "false").lower() == "true"):
+            logger.error(f"Failed to connect to Primary DB: {e}")
+            raise
+        logger.warning(f"DB not available in DEV_MODE, yielding None: {e}")
+        yield None
 
 def get_read_db(response: Response) -> Generator[Session, None, None]:
     """Yields a session from Read DB (Replica), falling back to Write DB if needed.
@@ -249,7 +256,7 @@ _registry_instance = None
 def get_surface_registry() -> SurfaceRegistry:
     global _registry_instance
     if _registry_instance is None:
-        path = os.getenv("SURFACE_INVENTORY_PATH", "deploy/repos/talos-contracts/inventory/gateway_surface.json")
+        path = os.getenv("SURFACE_INVENTORY_PATH", "gateway_surface.json")
         _registry_instance = SurfaceRegistry(path)
     return _registry_instance
 
