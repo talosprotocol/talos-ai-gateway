@@ -14,7 +14,7 @@ services:
       mkdir -p /var/lib/postgresql/data
       chmod 700 /var/lib/postgresql/data
       # We need to run entrypoint in background to let it init DB, then patch HBA
-      docker-entrypoint.sh postgres -c wal_level=logical -c max_wal_senders=10 -c max_replication_slots=10 &
+      docker-entrypoint.sh postgres -c wal_level=replica -c max_wal_senders=10 -c max_replication_slots=10 &
       PID=\$!
       sleep 10
       echo 'host replication all 0.0.0.0/0 trust' >> /var/lib/postgresql/data/pg_hba.conf
@@ -47,12 +47,18 @@ services:
         echo 'Cloning from primary...'
         pg_basebackup -h postgres-primary -p 5432 -U talos -D /var/lib/postgresql/data -Fp -Xs -P -R
       fi
-      docker-entrypoint.sh postgres -c hot_standby=on
+      # Start as hot standby with read-only enforcement
+      docker-entrypoint.sh postgres -c hot_standby=on -c default_transaction_read_only=on
       "
     volumes:
       - pgdata-replica:/var/lib/postgresql/data
     ports:
       - "5453:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U talos && psql -U talos -d talos -c 'SELECT pg_is_in_recovery()' | grep -q t"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   gateway-region-a:
     build:
@@ -67,7 +73,8 @@ services:
       REGION_ID: region-a
       RUN_MIGRATIONS: "true"
       MODE: dev
-      DEV_MODE: "true"
+      DEV_MODE: "false"  # Use Postgres stores for multi-region test
+      RATE_LIMIT_ENABLED: "false"  # Disable rate limiting for tests
     ports:
       - "8003:8000"
     depends_on:
@@ -89,7 +96,8 @@ services:
       REGION_ID: region-b
       RUN_MIGRATIONS: "false"
       MODE: dev
-      DEV_MODE: "true"
+      DEV_MODE: "false"  # Use Postgres stores for multi-region test
+      RATE_LIMIT_ENABLED: "false"  # Disable rate limiting for tests
       READ_FALLBACK_ENABLED: "true"
     ports:
       - "8004:8000"
@@ -105,6 +113,21 @@ services:
     image: redis:7
     ports:
       - "6380:6379"
+
+  talos-glb:
+    image: nginx:alpine
+    volumes:
+      - ./config/global-router.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8005:80"
+    depends_on:
+      - gateway-region-a
+      - gateway-region-b
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 volumes:
   pgdata-primary:

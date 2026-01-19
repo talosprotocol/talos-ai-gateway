@@ -11,7 +11,7 @@ import hmac
 import os
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Optional, NamedTuple
+from typing import Optional, NamedTuple, Dict, Any
 
 from sqlalchemy.orm import Session
 
@@ -26,6 +26,16 @@ class KeyData(NamedTuple):
     allowed_mcp_servers: list
     revoked: bool
     expires_at: Optional[datetime]
+    # Phase 15: Budget & Policy
+    budget_mode: str
+    overdraft_usd: str # Decimal as string for JSON safety
+    max_tokens_default: Optional[int]
+    budget: Dict[str, Any] # Budget Metadata
+    team_budget_mode: str
+    team_overdraft_usd: str
+    team_max_tokens_default: Optional[int]
+    team_budget: Dict[str, Any]
+
 
 
 class KeyStore(ABC):
@@ -118,6 +128,14 @@ class PostgresKeyStore(KeyStore):
             allowed_mcp_servers=vk.allowed_mcp_servers or [],
             revoked=vk.revoked,
             expires_at=vk.expires_at,
+            budget_mode=vk.budget_mode,
+            overdraft_usd=str(vk.overdraft_usd),
+            max_tokens_default=vk.max_tokens_default,
+            budget=vk.budget or {},
+            team_budget_mode=vk.team.budget_mode if vk.team else "off",
+            team_overdraft_usd=str(vk.team.overdraft_usd) if vk.team else "0",
+            team_max_tokens_default=vk.team.max_tokens_default if vk.team else None,
+            team_budget=vk.team.budget if vk.team else {}
         )
 
         if self._redis:
@@ -152,6 +170,14 @@ class PostgresKeyStore(KeyStore):
                 "allowed_mcp_servers": key_data.allowed_mcp_servers,
                 "revoked": key_data.revoked,
                 "expires_at": key_data.expires_at.isoformat() if key_data.expires_at else None,
+                "budget_mode": key_data.budget_mode,
+                "overdraft_usd": key_data.overdraft_usd,
+                "max_tokens_default": key_data.max_tokens_default,
+                "budget": key_data.budget,
+                "team_budget_mode": key_data.team_budget_mode,
+                "team_overdraft_usd": key_data.team_overdraft_usd,
+                "team_max_tokens_default": key_data.team_max_tokens_default,
+                "team_budget": key_data.team_budget
             })
             self._redis.setex(f"key:{key_hash}", self._cache_ttl, data)
         except Exception:

@@ -1,6 +1,6 @@
 import sys
 from sqlalchemy import text
-from app.adapters.postgres.session import SessionLocal
+from app.dependencies import SessionLocal
 from app.adapters.postgres.stores import PostgresSecretStore
 
 def verify_secrets():

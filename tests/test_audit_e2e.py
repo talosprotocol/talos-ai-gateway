@@ -25,7 +25,7 @@ def test_audit_e2e_success(client, mock_audit_logger):
     
     from app.middleware.auth_public import get_auth_context, AuthContext
     from app.domain.registry import SurfaceItem
-    from app.adapters.postgres.session import get_db
+    from app.dependencies import get_db
     import app.dependencies as deps_module
     from app.dependencies import get_model_group_store, get_surface_registry
 

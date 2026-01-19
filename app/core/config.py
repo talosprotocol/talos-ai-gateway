@@ -16,6 +16,14 @@ class Settings(BaseSettings):
     RUN_MIGRATIONS: bool = True
     READ_FALLBACK_ENABLED: bool = True
     
+    # Circuit Breaker (Phase 12)
+    READ_FAILURE_THRESHOLD: int = 3
+    CIRCUIT_OPEN_DURATION_SECONDS: int = 30
+    
+    # Database Timeouts (Phase 12)
+    DATABASE_READ_TIMEOUT_MS: int = 1000  # Fast fail for replica reads
+    DATABASE_CONNECT_TIMEOUT_MS: int = 3000
+    
     # Cache
     REDIS_URL: str = "redis://localhost:6379/0"
     OLLAMA_URL: str = "http://localhost:11434"
@@ -27,6 +35,17 @@ class Settings(BaseSettings):
     # Security
     MASTER_KEY: str = "insecure-default-key-for-dev-only-do-not-use-in-prod"
     TGA_SUPERVISOR_PUBLIC_KEY: Optional[str] = None
+
+    # Multi-Region Safety (Phase 12)
+    # List of endpoint IDs (or paths) allowed to use read replicas
+    # Default to a safe set of non-critical read endpoints
+    REPLICA_READ_ALLOWLIST: list[str] = [
+        "/admin/v1/mcp/servers",
+        "/admin/v1/mcp/policies",
+        "/admin/v1/telemetry/stats",
+        "/admin/v1/audit/stats",
+        "/health/ready"
+    ]
 
     class Config:
         case_sensitive = True

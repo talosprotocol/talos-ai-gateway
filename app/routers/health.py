@@ -13,7 +13,7 @@ async def liveness():
     return {"status": "ok", "checks": {"api": "ok"}}
 
 @router.get("/health/ready")
-async def readiness(db: Session = Depends(get_read_db)):
+async def readiness(db: Session = Depends(get_read_db)):  # REPLICA-SAFE: pure SELECT 1, no writes
     """Readiness probe: Dependencies connected."""
     health = {"status": "ok", "checks": {}}
     

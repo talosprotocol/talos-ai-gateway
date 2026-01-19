@@ -1,5 +1,21 @@
-"""Admin API Router - LLM Upstreams, Model Groups, Policies, Catalog."""
-from fastapi import APIRouter, HTTPException, Depends
+"""Admin API Router - LLM Upstreams, Model Groups, Policies, Catalog.
+
+Phase 12 Route Classification:
+    REPLICA-SAFE (uses get_read_* stores):
+        - GET /mcp/servers (list_mcp_servers) - pure select, no side effects
+        - GET /mcp/policies (list_mcp_policies) - pure select, no side effects  
+        - GET /telemetry/stats (get_stats) - aggregated metrics, staleness acceptable
+        - GET /audit/stats (get_audit_stats) - aggregated metrics, staleness acceptable
+    
+    PRIMARY-REQUIRED (all other endpoints):
+        - All POST/PATCH/DELETE operations
+        - GET /secrets - security-critical, read-your-writes required
+        - GET /catalog/* - writes audit events
+        - GET /llm/* - fresh config needed for routing decisions
+        - GET /config:export - consistency required
+        - GET /me - auth context, security-critical
+"""
+from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
@@ -7,16 +23,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 import uuid
 import json
+from decimal import Decimal
 
 from app.dependencies import (
     get_upstream_store, get_model_group_store, get_secret_store, 
     get_mcp_store, get_audit_store, get_routing_policy_store, get_usage_store,
-    get_read_audit_store, get_read_usage_store, get_read_mcp_store, get_read_secret_store
+    get_read_audit_store, get_read_usage_store, get_read_mcp_store,
+    get_rotation_store, get_kek_provider
 )
 from app.domain.interfaces import (
     UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, 
-    RoutingPolicyStore, UsageStore
+    RoutingPolicyStore, UsageStore, RotationOperationStore
 )
+from app.domain.secrets.ports import KekProvider
 
 router = APIRouter()
 
@@ -81,6 +100,12 @@ class ModelGroupUpdate(BaseModel):
     routing_policy_id: Optional[str] = None
     routing_policy_version: Optional[int] = None
     expected_version: int
+
+
+class KekStatusResponse(BaseModel):
+    current_kek_id: str
+    loaded_kek_ids: List[str]
+    stale_counts: Dict[str, int]
 
 
 from app.middleware.auth_admin import require_permission, get_rbac_context, RbacContext
@@ -555,9 +580,74 @@ async def delete_mcp_policy(
 @router.get("/secrets")
 async def list_secrets(
     principal: dict = Depends(require_permission("keys.read")),
-    store: SecretStore = Depends(get_read_secret_store)
+    store: SecretStore = Depends(get_secret_store)  # PRIMARY: read-your-writes required
 ):
     return {"secrets": store.list_secrets()}
+
+
+@router.get("/secrets/kek-status", response_model=KekStatusResponse)
+async def get_kek_status(
+    principal: dict = Depends(require_permission("keys.read")),
+    store: SecretStore = Depends(get_secret_store),
+    kek_provider: KekProvider = Depends(get_kek_provider)
+):
+    """Get KEK status and retirement counts."""
+    return KekStatusResponse(
+        current_kek_id=kek_provider.current_kek_id,
+        loaded_kek_ids=kek_provider.loaded_kek_ids,
+        stale_counts=store.get_stale_counts()
+    )
+
+
+@router.post("/secrets/rotate-all", status_code=202)
+async def rotate_all_secrets(
+    request: Request,
+    principal: dict = Depends(require_permission("keys.write")),
+    rotation_store: RotationOperationStore = Depends(get_rotation_store),
+    kek_provider: KekProvider = Depends(get_kek_provider)
+):
+    """Trigger background rotation of all secrets."""
+    active = rotation_store.get_active_operation()
+    if active:
+        raise HTTPException(status_code=409, detail={
+            "error": {
+                "code": "ROTATION_ALREADY_RUNNING",
+                "message": f"Operation {active['id']} is currently in progress",
+                "op_id": active["id"]
+            }
+        })
+    
+    op_id = str(uuid7())
+    op_data = {
+        "id": op_id,
+        "status": "running",
+        "target_kek_id": kek_provider.current_kek_id,
+        "cursor": None,
+        "stats": {"scanned": 0, "rotated": 0, "failed": 0},
+        "started_at": datetime.now(timezone.utc)
+    }
+    
+    rotation_store.create_operation(op_data)
+    
+    return {
+        "op_id": op_id,
+        "status": "running",
+        "message": "Rotation started",
+        "status_url": str(request.url_for('get_rotation_status', op_id=op_id))
+    }
+
+
+@router.get("/secrets/rotation-status/{op_id}", name="get_rotation_status")
+async def get_rotation_op_status(
+    op_id: str,
+    principal: dict = Depends(require_permission("keys.read")),
+    rotation_store: RotationOperationStore = Depends(get_rotation_store)
+):
+    """Get status of a specific rotation operation."""
+    op = rotation_store.get_operation(op_id)
+    if not op:
+         raise HTTPException(status_code=404, detail={"error": {"code": "NOT_FOUND"}})
+    return op
 
 
 @router.post("/secrets", status_code=201)
@@ -709,3 +799,79 @@ async def get_audit_stats(
 @router.get("/me")
 async def get_me(principal: RbacContext = Depends(get_rbac_context)):
     return principal
+
+# ============ Budget Operations ============
+
+@router.get("/budgets/usage")
+async def get_budget_usage(
+    day: Optional[str] = None, # YYYY-MM-DD
+    team_id: Optional[str] = None,
+    parent_key_id: Optional[str] = None, # Filter by key
+    limit: int = 100,
+    offset: int = 0,
+    principal: dict = Depends(require_permission("audit.read")), # Re-using audit.read or analytics perm
+    db: Any = Depends(get_read_usage_store) # Actually usage store is abstracted, but we need SQL for rollups
+):
+    """
+    Get budget usage stats.
+    Note: Phase 15 MVP uses direct DB access via UsageStore specialized method or direct SQL.
+    We'll use a direct query here since UsageStore interface might not have this specific rollup getter yet.
+    Ideally we add it to UsageStore.
+    But UsageStore is for Events.
+    Let's inject Session directly for this specific admin query or upgrade UsageStore.
+    Upgrading UsageStore is better for Clean Arch, but for speed in Phase 4 we can use get_read_db locally if allowed.
+    Admin router is PRIMARY-REQUIRED usually, but this is a read.
+    Let's use get_read_db explicitly.
+    """
+    from app.dependencies import get_read_db
+    from sqlalchemy import text
+    from sqlalchemy.orm import Session
+    
+    # We need a session, depends on how we get it. 
+    # Can't easily use Depends(get_read_db) inside function body if not in signature.
+    # We should add it to signature.
+    pass
+
+# Refactored implementation with dedicated dependency
+from app.dependencies import get_read_db
+from sqlalchemy.orm import Session
+from app.adapters.postgres.models import UsageRollupDaily
+
+@router.get("/budgets/usage/stats")
+async def list_budget_usage(
+    day: Optional[str] = None,
+    team_id: Optional[str] = None,
+    key_id: Optional[str] = None,
+    limit_count: int = 100,
+    offset: int = 0,
+    principal: dict = Depends(require_permission("audit.read")),
+    session: Session = Depends(get_read_db)
+):
+    """List daily usage rollups."""
+    query = session.query(UsageRollupDaily)
+    
+    if day:
+        query = query.filter(UsageRollupDaily.day == day)
+    if team_id:
+        query = query.filter(UsageRollupDaily.team_id == team_id)
+    if key_id:
+        query = query.filter(UsageRollupDaily.key_id == key_id)
+        
+    query = query.order_by(UsageRollupDaily.day.desc(), UsageRollupDaily.used_usd.desc())
+    items = query.limit(limit_count).offset(offset).all()
+    
+    return {
+        "data": [
+            {
+                "day": i.day.isoformat(),
+                "team_id": i.team_id,
+                "key_id": i.key_id,
+                "used_usd": str(i.used_usd),
+                "input_tokens": i.input_tokens,
+                "output_tokens": i.output_tokens,
+                "request_count": i.request_count
+            }
+            for i in items
+        ]
+    }
+

@@ -8,7 +8,7 @@ from fastapi.concurrency import run_in_threadpool
 from app.settings import settings
 from app.adapters.redis.client import get_redis_client
 from app.adapters.postgres.task_store import PostgresTaskStore
-from app.adapters.postgres.session import SessionLocal
+from app.dependencies import SessionLocal
 
 logger = logging.getLogger(__name__)
 

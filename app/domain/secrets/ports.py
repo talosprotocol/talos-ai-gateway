@@ -7,13 +7,25 @@ class KekProvider(ABC):
     """Abstract Port for Key Encryption Key providers."""
 
     @abstractmethod
-    def encrypt(self, plaintext: bytes) -> EncryptedEnvelope:
-        """Encrypt plaintext using AES-GCM."""
+    def encrypt(self, plaintext: bytes, aad: Optional[bytes] = None) -> EncryptedEnvelope:
+        """Encrypt plaintext using AES-GCM with optional AAD."""
         ...
 
     @abstractmethod
-    def decrypt(self, envelope: EncryptedEnvelope) -> bytes:
-        """Decrypt envelope using AES-GCM."""
+    def decrypt(self, envelope: EncryptedEnvelope, aad: Optional[bytes] = None) -> bytes:
+        """Decrypt envelope using AES-GCM with optional AAD."""
+        ...
+
+    @property
+    @abstractmethod
+    def current_kek_id(self) -> str:
+        """ID of the current KEK used for new encryptions."""
+        ...
+
+    @property
+    @abstractmethod
+    def loaded_kek_ids(self) -> List[str]:
+        """IDs of all currently loaded KEKs."""
         ...
 
 class SecretStore(ABC):
@@ -30,11 +42,21 @@ class SecretStore(ABC):
         ...
 
     @abstractmethod
-    def set_secret(self, name: str, value: str) -> None:
-        """Create or update a secret with encryption."""
+    def set_secret(self, name: str, value: str, expected_kek_id: Optional[str] = None) -> bool:
+        """Create or update a secret with encryption. Returns True if successful."""
         ...
 
     @abstractmethod
     def delete_secret(self, name: str) -> bool:
         """Delete a secret."""
+        ...
+
+    @abstractmethod
+    def get_stale_counts(self) -> Dict[str, int]:
+        """Return counts of secrets per KEK ID."""
+        ...
+
+    @abstractmethod
+    def get_secrets_batch(self, batch_size: int, cursor: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Fetch a batch of secrets for rotation, ordered by name."""
         ...
