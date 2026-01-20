@@ -193,6 +193,7 @@ class UsageEvent(Base):
     __tablename__ = "usage_events"
     
     id = Column(String(36), primary_key=True)
+    request_id = Column(String(36), index=True, unique=True, nullable=True) # Added Phase 15
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     key_id = Column(String(255), index=True)
     team_id = Column(String(255), index=True)

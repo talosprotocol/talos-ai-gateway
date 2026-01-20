@@ -46,6 +46,7 @@ def upgrade() -> None:
              pass
 
     op.add_column('usage_events', sa.Column('pricing_version', sa.String(36), nullable=True))
+    op.add_column('usage_events', sa.Column('request_id', sa.String(36), nullable=True))
     op.add_column('usage_events', sa.Column('token_count_source', sa.String(20), nullable=True))
     
     # Request ID Unique
@@ -110,6 +111,8 @@ def downgrade() -> None:
     op.drop_table('budget_scopes')
     
     op.drop_constraint('uq_usage_event_request', 'usage_events', type_='unique')
+    op.drop_constraint('uq_usage_event_request', 'usage_events', type_='unique')
+    op.drop_column('usage_events', 'request_id')
     op.drop_column('usage_events', 'token_count_source')
     op.drop_column('usage_events', 'pricing_version')
     # Revert cost_usd is hard if values have decimal part, leaving formatted as numeric

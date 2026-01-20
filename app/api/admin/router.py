@@ -37,6 +37,8 @@ from app.domain.interfaces import (
 )
 from app.domain.secrets.ports import KekProvider
 
+from app.core.config import settings
+
 router = APIRouter()
 
 # Load provider catalog from contracts
@@ -799,6 +801,28 @@ async def get_audit_stats(
 @router.get("/me")
 async def get_me(principal: RbacContext = Depends(get_rbac_context)):
     return principal
+
+# ============ Debug Ops ============
+
+@router.get("/test/sleep")
+async def debug_sleep(
+    seconds: int = 1,
+    principal: dict = Depends(require_permission("platform.admin"))
+):
+    """
+    Sleep for N seconds.
+    Only available in DEV_MODE.
+    Used for GLB Least-Conn validation.
+    """
+    if not settings.DEV_MODE:
+        raise HTTPException(status_code=404, detail="Not Found")
+        
+    if not (1 <= seconds <= 10):
+        raise HTTPException(status_code=400, detail="Seconds must be between 1 and 10")
+    
+    import asyncio
+    await asyncio.sleep(seconds)
+    return {"slept": seconds}
 
 # ============ Budget Operations ============
 
