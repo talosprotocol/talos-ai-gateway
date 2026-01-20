@@ -190,6 +190,9 @@ app.add_middleware(TalosAuditMiddleware)
 from app.middleware.shutdown_gate import ShutdownGateMiddleware
 app.add_middleware(ShutdownGateMiddleware)
 
+from app.middleware.observability import RegionHeaderMiddleware
+app.add_middleware(RegionHeaderMiddleware)
+
 setup_opentelemetry(app)
 
 from fastapi.responses import JSONResponse

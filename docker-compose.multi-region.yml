@@ -70,13 +70,18 @@ services:
       DATABASE_WRITE_URL: postgresql://talos:talos@postgres-primary:5432/talos
       DATABASE_READ_URL: postgresql://talos:talos@postgres-primary:5432/talos
       REDIS_URL: redis://redis:6379/0
-      REGION_ID: region-a
+      TALOS_REGION_ID: region-a
       RUN_MIGRATIONS: "true"
       MODE: dev
-      DEV_MODE: "false"  # Use Postgres stores for multi-region test
-      RATE_LIMIT_ENABLED: "false"  # Disable rate limiting for tests
+      DEV_MODE: "true"  # Enable debug/sleep endpoint
+      RATE_LIMIT_ENABLED: "false"
     ports:
       - "8003:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     depends_on:
       postgres-primary:
         condition: service_healthy
@@ -93,14 +98,19 @@ services:
       DATABASE_WRITE_URL: postgresql://talos:talos@postgres-primary:5432/talos
       DATABASE_READ_URL: postgresql://talos:talos@postgres-replica:5432/talos
       REDIS_URL: redis://redis:6379/0
-      REGION_ID: region-b
+      TALOS_REGION_ID: region-b
       RUN_MIGRATIONS: "false"
       MODE: dev
-      DEV_MODE: "false"  # Use Postgres stores for multi-region test
-      RATE_LIMIT_ENABLED: "false"  # Disable rate limiting for tests
+      DEV_MODE: "true"  # Enable debug/sleep endpoint
+      RATE_LIMIT_ENABLED: "false"
       READ_FALLBACK_ENABLED: "true"
     ports:
       - "8004:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     depends_on:
       postgres-primary:
         condition: service_healthy
@@ -121,8 +131,10 @@ services:
     ports:
       - "8005:80"
     depends_on:
-      - gateway-region-a
-      - gateway-region-b
+      gateway-region-a:
+        condition: service_healthy
+      gateway-region-b:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost/health/ready"]
       interval: 10s

@@ -50,10 +50,11 @@ class TalosSpanProcessor(SpanProcessor):
         # Delegate to the wrapped processor (e.g. BatchSpanProcessor -> Exporter)
         self._processor.on_end(span)
 
-    def shutdown(self, delay_millis: int = 30000) -> None:
-        self._processor.shutdown(delay_millis)
+    def shutdown(self) -> None:
+        self._processor.shutdown()
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
+        # BatchSpanProcessor.force_flush takes timeout_millis
         return self._processor.force_flush(timeout_millis)
         
     def _should_redact(self, key: str) -> bool:
