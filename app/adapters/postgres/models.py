@@ -1,9 +1,10 @@
 """SQLAlchemy Models for Control Plane."""
-from sqlalchemy import Column, String, JSON, Integer, DateTime, Boolean, ForeignKey, Index, CheckConstraint, Float, Text, UniqueConstraint, desc, Numeric, Date
-from sqlalchemy.orm import relationship, declarative_base
+from sqlalchemy import Column, String, JSON, Integer, DateTime, Boolean, ForeignKey, Index, CheckConstraint, Float, Text, UniqueConstraint, desc, Numeric, Date  # type: ignore
+from sqlalchemy.orm import relationship, DeclarativeBase  # type: ignore
 from datetime import datetime
 
-Base = declarative_base()
+class Base(DeclarativeBase):
+    pass
 
 
 class Org(Base):

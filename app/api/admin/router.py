@@ -25,7 +25,7 @@ import uuid
 import json
 from decimal import Decimal
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session  # type: ignore
 from app.dependencies import (
     get_upstream_store, get_model_group_store, get_secret_store, 
     get_mcp_store, get_audit_store, get_routing_policy_store, get_usage_store,
@@ -123,7 +123,7 @@ from app.middleware.auth_admin import require_permission, get_rbac_context, Rbac
 # ============ Helper ============
 
 def audit(store: AuditStore, action: str, resource_type: str, principal_id: str, 
-          resource_id: str = None, outcome: str = "success", **details):
+          resource_id: Optional[str] = None, outcome: str = "success", **details):
     event = {
         "event_id": uuid7(),
         "timestamp": datetime.now(timezone.utc),
@@ -143,7 +143,7 @@ def audit(store: AuditStore, action: str, resource_type: str, principal_id: str,
 
 @router.get("/catalog/provider-templates")
 async def get_provider_templates(
-    principal: dict = Depends(require_permission("llm.read")),
+    principal: RbacContext = Depends(require_permission("llm.read")),
     audit_store: AuditStore = Depends(get_audit_store)
 ):
     """Get provider catalog templates from contracts."""
@@ -159,7 +159,7 @@ async def get_provider_templates(
 
 @router.get("/llm/upstreams")
 async def list_upstreams(
-    principal: dict = Depends(require_permission("llm.read")),
+    principal: RbacContext = Depends(require_permission("llm.read")),
     store: UpstreamStore = Depends(get_upstream_store)
 ):
     """List all LLM upstreams."""
@@ -169,7 +169,7 @@ async def list_upstreams(
 @router.get("/llm/upstreams/{upstream_id}")
 async def get_upstream(
     upstream_id: str, 
-    principal: dict = Depends(require_permission("llm.read")),
+    principal: RbacContext = Depends(require_permission("llm.read")),
     store: UpstreamStore = Depends(get_upstream_store)
 ):
     """Get a single upstream."""
@@ -185,7 +185,7 @@ async def get_upstream(
 @router.post("/llm/upstreams", status_code=201)
 async def create_upstream(
     data: UpstreamCreate, 
-    principal: dict = Depends(require_permission("llm.admin")),
+    principal: RbacContext = Depends(require_permission("llm.admin")),
     store: UpstreamStore = Depends(get_upstream_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ):
@@ -211,7 +211,7 @@ async def create_upstream(
 async def update_upstream(
     upstream_id: str, 
     data: UpstreamUpdate,
-    principal: dict = Depends(require_permission("llm.admin")),
+    principal: RbacContext = Depends(require_permission("llm.admin")),
     store: UpstreamStore = Depends(get_upstream_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ):
@@ -232,7 +232,7 @@ async def update_upstream(
 @router.post("/llm/upstreams/{upstream_id}:disable")
 async def disable_upstream(
     upstream_id: str, 
-    principal: dict = Depends(require_permission("llm.admin")),
+    principal: RbacContext = Depends(require_permission("llm.admin")),
     store: UpstreamStore = Depends(get_upstream_store)
 ):
     """Disable an upstream."""
@@ -246,7 +246,7 @@ async def disable_upstream(
 @router.post("/llm/upstreams/{upstream_id}:enable")
 async def enable_upstream(
     upstream_id: str, 
-    principal: dict = Depends(require_permission("llm.admin")),
+    principal: RbacContext = Depends(require_permission("llm.admin")),
     store: UpstreamStore = Depends(get_upstream_store)
 ):
     """Enable an upstream."""
@@ -260,13 +260,13 @@ async def enable_upstream(
 @router.delete("/llm/upstreams/{upstream_id}")
 async def delete_upstream(
     upstream_id: str, 
-    principal: dict = Depends(require_permission("llm.admin")),
+    principal: RbacContext = Depends(require_permission("llm.admin")),
     store: UpstreamStore = Depends(get_upstream_store),
     mg_store: ModelGroupStore = Depends(get_model_group_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ):
     """Delete an upstream (checks dependencies)."""
-    if "resource.delete" not in principal["permissions"] and "platform.admin" not in principal["permissions"]:
+    if "resource.delete" not in principal.effective_permissions and "platform.admin" not in principal.effective_permissions:
         raise HTTPException(status_code=403, detail={"error": {"code": "PERMISSION_DENIED"}})
     
     if not store.get_upstream(upstream_id):
@@ -298,7 +298,7 @@ async def delete_upstream(
 
 @router.get("/llm/model-groups")
 async def list_model_groups(
-    principal: dict = Depends(require_permission("llm.read")),
+    principal: RbacContext = Depends(require_permission("llm.read")),
     store: ModelGroupStore = Depends(get_model_group_store)
 ):
     """List all model groups."""
@@ -308,7 +308,7 @@ async def list_model_groups(
 @router.post("/llm/model-groups", status_code=201)
 async def create_model_group(
     data: ModelGroupCreate, 
-    principal: dict = Depends(require_permission("llm.admin")),
+    principal: RbacContext = Depends(require_permission("llm.admin")),
     store: ModelGroupStore = Depends(get_model_group_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ):
@@ -334,7 +334,7 @@ async def create_model_group(
 async def update_model_group(
     group_id: str,
     data: ModelGroupUpdate,
-    principal: dict = Depends(require_permission("llm.admin")),
+    principal: RbacContext = Depends(require_permission("llm.admin")),
     store: ModelGroupStore = Depends(get_model_group_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ):
@@ -354,7 +354,7 @@ async def update_model_group(
 @router.post("/llm/model-groups/{group_id}:disable")
 async def disable_model_group(
     group_id: str, 
-    principal: dict = Depends(require_permission("llm.admin")),
+    principal: RbacContext = Depends(require_permission("llm.admin")),
     store: ModelGroupStore = Depends(get_model_group_store)
 ):
     try:
@@ -367,7 +367,7 @@ async def disable_model_group(
 @router.post("/llm/model-groups/{group_id}:enable")
 async def enable_model_group(
     group_id: str, 
-    principal: dict = Depends(require_permission("llm.admin")),
+    principal: RbacContext = Depends(require_permission("llm.admin")),
     store: ModelGroupStore = Depends(get_model_group_store)
 ):
     try:
@@ -380,11 +380,11 @@ async def enable_model_group(
 @router.delete("/llm/model-groups/{group_id}")
 async def delete_model_group(
     group_id: str, 
-    principal: dict = Depends(require_permission("llm.admin")),
+    principal: RbacContext = Depends(require_permission("llm.admin")),
     store: ModelGroupStore = Depends(get_model_group_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ):
-    if "resource.delete" not in principal["permissions"] and "platform.admin" not in principal["permissions"]:
+    if "resource.delete" not in principal.effective_permissions and "platform.admin" not in principal.effective_permissions:
         raise HTTPException(status_code=403, detail={"error": {"code": "PERMISSION_DENIED"}})
     
     if not store.get_model_group(group_id):
@@ -402,7 +402,7 @@ async def delete_model_group(
 
 @router.get("/llm/routing-policies")
 async def list_routing_policies(
-    principal: dict = Depends(require_permission("llm.read")),
+    principal: RbacContext = Depends(require_permission("llm.read")),
     store: RoutingPolicyStore = Depends(get_routing_policy_store)
 ):
     """List all routing policies."""
@@ -412,7 +412,7 @@ async def list_routing_policies(
 @router.post("/llm/routing-policies", status_code=201)
 async def create_routing_policy(
     data: dict, 
-    principal: dict = Depends(require_permission("llm.admin")),
+    principal: RbacContext = Depends(require_permission("llm.admin")),
     store: RoutingPolicyStore = Depends(get_routing_policy_store)
 ):
     """Create a new routing policy version."""
@@ -437,7 +437,7 @@ async def create_routing_policy(
 
 @router.get("/llm/health")
 async def get_llm_health(
-    principal: dict = Depends(require_permission("llm.read")),
+    principal: RbacContext = Depends(require_permission("llm.read")),
     store: UpstreamStore = Depends(get_upstream_store)
 ):
     """Get health status for all upstreams."""
@@ -460,7 +460,7 @@ async def get_llm_health(
 
 @router.get("/mcp/servers")
 async def list_mcp_servers(
-    principal: dict = Depends(require_permission("mcp.read")),
+    principal: RbacContext = Depends(require_permission("mcp.read")),
     store: McpStore = Depends(get_read_mcp_store)
 ):
     """List all MCP servers."""
@@ -470,7 +470,7 @@ async def list_mcp_servers(
 @router.post("/mcp/servers", status_code=201)
 async def create_mcp_server(
     data: dict, 
-    principal: dict = Depends(require_permission("mcp.admin")),
+    principal: RbacContext = Depends(require_permission("mcp.admin")),
     store: McpStore = Depends(get_mcp_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ):
@@ -495,7 +495,7 @@ async def create_mcp_server(
 @router.post("/mcp/servers/{server_id}:disable")
 async def disable_mcp_server(
     server_id: str, 
-    principal: dict = Depends(require_permission("mcp.admin")),
+    principal: RbacContext = Depends(require_permission("mcp.admin")),
     store: McpStore = Depends(get_mcp_store)
 ):
     try:
@@ -508,7 +508,7 @@ async def disable_mcp_server(
 @router.post("/mcp/servers/{server_id}:enable")
 async def enable_mcp_server(
     server_id: str, 
-    principal: dict = Depends(require_permission("mcp.admin")),
+    principal: RbacContext = Depends(require_permission("mcp.admin")),
     store: McpStore = Depends(get_mcp_store)
 ):
     try:
@@ -521,11 +521,11 @@ async def enable_mcp_server(
 @router.delete("/mcp/servers/{server_id}")
 async def delete_mcp_server(
     server_id: str, 
-    principal: dict = Depends(require_permission("mcp.admin")),
+    principal: RbacContext = Depends(require_permission("mcp.admin")),
     store: McpStore = Depends(get_mcp_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ):
-    if "resource.delete" not in principal["permissions"] and "platform.admin" not in principal["permissions"]:
+    if "resource.delete" not in principal.effective_permissions and "platform.admin" not in principal.effective_permissions:
         raise HTTPException(status_code=403, detail={"error": {"code": "PERMISSION_DENIED"}})
     
     store.delete_server(server_id)
@@ -541,7 +541,7 @@ async def delete_mcp_server(
 @router.get("/mcp/policies")
 async def list_mcp_policies(
     team_id: Optional[str] = None, 
-    principal: dict = Depends(require_permission("mcp.read")),
+    principal: RbacContext = Depends(require_permission("mcp.read")),
     store: McpStore = Depends(get_read_mcp_store)
 ):
     if not team_id:
@@ -552,7 +552,7 @@ async def list_mcp_policies(
 @router.post("/mcp/policies", status_code=201)
 async def create_mcp_policy(
     data: dict, 
-    principal: dict = Depends(require_permission("mcp.admin")),
+    principal: RbacContext = Depends(require_permission("mcp.admin")),
     store: McpStore = Depends(get_mcp_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ):
@@ -571,7 +571,7 @@ async def create_mcp_policy(
 @router.delete("/mcp/policies/{policy_id}")
 async def delete_mcp_policy(
     policy_id: str, 
-    principal: dict = Depends(require_permission("mcp.admin")),
+    principal: RbacContext = Depends(require_permission("mcp.admin")),
     store: McpStore = Depends(get_mcp_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ):
@@ -588,7 +588,7 @@ async def delete_mcp_policy(
 
 @router.get("/secrets")
 async def list_secrets(
-    principal: dict = Depends(require_permission("keys.read")),
+    principal: RbacContext = Depends(require_permission("keys.read")),
     store: SecretStore = Depends(get_secret_store)  # PRIMARY: read-your-writes required
 ):
     return {"secrets": store.list_secrets()}
@@ -596,7 +596,7 @@ async def list_secrets(
 
 @router.get("/secrets/kek-status", response_model=KekStatusResponse)
 async def get_kek_status(
-    principal: dict = Depends(require_permission("keys.read")),
+    principal: RbacContext = Depends(require_permission("keys.read")),
     store: SecretStore = Depends(get_secret_store),
     kek_provider: KekProvider = Depends(get_kek_provider)
 ):
@@ -611,7 +611,7 @@ async def get_kek_status(
 @router.post("/secrets/rotate-all", status_code=202)
 async def rotate_all_secrets(
     request: Request,
-    principal: dict = Depends(require_permission("keys.write")),
+    principal: RbacContext = Depends(require_permission("keys.write")),
     rotation_store: RotationOperationStore = Depends(get_rotation_store),
     kek_provider: KekProvider = Depends(get_kek_provider)
 ):
@@ -649,7 +649,7 @@ async def rotate_all_secrets(
 @router.get("/secrets/rotation-status/{op_id}", name="get_rotation_status")
 async def get_rotation_op_status(
     op_id: str,
-    principal: dict = Depends(require_permission("keys.read")),
+    principal: RbacContext = Depends(require_permission("keys.read")),
     rotation_store: RotationOperationStore = Depends(get_rotation_store)
 ):
     """Get status of a specific rotation operation."""
@@ -662,7 +662,7 @@ async def get_rotation_op_status(
 @router.post("/secrets", status_code=201)
 async def create_secret(
     data: dict, 
-    principal: dict = Depends(require_permission("keys.write")),
+    principal: RbacContext = Depends(require_permission("keys.write")),
     store: SecretStore = Depends(get_secret_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ):
@@ -682,7 +682,7 @@ async def create_secret(
 @router.delete("/secrets/{name}")
 async def delete_secret(
     name: str, 
-    principal: dict = Depends(require_permission("keys.write")),
+    principal: RbacContext = Depends(require_permission("keys.write")),
     store: SecretStore = Depends(get_secret_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ):
@@ -696,12 +696,12 @@ async def delete_secret(
 
 @router.get("/config:export")
 async def export_config(
-    principal: dict = Depends(require_permission("llm.read")),
+    principal: RbacContext = Depends(require_permission("llm.read")),
     u_store: UpstreamStore = Depends(get_upstream_store),
     mg_store: ModelGroupStore = Depends(get_model_group_store),
     rp_store: RoutingPolicyStore = Depends(get_routing_policy_store)
 ):
-    config = {
+    config: Dict[str, Dict[str, Any]] = {
         "upstreams": {},
         "model_groups": {},
         "routing_policies": {}
@@ -713,13 +713,13 @@ async def export_config(
         if creds:
              if not (creds.startswith("env:") or creds.startswith("secret:")):
                  safe["credentials_ref"] = "[REDACTED]"
-        config["upstreams"][u.get("id")] = safe
+        config["upstreams"][str(u.get("id"))] = safe
         
     for g in mg_store.list_model_groups():
-        config["model_groups"][g.get("id")] = g
+        config["model_groups"][str(g.get("id"))] = g
         
     for p in rp_store.list_policies():
-        config["routing_policies"][p.get("policy_id")] = p
+        config["routing_policies"][str(p.get("policy_id"))] = p
         
     return config
 
@@ -727,7 +727,7 @@ async def export_config(
 @router.post("/config:validate")
 async def validate_config(
     data: dict, 
-    principal: dict = Depends(require_permission("llm.admin"))
+    principal: RbacContext = Depends(require_permission("llm.admin"))
 ):
     """Validate config without applying."""
     errors = []
@@ -747,7 +747,7 @@ async def validate_config(
 @router.post("/config:apply")
 async def apply_config(
     data: dict, 
-    principal: dict = Depends(require_permission("llm.admin")),
+    principal: RbacContext = Depends(require_permission("llm.admin")),
     u_store: UpstreamStore = Depends(get_upstream_store),
     mg_store: ModelGroupStore = Depends(get_model_group_store),
     audit_store: AuditStore = Depends(get_audit_store)
@@ -778,7 +778,7 @@ async def apply_config(
 
 @router.post("/config:reload")
 async def reload_config(
-    principal: dict = Depends(require_permission("platform.admin"))
+    principal: RbacContext = Depends(require_permission("platform.admin"))
 ):
     # Only meaningful for persistence that supports reload (File)
     # JsonStore might support it. Postgres does not.
@@ -864,7 +864,7 @@ async def simulate_leak(
     db.add(res)
     
     # Also need to update the scope row's reserved_usd to match the leaked amount
-    from sqlalchemy import text
+    from sqlalchemy import text  # type: ignore
     db.execute(
         text("UPDATE budget_scopes SET reserved_usd = reserved_usd + :amount WHERE scope_type = :st AND scope_id = :si"),
         {"amount": Decimal(req.amount), "st": req.scope_type, "si": req.scope_id}
