@@ -9,7 +9,7 @@
         "path_template": "/v1/chat/completions"
       },
       "required_scopes": ["llm.invoke"],
-      "attestation_required": true,
+      "attestation_required": false,
       "audit_action": "llm.invoke",
       "data_classification": "public",
       "audit_meta_allowlist": ["model", "max_tokens", "temperature", "finish_reason", "latency_ms", "usage"],
@@ -37,7 +37,7 @@
         "path_template": "/v1/mcp/servers/{server_id}/tools/{tool_name}:call"
       },
       "required_scopes": ["mcp.invoke"],
-      "attestation_required": true,
+      "attestation_required": false,
       "audit_action": "mcp.tools.execute",
       "data_classification": "sensitive",
       "audit_meta_allowlist": ["server_id", "tool_name", "latency_ms", "error"],

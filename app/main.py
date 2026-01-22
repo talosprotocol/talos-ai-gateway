@@ -17,6 +17,7 @@ import asyncio
 from app.jobs.retention import retention_worker
 from app.jobs.revocation import revocation_worker
 from app.jobs.rotation_worker import rotation_worker
+from app.jobs.budget_cleanup import budget_cleanup_worker
 from app.logging_hardening import setup_logging_redaction
 
 # Initialize logging redaction filters early
@@ -29,6 +30,7 @@ async def lifespan(app: FastAPI):
     worker_task = asyncio.create_task(retention_worker(shutdown_event))
     revoc_task = asyncio.create_task(revocation_worker(shutdown_event))
     rotation_task = asyncio.create_task(rotation_worker(shutdown_event))
+    budget_cleanup_task = asyncio.create_task(budget_cleanup_worker(shutdown_event))
 
     # Phase 12: Migrations
     import os

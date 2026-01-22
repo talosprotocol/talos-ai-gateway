@@ -48,9 +48,9 @@ class BudgetService:
         Attempt to reserve budget execution.
         
         Modes:
-        - OFF: Always allow.
-        - WARN: Always allow, but update state/alerts.
-        - HARD: Strict check. atomic update.
+        - OFF: Always allow. No DB locks.
+        - WARN: Always allow, but update state/alerts. No DB locks unless alerting.
+        - HARD: Strict check. atomic update with dual-scope locking.
         
         Returns: Dict of headers to return.
         Raises: BudgetExceededError if HARD mode and limit exceeded.
@@ -58,97 +58,111 @@ class BudgetService:
         
         period_start = datetime.utcnow().date().replace(day=1)
         
-        # In OFF/WARN mode, we rely on cache/read-only check mostly, 
-        # but to maintain 'last_alert_at' state we might need write.
-        # However, for pure OFF, we skip even that to minimize latency?
-        # Spec says: "warn ... emit alert ... once per hour per scope".
-        # So WARN needs write or redis. BudgetScope has last_alert_at.
-        
-        if budget_mode == "off":
-            # Just return headers based on cache/rollups roughly?
-            # Or just return empty/permissive headers.
-            # "Return budget headers". Source: Cache.
-            # We can read BudgetScope non-locking or UsageRollup.
+        # 1. Performance Optimization: OFF/WARN do not lock or create reservations
+        if budget_mode in ("off", "warn"):
+            # Compute headers from cache/non-locking reads if possible, 
+            # here we do a simple non-locking read for current usage to provide headers.
+            # In a high-scale prod, this might come from Redis.
+            
+            # Simple non-locking read for headers
+            team_usage = self.db.query(BudgetScope).filter(
+                BudgetScope.scope_type == "team",
+                BudgetScope.scope_id == team_id,
+                BudgetScope.period_start == period_start
+            ).first()
+            
+            key_usage = self.db.query(BudgetScope).filter(
+                BudgetScope.scope_type == "virtual_key",
+                BudgetScope.scope_id == key_id,
+                BudgetScope.period_start == period_start
+            ).first()
+            
+            used = max(
+                team_usage.used_usd if team_usage else Decimal("0"),
+                key_usage.used_usd if key_usage else Decimal("0")
+            )
+            
+            limit = min(limit_usd_team, limit_usd_key)
+            # remaining = (limit + overdraft) - (used + reserved)
+            # Since we don't lock, reserved might be slightly off, but that's acceptable for WARN/OFF
+            res_val = max(
+                team_usage.reserved_usd if team_usage else Decimal("0"),
+                key_usage.reserved_usd if key_usage else Decimal("0")
+            )
+            remaining = (limit + overdraft_usd) - (used + res_val)
+
+            if budget_mode == "warn" and remaining <= 0:
+                # WARN mode needs to check/emit alert once per hour
+                # This requires a write, but only for the alert state
+                if team_usage:
+                    self._check_and_emit_alert(team_usage, "team", remaining)
+                if key_usage:
+                    self._check_and_emit_alert(key_usage, "virtual_key", remaining)
+                self.db.commit()
+
             return self._get_headers(
-                mode="off", source="cache",
-                remaining=Decimal("999999"), # Placeholder or calc
-                limit=limit_usd_team,
-                used=Decimal("0")
+                mode=budget_mode, 
+                source="cache" if budget_mode == "off" else "ledger",
+                remaining=remaining,
+                limit=limit,
+                used=used
             )
 
-        # Ensure scopes exist (Lazy creation)
-        # We do this for implementation simplicity inside the transaction for Hard/Warn.
-        
+        # 2. HARD MODE: Atomic reservation with deterministic dual-scope locking
         try:
-            # 1. Lock Scopes (Select for Update)
-            # We iterate sorted keys to prevent deadlocks: always Team then Key (or by ID)
-            # Actually just Team and Key.
+            # DETERMINISTIC LOCK ORDER: Team first, then Key
+            # This prevents deadlocks between concurrent requests for the same team across different keys
             
-            # Fetch Team Scope
+            # Fetch Team Scope (LOCKED)
             team_scope = self._get_or_create_scope_locked(
                 "team", team_id, period_start, limit_usd_team, overdraft_usd
             )
             
-            # Fetch Key Scope
+            # Fetch Key Scope (LOCKED)
             key_scope = self._get_or_create_scope_locked(
                 "virtual_key", key_id, period_start, limit_usd_key, overdraft_usd
             )
             
-            # 2. Calculate State
-            team_avail = (team_scope.limit_usd + overdraft_usd) - (team_scope.used_usd + team_scope.reserved_usd)
-            key_avail = (key_scope.limit_usd + overdraft_usd) - (key_scope.used_usd + key_scope.reserved_usd)
+            # Calculate State
+            team_avail = (team_scope.limit_usd + team_scope.overdraft_usd) - (team_scope.used_usd + team_scope.reserved_usd)
+            key_avail = (key_scope.limit_usd + key_scope.overdraft_usd) - (key_scope.used_usd + key_scope.reserved_usd)
             
             effective_remaining = min(team_avail, key_avail)
             
-            # 3. Enforcement
-            if budget_mode == "hard":
-                if effective_remaining < estimate_usd:
-                    # BLOCK
-                    raise BudgetExceededError(
-                        "Budget exceeded", 
-                        remaining=effective_remaining,
-                        limit=min(team_scope.limit_usd, key_scope.limit_usd)
-                    )
-                
-                # Apply Reservation
-                team_scope.reserved_usd += estimate_usd
-                key_scope.reserved_usd += estimate_usd
-                
-                # Create Reservation Record
-                res = BudgetReservation(
-                    id=str(uuid7()),
-                    request_id=request_id,
-                    scope_team_id=team_id,
-                    scope_key_id=key_id,
-                    reserved_usd=estimate_usd,
-                    status="active",
-                    expires_at=datetime.utcnow().replace(second=0, microsecond=0) + 
-                               timedelta(seconds=EXPIRY_SECONDS) 
-                )
-                self.db.add(res)
-                self.db.commit()
-                
-                return self._get_headers(
-                    mode="hard", source="ledger",
-                    remaining=effective_remaining - estimate_usd,
-                    limit=min(team_scope.limit_usd, key_scope.limit_usd),
-                    used=max(team_scope.used_usd, key_scope.used_usd)
-                )
-
-            elif budget_mode == "warn":
-                # Check for alert
-                if effective_remaining <= 0:
-                    self._check_and_emit_alert(team_scope, "team", team_avail)
-                    self._check_and_emit_alert(key_scope, "virtual_key", key_avail)
-                
-                self.db.commit() # Commit alert update if any
-                
-                return self._get_headers(
-                    mode="warn", source="ledger", # Can be ledger or cache, ledger is more accurate for alert
+            logger.info(f"Budget Reservation Check: req={request_id} team={team_id} team_avail={team_avail} key={key_id} key_avail={key_avail} effective={effective_remaining} estimate={estimate_usd}")
+            
+            if effective_remaining < estimate_usd:
+                # BLOCK
+                raise BudgetExceededError(
+                    "Budget exceeded", 
                     remaining=effective_remaining,
-                    limit=min(team_scope.limit_usd, key_scope.limit_usd),
-                    used=max(team_scope.used_usd, key_scope.used_usd)
+                    limit=min(team_scope.limit_usd, key_scope.limit_usd)
                 )
+            
+            # Apply Reservation
+            team_scope.reserved_usd += estimate_usd
+            key_scope.reserved_usd += estimate_usd
+            
+            # Create Reservation Record
+            res = BudgetReservation(
+                id=str(uuid7()),
+                request_id=request_id,
+                scope_team_id=team_id,
+                scope_key_id=key_id,
+                reserved_usd=estimate_usd,
+                status="ACTIVE",
+                expires_at=datetime.utcnow().replace(second=0, microsecond=0) + 
+                           timedelta(seconds=EXPIRY_SECONDS) 
+            )
+            self.db.add(res)
+            self.db.commit()
+            
+            return self._get_headers(
+                mode="hard", source="ledger",
+                remaining=effective_remaining - estimate_usd,
+                limit=min(team_scope.limit_usd, key_scope.limit_usd),
+                used=max(team_scope.used_usd, key_scope.used_usd)
+            )
 
         except BudgetExceededError:
             self.db.rollback()
@@ -156,9 +170,6 @@ class BudgetService:
         except Exception as e:
             logger.error(f"Error in budget reserve: {e}")
             self.db.rollback()
-            # Fail closed or open?
-            # Hard mode -> Fail Closed usually.
-            # But let's raise to Router to decide (usually 500).
             raise e
 
         return {}
@@ -178,44 +189,28 @@ class BudgetService:
                 filter(BudgetReservation.request_id == request_id).\
                 with_for_update().first()
             
-            if not res or res.status != "active":
-                # Already settled or expired/released
-                # But we still might need to record usage (UsageManager handles that)
-                # If expired, we should still increment used_usd? 
-                # Yes, used_usd must reflect actuals even if reservation expired.
-                # If reservation GONE, we just update scopes increment Only?
-                # Complex case: Reservation expired -> reserved_usd deducted already.
-                # Now we just add used_usd.
-                # But we need to know the scopes!
-                # If reservation is gone/settled, we stop here (assuming logic handled).
-                # Wait, if reservation expired, the cleaner removed it or marked it released?
-                # Spec says "cleanup worker releases them".
-                # If we settle AFTER cleanup, we must just add to used_usd.
-                # But we need scope IDs. 
-                # UsageEvent has scope IDs, but BudgetService settle relies on Reservation?
-                # Let's assume for strictness we try to find reservation.
-                # If missing map from request logs?
-                # For Phase 15 MVP: If reservation missing or not active, we assume cleanup handled reserved logic.
-                # But we MUST still add `used_usd`.
-                # So we need to fetch scopes. Ideally passed in.
+            if not res or res.status != "ACTIVE":
+                # Already settled, expired, or released (or never reserved in OFF/WARN)
                 return 
 
             period_start = datetime.utcnow().date().replace(day=1)
             
-            # Decrease Reserved
-            # Find Scopes
+            # Decrease Reserved and Increase Used in the same transaction
+            # Fetch scopes in deterministic order: Team then Key
             team_scope = self._get_scope(res.scope_team_id, "team", period_start)
             key_scope = self._get_scope(res.scope_key_id, "virtual_key", period_start)
             
             if team_scope:
+                # Atomic update
                 team_scope.reserved_usd = max(Decimal(0), team_scope.reserved_usd - res.reserved_usd)
                 team_scope.used_usd += actual_cost_usd
                 
             if key_scope:
+                # Atomic update
                 key_scope.reserved_usd = max(Decimal(0), key_scope.reserved_usd - res.reserved_usd)
                 key_scope.used_usd += actual_cost_usd
                 
-            res.status = "settled"
+            res.status = "SETTLED"
             self.db.commit()
             
         except Exception as e:
@@ -304,24 +299,21 @@ class BudgetService:
             # Lock them to prevent race with settle
             expired = self.db.query(BudgetReservation).\
                 filter(
-                    BudgetReservation.status == "active",
+                    BudgetReservation.status == "ACTIVE",
                     BudgetReservation.expires_at <= now
                 ).with_for_update(skip_locked=True).limit(limit).all()
             
             for res in expired:
-                # Infer period from creation time (approx)
-                # Reservations must match the scope they reserved against.
+                # Infer period from creation time
                 res_period = res.created_at.date().replace(day=1)
                 
                 # Decrement Scopes directly
-                # We assume scopes exist because reservation was successful
-                # Fail loudly if integrity is broken (CheckConstraint)
-                
+                # Lock order: Team then Key
                 self.db.query(BudgetScope).filter(
                     BudgetScope.scope_type == "team",
                     BudgetScope.scope_id == res.scope_team_id,
                     BudgetScope.period_start == res_period
-                ).update({
+                ).with_for_update().update({
                     BudgetScope.reserved_usd: BudgetScope.reserved_usd - res.reserved_usd
                 }, synchronize_session=False)
 
@@ -329,11 +321,11 @@ class BudgetService:
                     BudgetScope.scope_type == "virtual_key",
                     BudgetScope.scope_id == res.scope_key_id,
                     BudgetScope.period_start == res_period
-                ).update({
+                ).with_for_update().update({
                     BudgetScope.reserved_usd: BudgetScope.reserved_usd - res.reserved_usd
                 }, synchronize_session=False)
 
-                res.status = "released"
+                res.status = "EXPIRED"
                 released_count += 1
             
             self.db.commit()

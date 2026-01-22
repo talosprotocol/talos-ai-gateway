@@ -1,0 +1,39 @@
+manifest_version: v1
+repo_id: services-ai-gateway
+entrypoints:
+  unit: "scripts/test.sh unit"
+  integration: "scripts/test.sh integration"
+  lint: "scripts/test.sh lint"
+interop:
+  enabled: true
+  command: "scripts/test.sh interop"
+  contracts_pin:
+    type: "artifact"
+    name: "talos-contracts"
+    version: "1.2.3"
+  required: true
+coverage:
+  tool: "pytest-cov"
+  reports:
+    xml: "coverage.xml"
+    json: "coverage.json"
+  thresholds:
+    unit:
+      line: 0.80
+      branch: 0.70
+    critical_paths:
+      - path: "app/domain/budgets/**"
+        line: 0.95
+      - path: "app/domain/crypto/**"
+        line: 0.95
+infra:
+  requires_postgres:
+    integration: true
+    critical: true
+  compose_file: "docker-compose.multi-region.yml"
+ci:
+  timeout_seconds:
+    integration: 1200
+  parallelism:
+    unit: 4
+    integration: 1 # Sequential for heavy Docker tests

@@ -126,7 +126,7 @@ async def call_tool(
         overdraft = Decimal(auth.overdraft_usd)
         
         budget_headers = budget_service.reserve(
-            request_id=request_id,
+            request_id=str(request_id),
             team_id=auth.team_id,
             key_id=auth.key_id,
             budget_mode=auth.budget_mode,
@@ -152,26 +152,38 @@ async def call_tool(
         result = await mcp_client.call_tool(server, tool_name, request.input)
         duration_ms = int((time.time() - start_ts) * 1000)
         
-        # Settle & Record
-        usage_manager.record_usage(
-            None, request_id, auth.team_id, auth.key_id, "mcp", server_id, tool_name,
-            0, 0, "success", cost_usd=cost_usd, latency_ms=duration_ms
+        # Record & Settle
+        await usage_manager.record_event(
+            request_id=str(request_id),
+            team_id=auth.team_id,
+            key_id=auth.key_id,
+            org_id=auth.org_id or "",
+            surface="mcp",
+            target=f"{server_id}:{tool_name}",
+            latency_ms=duration_ms,
+            status="success",
+            token_count_source="not_applicable"
         )
-        budget_service.settle(request_id, cost_usd)
         
         return {
             "output": result,
             "timing_ms": duration_ms,
-            "audit_ref": f"audit-{request_id}"
+            "audit_ref": f"audit-{str(request_id)}"
         }
     except Exception as e:
         duration_ms = int((time.time() - start_ts) * 1000)
         
-        # Record Failure
-        usage_manager.record_usage(
-            None, request_id, auth.team_id, auth.key_id, "mcp", server_id, tool_name,
-            0, 0, "error", cost_usd=Decimal("0"), latency_ms=duration_ms
+        # Record Failure & Settle with 0 cost
+        await usage_manager.record_event(
+            request_id=str(request_id),
+            team_id=auth.team_id,
+            key_id=auth.key_id,
+            org_id=auth.org_id or "",
+            surface="mcp",
+            target=f"{server_id}:{tool_name}",
+            latency_ms=duration_ms,
+            status="error",
+            token_count_source="not_applicable"
         )
-        budget_service.settle(request_id, Decimal("0"))
         
         raise_talos_error("UPSTREAM_ERROR", 502, str(e))

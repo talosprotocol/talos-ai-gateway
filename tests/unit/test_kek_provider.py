@@ -2,18 +2,18 @@
 import pytest
 
 
-def test_env_kek_provider_encrypt_decrypt():
-    """Test that EnvKekProvider can encrypt and decrypt."""
-    from app.domain.secrets.kek_provider import EnvKekProvider
+def test_local_kek_provider_encrypt_decrypt():
+    """Test that LocalKekProvider can encrypt and decrypt."""
+    from app.domain.secrets.kek_provider import LocalKekProvider
 
-    provider = EnvKekProvider("test-master-key")
+    provider = LocalKekProvider("test-master-key", key_id="env-dev-key-v1")
     plaintext = b"super-secret-api-key"
 
     envelope = provider.encrypt(plaintext)
 
-    assert envelope.ciphertext != plaintext
-    assert len(envelope.nonce) == 12  # 96-bit nonce
-    assert envelope.key_id == "env-dev-key-v1"
+    assert envelope.ciphertext != plaintext.hex()
+    assert len(envelope.iv) == 24  # 12 bytes = 24 hex chars
+    assert envelope.kek_id == "env-dev-key-v1"
 
     decrypted = provider.decrypt(envelope)
     assert decrypted == plaintext
@@ -21,10 +21,10 @@ def test_env_kek_provider_encrypt_decrypt():
 
 def test_envelop_deterministic_key_derivation():
     """Test that same master key produces same encryption key."""
-    from app.domain.secrets.kek_provider import EnvKekProvider
+    from app.domain.secrets.kek_provider import LocalKekProvider
 
-    provider1 = EnvKekProvider("same-key")
-    provider2 = EnvKekProvider("same-key")
+    provider1 = LocalKekProvider("same-key")
+    provider2 = LocalKekProvider("same-key")
 
     plaintext = b"test-data"
     envelope = provider1.encrypt(plaintext)
@@ -36,11 +36,11 @@ def test_envelop_deterministic_key_derivation():
 
 def test_wrong_key_fails_decryption():
     """Test that wrong key fails to decrypt."""
-    from app.domain.secrets.kek_provider import EnvKekProvider
+    from app.domain.secrets.kek_provider import LocalKekProvider
     from cryptography.exceptions import InvalidTag
 
-    provider1 = EnvKekProvider("key-one")
-    provider2 = EnvKekProvider("key-two", key_id="env-dev-key-v1")  # Same key_id but wrong key
+    provider1 = LocalKekProvider("key-one")
+    provider2 = LocalKekProvider("key-two", key_id="v1")  # Same key_id but wrong master key
 
     plaintext = b"sensitive"
     envelope = provider1.encrypt(plaintext)
@@ -51,48 +51,45 @@ def test_wrong_key_fails_decryption():
 
 def test_key_id_mismatch_raises():
     """Test that key_id mismatch raises ValueError."""
-    from app.domain.secrets.kek_provider import EnvKekProvider, EncryptedEnvelope
+    from app.domain.secrets.kek_provider import LocalKekProvider, EncryptedEnvelope
 
-    provider = EnvKekProvider("test-key", key_id="v1")
+    provider = LocalKekProvider("test-key", key_id="v1")
     plaintext = b"data"
     envelope = provider.encrypt(plaintext)
 
     # Create envelope with wrong key_id
     wrong_envelope = EncryptedEnvelope(
+        kek_id="v2",
+        iv=envelope.iv,
         ciphertext=envelope.ciphertext,
-        nonce=envelope.nonce,
-        key_id="v2"
+        tag=envelope.tag
     )
 
-    with pytest.raises(ValueError, match="Key ID mismatch"):
+    with pytest.raises(ValueError, match="Key mismatch"):
         provider.decrypt(wrong_envelope)
 
 
-def test_production_provider_fails_fast():
-    """Test that ProductionKekProvider fails on instantiation."""
-    from app.domain.secrets.kek_provider import ProductionKekProvider
-
-    with pytest.raises(NotImplementedError, match="Production KEK provider not configured"):
-        ProductionKekProvider()
-
-
 def test_get_kek_provider_dev_mode(monkeypatch):
-    """Test that get_kek_provider returns EnvKekProvider in dev mode."""
-    from app.domain.secrets.kek_provider import get_kek_provider, EnvKekProvider
+    """Test that get_kek_provider behaves as expected in dev mode."""
+    from app.domain.secrets.kek_provider import get_kek_provider, LocalKekProvider
 
     monkeypatch.setenv("DEV_MODE", "true")
-    monkeypatch.setenv("MASTER_KEY", "test-key")
+    # Should use default dev key
+    monkeypatch.delenv("TALOS_MASTER_KEY", raising=False)
+    monkeypatch.delenv("MASTER_KEY", raising=False)
 
     provider = get_kek_provider()
-    assert isinstance(provider, EnvKekProvider)
+    assert isinstance(provider, LocalKekProvider)
+    # Validate it works implicitly
 
 
 def test_get_kek_provider_prod_mode_fails(monkeypatch):
-    """Test that get_kek_provider fails in prod mode without KMS."""
+    """Test that get_kek_provider fails in prod mode without MASTER_KEY."""
     from app.domain.secrets.kek_provider import get_kek_provider
 
     monkeypatch.setenv("DEV_MODE", "false")
-    monkeypatch.delenv("TALOS_KMS_PROVIDER", raising=False)
+    monkeypatch.delenv("TALOS_MASTER_KEY", raising=False)
+    monkeypatch.delenv("MASTER_KEY", raising=False)
 
-    with pytest.raises(RuntimeError, match="TALOS_KMS_PROVIDER must be set"):
+    with pytest.raises(RuntimeError, match="TALOS_MASTER_KEY must be set"):
         get_kek_provider()

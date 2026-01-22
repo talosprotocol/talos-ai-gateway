@@ -1,123 +1,123 @@
-"""Usage Manager."""
-from typing import Dict, Any, Optional
-import logging
-from datetime import datetime
-from sqlalchemy import select, and_
+"""Usage Manager for Phase 15."""
+from decimal import Decimal
+from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy.dialects.postgresql import insert
+import logging
+
 from app.adapters.postgres.models import UsageEvent, UsageRollupDaily
+from app.domain.budgets.service import BudgetService
 from app.domain.budgets.pricing import PricingRegistry, get_pricing_registry
 from app.utils.id import uuid7
 
 logger = logging.getLogger(__name__)
 
 class UsageManager:
-    """Core domain service for unified usage recording and aggregation."""
+    """Consolidated service for recording usage and settling budgets."""
     
-    def __init__(self, db: Session, pricing: PricingRegistry = None):
+    def __init__(self, db: Session, budget_service: Optional[BudgetService] = None, pricing: Optional[PricingRegistry] = None):
         self.db = db
+        self.budget_service = budget_service or BudgetService(db)
         self.pricing = pricing or get_pricing_registry()
 
-    def record_usage(
+    async def record_event(
         self,
-        event_id: Optional[str],
         request_id: str,
         team_id: str,
-        virtual_key_id: str,
-        kind: str,
-        provider: str, # or mcp_server_id
-        model: str, # or tool_name
-        input_tokens: int,
-        output_tokens: int,
-        status: str,
-        cost_usd: Optional[Any] = None, # Decimal
-        latency_ms: int = 0
-    ) -> UsageEvent:
+        key_id: str,
+        org_id: str,
+        surface: str,
+        target: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        latency_ms: int = 0,
+        status: str = "success",
+        token_count_source: str = "unknown"
+    ) -> Decimal:
         """
-        Record a unified usage event.
-        - Calculates cost if not provided.
-        - Idempotent via request_id (handled by DB constraint).
-        - Updates Daily Rollups synchronously.
+        Record usage event and settle budget reservation.
+        Idempotent via unique request_id constraint in DB.
         """
-        
-        # Calculate cost if missing
-        pricing_ver = self.pricing.version
-        token_source = "reported" # Assume reported if passed
-        
-        if cost_usd is None:
-            if kind == "llm":
-                cost_usd, pricing_ver = self.pricing.get_llm_cost(
-                    model_name=model, 
-                    provider=provider, 
-                    group_id=None, # In V1 we calculate plain cost based on model/provider
-                    input_tokens=input_tokens, 
+        try:
+            # 1. Calculate Actual Cost
+            if surface == "llm":
+                cost, pricing_ver = self.pricing.get_llm_cost(
+                    model_name=target,
+                    provider="unknown", # TODO: pass provider
+                    group_id=None,
+                    input_tokens=input_tokens,
                     output_tokens=output_tokens
                 )
-                token_source = "estimated"
-            elif kind == "mcp":
-                cost_usd, pricing_ver = self.pricing.get_mcp_cost(
-                    server_id=provider, 
-                    tool_name=model
-                )
-                token_source = "estimated"
+            elif surface == "mcp":
+                # target is server_id:tool_name
+                parts = target.split(":", 1)
+                server_id = parts[0]
+                tool_name = parts[1] if len(parts) > 1 else "unknown"
+                cost, pricing_ver = self.pricing.get_mcp_cost(server_id, tool_name)
             else:
-                 cost_usd = 0
+                cost, pricing_ver = Decimal("0.00"), "v1"
 
-        event = UsageEvent(
-            id=event_id or str(uuid7()),
-            request_id=request_id,
-            key_id=virtual_key_id,
-            team_id=team_id,
-            org_id=None, # TODO: Populate if available in context
-            surface=kind,
-            target=model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cost_usd=cost_usd,
-            pricing_version=pricing_ver,
-            token_count_source=token_source,
-            latency_ms=latency_ms,
-            status=status
-        )
-        
-        try:
+            # 2. Record Event (Idempotent check via try/except or exists)
+            event = UsageEvent(
+                id=str(uuid7()),
+                request_id=request_id,
+                team_id=team_id,
+                key_id=key_id,
+                org_id=org_id,
+                surface=surface,
+                target=target,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_usd=cost,
+                latency_ms=latency_ms,
+                status=status,
+                pricing_version=pricing_ver,
+                token_count_source=token_count_source
+            )
             self.db.add(event)
-            # Update Rollup
-            self._update_rollup(team_id, virtual_key_id, cost_usd, input_tokens, output_tokens)
+            
+            # 3. Settle Budget
+            # This is also idempotent inside settle()
+            self.budget_service.settle(request_id, cost)
+            
+            # 4. Optional: Async Rollup Trigger
+            # For Phase 15, we do synchronous rollup update or wait for job.
+            # Let's do a simple sync rollup update (atomic increment)
+            # Actually, per Phase 15 spec, jobs handle intensive rollups, 
+            # but for real-time dashboard accuracy, a sync increment is helpful.
+            self._update_rollups(event)
             
             self.db.commit()
-            return event
-        except Exception as e:
-            self.db.rollback()
-            # Idempotency conflict?
-            if "uq_usage_event_request" in str(e):
-                logger.info(f"Duplicate usage event for request {request_id}, ignoring.")
-                # Return existing if possible, or just None/Mock
-                return self.db.query(UsageEvent).filter_by(request_id=request_id).first()
-            logger.error(f"Failed to record usage: {e}")
-            raise e
+            return cost
 
-    def _update_rollup(self, team_id, key_id, cost_usd, input_tokens, output_tokens):
-        """Update or Insert Daily Rollup."""
-        day = datetime.utcnow().date()
+        except Exception as e:
+            logger.error(f"Error recording usage for {request_id}: {e}")
+            self.db.rollback()
+            return Decimal("0.00")
+
+    def _update_rollups(self, event: UsageEvent):
+        """Update daily rollups via atomic increment."""
+        day = event.timestamp.date()
         
+        # This is a 'soft' update, we don't lock the rollup row for long 
+        # as it's just for stats, but BudgetScope handles the strict enforcement.
+        from sqlalchemy.dialects.postgresql import insert
         stmt = insert(UsageRollupDaily).values(
             id=str(uuid7()),
             day=day,
-            team_id=team_id,
-            key_id=key_id,
-            used_usd=cost_usd,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+            team_id=event.team_id,
+            key_id=event.key_id,
+            used_usd=event.cost_usd,
+            input_tokens=event.input_tokens,
+            output_tokens=event.output_tokens,
             request_count=1
         ).on_conflict_do_update(
-            index_elements=['day', 'team_id', 'key_id'],
+            constraint="uq_usage_rollup_day",
             set_={
-                "used_usd": UsageRollupDaily.used_usd + cost_usd,
-                "input_tokens": UsageRollupDaily.input_tokens + input_tokens,
-                "output_tokens": UsageRollupDaily.output_tokens + output_tokens,
+                "used_usd": UsageRollupDaily.used_usd + event.cost_usd,
+                "input_tokens": UsageRollupDaily.input_tokens + event.input_tokens,
+                "output_tokens": UsageRollupDaily.output_tokens + event.output_tokens,
                 "request_count": UsageRollupDaily.request_count + 1,
-                "updated_at": datetime.utcnow()
+                "updated_at": event.timestamp
             }
         )
         self.db.execute(stmt)

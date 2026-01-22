@@ -6,7 +6,8 @@ import jsonschema
 
 # Path to schemas in the monorepo
 # Use resolve() to handle running from different CWDs
-SCHEMA_BASE = Path(__file__).resolve().parent.parent.parent.parent.parent / "talos-contracts" / "schemas" / "a2a"
+# Up 6 levels: a2a -> api -> app -> ai-gateway -> services -> root -> contracts
+SCHEMA_BASE = Path(__file__).resolve().parents[5] / "contracts" / "schemas" / "a2a"
 
 class JsonRpcError(BaseModel):
     code: int

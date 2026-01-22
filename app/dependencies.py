@@ -266,20 +266,21 @@ from app.adapters.postgres.stores import (
     PostgresAuditStore, PostgresRoutingPolicyStore, PostgresRotationStore
 )
 
-# DEV_MODE determines whether to use in-memory JSON stores (true) or Postgres (false)
-# Check both MODE=dev AND DEV_MODE env var - allows MODE=dev with Postgres stores
-DEV_MODE = settings.MODE == "dev" and os.getenv("DEV_MODE", "true").lower() == "true"
+# Determine Storage Backend
+# Phase 15: Default to Postgres for core services to support Budgeting/Multi-Region.
+# JSON fallback is ONLY for isolated local development without Postgres.
+USE_JSON_STORES = os.getenv("USE_JSON_STORES", "false").lower() == "true"
 
 def get_upstream_store(db: Session = Depends(get_write_db)) -> UpstreamStore:
-    if DEV_MODE: return UpstreamJsonStore()
+    if USE_JSON_STORES: return UpstreamJsonStore()
     return PostgresUpstreamStore(db)
 
 def get_model_group_store(db: Session = Depends(get_write_db)) -> ModelGroupStore:
-    if DEV_MODE: return ModelGroupJsonStore()
+    if USE_JSON_STORES: return ModelGroupJsonStore()
     return PostgresModelGroupStore(db)
 
 def get_routing_policy_store(db: Session = Depends(get_write_db)) -> RoutingPolicyStore:
-    if DEV_MODE: return RoutingPolicyJsonStore()
+    if USE_JSON_STORES: return RoutingPolicyJsonStore()
     return PostgresRoutingPolicyStore(db)
 
 from app.adapters.secrets.multi_provider import MultiKekProvider
@@ -299,18 +300,18 @@ def get_secret_store(
     db: Session = Depends(get_write_db),
     kek: KekProvider = Depends(get_kek_provider)
 ) -> SecretStore:
-    if DEV_MODE: return SecretJsonStore()
+    if USE_JSON_STORES: return SecretJsonStore()
     return PostgresSecretStore(db, kek)
 
 def get_read_secret_store(
     db: Session = Depends(get_read_db),
     kek: KekProvider = Depends(get_kek_provider)
 ) -> SecretStore:
-    if DEV_MODE: return SecretJsonStore()
+    if USE_JSON_STORES: return SecretJsonStore()
     return PostgresSecretStore(db, kek)
 
 def get_rotation_store(db: Session = Depends(get_write_db)) -> RotationOperationStore:
-    if DEV_MODE: 
+    if USE_JSON_STORES: 
         # For dev mode, we could use a JSON store or just persistent memory if dev-mode-json is used
         # For now, let's assume Postgres for rotation tracking as it's complex
         return PostgresRotationStore(db)
@@ -324,19 +325,19 @@ def get_secrets_manager(
     return SecretsManager(kek, store)
 
 def get_mcp_store(db: Session = Depends(get_write_db)) -> McpStore:
-    if DEV_MODE: return McpJsonStore()
+    if USE_JSON_STORES: return McpJsonStore()
     return PostgresMcpStore(db)
 
 def get_read_mcp_store(db: Session = Depends(get_read_db)) -> McpStore:
-    if DEV_MODE: return McpJsonStore()
+    if USE_JSON_STORES: return McpJsonStore()
     return PostgresMcpStore(db)
 
 def get_audit_store(db: Session = Depends(get_write_db)) -> AuditStore:
-    if DEV_MODE: return AuditJsonStore()
+    if USE_JSON_STORES: return AuditJsonStore()
     return PostgresAuditStore(db)
 
 def get_read_audit_store(db: Session = Depends(get_read_db)) -> AuditStore:
-    if DEV_MODE: return AuditJsonStore()
+    if USE_JSON_STORES: return AuditJsonStore()
     return PostgresAuditStore(db)
 
 from app.domain.health import get_health_state
@@ -346,11 +347,11 @@ from app.adapters.postgres.stores import PostgresUsageStore
 from app.adapters.json_store.stores import UsageJsonStore
 
 def get_usage_store(db: Session = Depends(get_write_db)) -> UsageStore:
-    if DEV_MODE: return UsageJsonStore()
+    if USE_JSON_STORES: return UsageJsonStore()
     return PostgresUsageStore(db)
 
 def get_read_usage_store(db: Session = Depends(get_read_db)) -> UsageStore:
-    if DEV_MODE: return UsageJsonStore()
+    if USE_JSON_STORES: return UsageJsonStore()
     return PostgresUsageStore(db)
 
 # ... Rate Limit / MCP Client (Unchanged) ...
@@ -398,7 +399,7 @@ from app.domain.interfaces import TaskStore
 from app.adapters.postgres.task_store import PostgresTaskStore
 from app.adapters.memory_store.stores import MemoryTaskStore
 def get_task_store(db: Session = Depends(get_write_db)) -> TaskStore:
-    if DEV_MODE: return MemoryTaskStore()
+    if USE_JSON_STORES: return MemoryTaskStore()
     return PostgresTaskStore(db)
 
 # --- A2A Session Management (Split DB) ---
@@ -440,7 +441,7 @@ class MockPrincipalStore(PrincipalStore):
     def get_principal(self, pid): return None
 
 def get_principal_store(db: Session = Depends(get_write_db)) -> PrincipalStore:
-    if DEV_MODE: return MockPrincipalStore()
+    if USE_JSON_STORES: return MockPrincipalStore()
     return PostgresPrincipalStore(db)
 
 from app.middleware.attestation_http import AttestationVerifier, RedisReplayDetector

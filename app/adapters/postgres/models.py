@@ -455,9 +455,16 @@ class BudgetReservation(Base):
     scope_team_id = Column(String(255), nullable=False)
     scope_key_id = Column(String(255), nullable=False)
     reserved_usd = Column(Numeric(18, 8), nullable=False)
-    status = Column(String(20), nullable=False) # active, settled, released
+    status = Column(String(20), nullable=False) # ACTIVE, SETTLED, RELEASED, EXPIRED
     expires_at = Column(DateTime, nullable=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('ACTIVE', 'SETTLED', 'RELEASED', 'EXPIRED')",
+            name="check_reservation_status_enum"
+        ),
+    )
 
 
 class UsageRollupDaily(Base):

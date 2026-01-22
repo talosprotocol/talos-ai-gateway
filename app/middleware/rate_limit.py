@@ -15,6 +15,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.default_burst = int(os.getenv("RATE_LIMIT_DEFAULT_BURST", "10"))
 
     async def dispatch(self, request: Request, call_next):
+        import os
+        if os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "false":
+            return await call_next(request)
+
         # 1. Skip health checks or metrics if needed (optional)
         if request.url.path.startswith("/health"):
             return await call_next(request)
