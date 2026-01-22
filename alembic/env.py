@@ -10,7 +10,7 @@ from app.adapters.postgres.models import Base
 config = context.config
 
 # Override sqlalchemy.url from environment
-database_url = os.getenv("DATABASE_URL", "postgresql://talos:talos@localhost:5432/talos")
+database_url = os.getenv("DATABASE_WRITE_URL") or os.getenv("DATABASE_URL") or "postgresql://talos:talos@localhost:5432/talos"
 config.set_main_option("sqlalchemy.url", database_url)
 
 if config.config_file_name is not None:

@@ -25,12 +25,14 @@ import uuid
 import json
 from decimal import Decimal
 
+from sqlalchemy.orm import Session
 from app.dependencies import (
     get_upstream_store, get_model_group_store, get_secret_store, 
     get_mcp_store, get_audit_store, get_routing_policy_store, get_usage_store,
     get_read_audit_store, get_read_usage_store, get_read_mcp_store,
-    get_rotation_store, get_kek_provider
+    get_rotation_store, get_kek_provider, get_write_db, get_read_db
 )
+from app.middleware.auth_admin import get_rbac_context, require_permission, RbacContext
 from app.domain.interfaces import (
     UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, 
     RoutingPolicyStore, UsageStore, RotationOperationStore
@@ -75,6 +77,11 @@ class UpstreamCreate(BaseModel):
     credentials_ref: str = ""
     tags: Dict[str, str] = Field(default_factory=dict)
     enabled: bool = True
+
+class BudgetSimulationSchema(BaseModel):
+    scope_id: str
+    amount: str
+    scope_type: str = "key"
 
 
 class UpstreamUpdate(BaseModel):
@@ -823,6 +830,100 @@ async def debug_sleep(
     import asyncio
     await asyncio.sleep(seconds)
     return {"slept": seconds}
+
+
+@router.post("/test/budget/simulate-leak")
+async def simulate_leak(
+    req: BudgetSimulationSchema,
+    principal: dict = Depends(require_permission("platform.admin")),
+    db: Session = Depends(get_write_db)
+):
+    """
+    Simulate a leaked reservation (ACTIVE status, expired).
+    Only available in DEV_MODE.
+    """
+    if not settings.DEV_MODE:
+        raise HTTPException(status_code=404)
+        
+    from app.domain.budgets.service import BudgetService
+    from app.adapters.postgres.models import BudgetReservation
+    from datetime import datetime, timedelta
+    import uuid
+    
+    # Track the reservation in DB
+    # BudgetReservation uses scope_team_id and scope_key_id
+    res = BudgetReservation(
+        id=str(uuid.uuid4()),
+        request_id=f"leak-{uuid.uuid4().hex[:8]}",
+        scope_team_id="team-hard" if req.scope_type == "team" else "none",
+        scope_key_id=req.scope_id if req.scope_type == "virtual_key" else "none",
+        reserved_usd=Decimal(req.amount),
+        status="ACTIVE",
+        expires_at=datetime.utcnow() - timedelta(minutes=1) # Already expired
+    )
+    db.add(res)
+    
+    # Also need to update the scope row's reserved_usd to match the leaked amount
+    from sqlalchemy import text
+    db.execute(
+        text("UPDATE budget_scopes SET reserved_usd = reserved_usd + :amount WHERE scope_type = :st AND scope_id = :si"),
+        {"amount": Decimal(req.amount), "st": req.scope_type, "si": req.scope_id}
+    )
+    
+    db.commit()
+    return {"status": "leaked", "request_id": res.request_id}
+
+
+@router.post("/test/budget/trigger-cleanup")
+async def trigger_cleanup(
+    principal: dict = Depends(require_permission("platform.admin")),
+    db: Session = Depends(get_write_db)
+):
+    """
+    Manually trigger the budget cleanup logic (release_expired_reservations).
+    """
+    if not settings.DEV_MODE:
+        raise HTTPException(status_code=404)
+        
+    from app.domain.budgets.service import BudgetService
+    service = BudgetService(db)
+    count = service.release_expired_reservations(limit=100)
+    db.commit()
+    return {"status": "cleaned", "released_count": count}
+
+
+@router.get("/test/budget/scope/{scope_type}/{scope_id}")
+async def get_test_scope(
+    scope_type: str,
+    scope_id: str,
+    principal: dict = Depends(require_permission("platform.admin")),
+    db: Session = Depends(get_write_db) # Using Write DB for tests to avoid replication lag
+):
+    """
+    Get budget scope state for testing.
+    Only available in DEV_MODE.
+    """
+    if not settings.DEV_MODE:
+        raise HTTPException(status_code=404)
+        
+    from app.adapters.postgres.models import BudgetScope
+    from datetime import datetime
+    period_start = datetime.utcnow().date().replace(day=1)
+    
+    # Relaxed query to find the most recent period for testing
+    scope = db.query(BudgetScope).filter(
+        BudgetScope.scope_type == scope_type,
+        BudgetScope.scope_id == scope_id
+    ).order_by(BudgetScope.period_start.desc()).first()
+    
+    if not scope:
+        raise HTTPException(status_code=404, detail="Scope not found")
+        
+    return {
+        "used_usd": str(scope.used_usd),
+        "reserved_usd": str(scope.reserved_usd),
+        "limit_usd": str(scope.limit_usd)
+    }
 
 # ============ Budget Operations ============
 

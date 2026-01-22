@@ -88,20 +88,21 @@ async def chat_completions(
         })
     
     # Rate limit check
-    rpm_limit = int(os.getenv("DEFAULT_RPM", "60"))
-    key = rate_limit_key(auth.team_id, auth.key_id, "llm", model_group_id)
-    
-    rl_result = await rl_store.check_limit(key, rpm_limit)
-    
-    if not rl_result.allowed:
-        audit(audit_store, "denied", "llm", auth.key_id, model_group_id, "denied", error_code="RATE_LIMITED")
-        raise HTTPException(status_code=429, detail={
-            "error": {"code": "RATE_LIMITED", "message": "Rate limit exceeded"}
-        }, headers={
-            "X-RateLimit-Limit": str(rl_result.limit),
-            "X-RateLimit-Remaining": "0",
-            "X-RateLimit-Reset": rl_result.reset_at.isoformat() + "Z"
-        })
+    if os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true":
+        rpm_limit = int(os.getenv("DEFAULT_RPM", "600"))
+        key = rate_limit_key(auth.team_id, auth.key_id, "llm", model_group_id)
+        
+        rl_result = await rl_store.check_limit(key, rpm_limit)
+        
+        if not rl_result.allowed:
+            audit(audit_store, "denied", "llm", auth.key_id, model_group_id, "denied", error_code="RATE_LIMITED")
+            raise HTTPException(status_code=429, detail={
+                "error": {"code": "RATE_LIMITED", "message": "Rate limit exceeded"}
+            }, headers={
+                "X-RateLimit-Limit": str(rl_result.limit),
+                "X-RateLimit-Remaining": "0",
+                "X-RateLimit-Reset": rl_result.reset_at.isoformat() + "Z"
+            })
     
     # Handle streaming
     if request.stream:
@@ -111,89 +112,82 @@ async def chat_completions(
         })
     
     # --- Phase 15: Budget Enforcement ---
-    # 1. Calculate Estimate
+    latency_ms = 0
+    status = "success"
+    prompt_tokens = 0
+    completion_tokens = 0
+    cost_usd = Decimal("0")
+    
+    # 1. Prepare Budget Context
+    # Use max_tokens or default
     MAX_TOKENS_DEFAULT = 4096
-    MAX_TOKENS_CAP = 32768
+    MAX_TOKENS_CAP = 10000 # Safety cap for estimation
     
     req_max_tokens = request.max_tokens or auth.max_tokens_default or MAX_TOKENS_DEFAULT
     estimate_tokens = min(req_max_tokens, MAX_TOKENS_CAP)
     
-    # We estimate based on generic cost or specific model if available in routing?
-    # Routing hasn't happened yet, so we don't know the exact provider.
-    # We use Model Group mapping or fallback.
-    # BudgetService has PricingRegistry.
-    # We pass "provider" as None to check group/default logic.
     estimate_usd, _ = budget_service.pricing.get_llm_cost(
         model_name=model_group_id,
-        provider=None, # Unknown at this stage
+        provider=None, 
         group_id=model_group_id,
-        input_tokens=estimate_tokens, # Pessimistic estimate: max input + max output?
-        # Typically estimate is Input (actual) + Max Output.
-        # But we haven't counted input yet.
-        # Let's assume estimate_tokens covers Total.
+        input_tokens=estimate_tokens, 
         output_tokens=0 
     )
     
-    # For robust estimate, assume some Input tokens?
-    # len(messages) * 4 chars/token approx?
-    # Implementation detail: Use max_tokens for output, plus explicit overhead.
-    # Let's use estimate_tokens as Total for now.
+    limit_team = Decimal(str(auth.team_budget_metadata.get("limit_usd", "0")))
+    limit_key = Decimal(str(auth.budget_metadata.get("limit_usd", "0")))
+    overdraft = Decimal(auth.overdraft_usd)
+
+    # 2. Reservation (Only for Hard mode AND Non-streaming)
+    # Phase 15 rule: If stream:true, bypass lock/reservation (WARN behavior)
+    reserving = (auth.budget_mode == "hard" and not request.stream)
     
-    budget_headers = {}
-    
-    try:
-        # Parse Limits
-        limit_team = Decimal(str(auth.team_budget_metadata.get("limit_usd", "0")))
-        # If limit is 0 in config, does it mean 0 budget or unlimited?
-        # BudgetService ledger handles it. If ledger says 0 and mode is hard, it blocks.
-        # We trust Ledger creation to handle defaults if needed.
-        # But here we pass what we know.
-        
-        limit_key = Decimal(str(auth.budget_metadata.get("limit_usd", "0")))
-        
-        overdraft = Decimal(auth.overdraft_usd)
-        
+    if reserving:
+        try:
+            budget_headers = budget_service.reserve(
+                request_id=str(request_id),
+                team_id=auth.team_id,
+                key_id=auth.key_id,
+                budget_mode="hard",
+                estimate_usd=estimate_usd,
+                limit_usd_team=limit_team,
+                limit_usd_key=limit_key,
+                overdraft_usd=overdraft
+            )
+            for k, v in budget_headers.items():
+                response.headers[k] = v
+        except BudgetExceededError as e:
+            audit(audit_store, "denied", "llm", auth.key_id, model_group_id, "denied", error_code="BUDGET_EXCEEDED")
+            raise HTTPException(status_code=402, detail={
+                "error": {
+                    "code": "BUDGET_EXCEEDED", 
+                    "message": e.message,
+                    "remaining_usd": str(e.remaining),
+                    "limit_usd": str(e.limit)
+                }
+            })
+    else:
+        # WARN/OFF mode or Forced WARN (streaming)
         budget_headers = budget_service.reserve(
-            request_id=request_id,
+            request_id=str(request_id),
             team_id=auth.team_id,
             key_id=auth.key_id,
-            budget_mode=auth.budget_mode, # Key takes precedence or specific resolution? Spec says Key mode.
+            budget_mode=auth.budget_mode if not request.stream else "warn",
             estimate_usd=estimate_usd,
             limit_usd_team=limit_team,
             limit_usd_key=limit_key,
             overdraft_usd=overdraft
         )
-        
-        # Inject headers immediately
         for k, v in budget_headers.items():
             response.headers[k] = v
-            
-    except BudgetExceededError as e:
-        audit(audit_store, "denied", "llm", auth.key_id, model_group_id, "denied", error_code="BUDGET_EXCEEDED")
-        raise HTTPException(status_code=402, detail={
-            "error": {
-                "code": "BUDGET_EXCEEDED", 
-                "message": e.message,
-                "remaining_usd": str(e.remaining),
-                "limit_usd": str(e.limit)
-            }
-        })
-    except Exception as e:
-        # If reserve fails (DB error), fail open or closed?
-        # Spec says High Integrity. Let's log and proceed if mode is OFF/WARN? 
-        # But for HARD, maybe we should block.
-        # BudgetService raises exceptions. We catch generic here.
-        # For now, re-raise as 500 to be safe/strict.
-        print(f"Budget Reserve Error: {e}")
-        # In PROD, might fail open for availability if configured.
-        pass # Proceed with caution, or re-raise. Let's proceed to allow functionality if Budget service is flaky (unless Hard mode).
-    
+
     # Select upstream via router
-    selection = routing_service.select_upstream(model_group_id, request_id)
+    selection = routing_service.select_upstream(model_group_id, str(request_id))
     if not selection:
         audit(audit_store, "routing_decision", "llm", auth.key_id, model_group_id, "error", error_code="NO_UPSTREAM")
-        # Release budget reservation
-        budget_service.settle(request_id, Decimal("0"))
+        # Release budget reservation if any
+        if reserving:
+            budget_service.settle(str(request_id), Decimal("0"))
         raise HTTPException(status_code=502, detail={
             "error": {"code": "UPSTREAM_5XX", "message": "No available upstream for model group"}
         })
@@ -211,18 +205,12 @@ async def chat_completions(
     providers_requiring_auth = {"openai", "azure", "anthropic", "google", "groq", "together", "mistral", "deepinfra", "sambanova", "cerebras"}
     requires_auth = provider in providers_requiring_auth
     
-    latency_ms = 0
-    status = "success"
-    prompt_tokens = 0
-    completion_tokens = 0
-    cost_usd = Decimal("0")
-    
     try:
         # Mock Response Logic
         if requires_auth and not api_key:
             latency_ms = int((time.time() - start_time) * 1000)
             res = {
-                "id": f"chatcmpl-{request_id[:8]}",
+                "id": f"chatcmpl-{str(request_id)[:8]}",
                 "object": "chat.completion",
                 "created": int(datetime.utcnow().timestamp()),
                 "model": model_name,
@@ -239,16 +227,20 @@ async def chat_completions(
             prompt_tokens = 10
             completion_tokens = 10
             
-            # Settlement
-            usage_manager.record_usage(
-                None, request_id, auth.team_id, auth.key_id, "llm", provider, model_group_id,
-                prompt_tokens, completion_tokens, "success", latency_ms=latency_ms
+            # Record & Settle
+            await usage_manager.record_event(
+                request_id=str(request_id),
+                team_id=auth.team_id,
+                key_id=auth.key_id,
+                org_id=auth.org_id or "",
+                surface="llm",
+                target=model_group_id,
+                input_tokens=prompt_tokens,
+                output_tokens=completion_tokens,
+                latency_ms=latency_ms,
+                status="success",
+                token_count_source="estimated"
             )
-            # Settle budget
-            # Calculate actual cost first? usage_manager does it.
-            # But settle needs cost.
-            cost_usd, _ = budget_service.pricing.get_llm_cost(model_group_id, provider, model_group_id, prompt_tokens, completion_tokens)
-            budget_service.settle(request_id, cost_usd)
             
             return res
         
@@ -270,18 +262,24 @@ async def chat_completions(
         
         audit(audit_store, "invoke_result", "llm", auth.key_id, model_group_id, "success")
         
-        response.headers["X-Request-Id"] = request_id
+        response.headers["X-Request-Id"] = str(request_id)
         response.headers["X-Upstream-Id"] = upstream["id"]
         response.headers["X-Latency-Ms"] = str(latency_ms)
         
         # Record & Settle
-        cost_usd, _ = budget_service.pricing.get_llm_cost(model_group_id, provider, model_group_id, prompt_tokens, completion_tokens)
-        
-        usage_manager.record_usage(
-            None, request_id, auth.team_id, auth.key_id, "llm", provider, model_group_id,
-            prompt_tokens, completion_tokens, "success", cost_usd=cost_usd, latency_ms=latency_ms
+        await usage_manager.record_event(
+            request_id=str(request_id),
+            team_id=auth.team_id,
+            key_id=auth.key_id,
+            org_id=auth.org_id or "",
+            surface="llm",
+            target=model_group_id,
+            input_tokens=prompt_tokens,
+            output_tokens=completion_tokens,
+            latency_ms=latency_ms,
+            status="success",
+            token_count_source="provider_reported"
         )
-        budget_service.settle(request_id, cost_usd)
         
         return result
         
@@ -294,12 +292,19 @@ async def chat_completions(
         elif isinstance(e, UpstreamServerError): err_code = "UPSTREAM_5XX"
         elif isinstance(e, UpstreamError): err_code = "UPSTREAM_ERROR"
         
-        # Settle with 0 cost? Or partial?
-        # Typically errors cost 0 unless tokens were consumed (e.g. prompt tokens).
-        # We assume 0 for error.
-        usage_manager.record_usage(
-             None, request_id, auth.team_id, auth.key_id, "llm", provider, model_group_id,
-             0, 0, status, latency_ms=latency_ms
+        # Record Failure & Settle with 0 cost
+        await usage_manager.record_event(
+             request_id=str(request_id),
+             team_id=auth.team_id,
+             key_id=auth.key_id,
+             org_id=auth.org_id or "",
+             surface="llm",
+             target=model_group_id,
+             input_tokens=0,
+             output_tokens=0,
+             latency_ms=latency_ms,
+             status="error",
+             token_count_source="unknown"
         )
         budget_service.settle(request_id, Decimal("0"))
         

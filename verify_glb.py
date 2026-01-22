@@ -32,21 +32,19 @@ def get_region_header(resp):
 def test_baseline_health():
     print("\n--- Test 1: Baseline Health ---")
     try:
-        resp = requests.get(f"{GLB_URL}/health/ready", timeout=5)
-        assert_response(resp, "GLB Self-Health")
+        # Check GLB Self-Health
+        resp = requests.get(f"{GLB_URL}/health/glb", timeout=5)
+        if resp.status_code != 200:
+             raise TestFailure(f"GLB Self-Health returned {resp.status_code}")
         if "GLB Ready" not in resp.text:
-            raise TestFailure("GLB Ready text missing")
-        
+             raise TestFailure("GLB Ready text missing")
+        print("✓ GLB Self-Health passed (200 OK)")
+             
         # Test Gateway reachability via GLB default route
-        resp = requests.get(f"{GLB_URL}/admin/v1/me", timeout=5)
-        # Auth might fail if we don't pass headers, but we just want to see if we hit a gateway.
-        # Actually /health/ready is better on the gateway itself.
-        # But global router maps /health/ready to itself.
-        # Let's hit /v1/mcp/servers (public reach or similar) or just /admin/v1/me expecting 403 or 401 is fine if it means we reached backend.
-        # Actually let's use the explicit backend health checks if exposed?
-        # Nginx config maps /v1/... to backend.
-        # Let's try /v1/mcp/servers (empty list allowed)
-        return
+        resp = requests.get(f"{GLB_URL}/health/ready", timeout=5)
+        if resp.status_code != 200:
+             raise TestFailure(f"Gateway reachability failed via GLB: {resp.status_code}")
+        print("✓ Gateway reachability verified via GLB (200 OK)")
     except Exception as e:
         raise TestFailure(f"Baseline health check failed: {e}")
 
@@ -75,10 +73,17 @@ def test_routing_contract():
     print("✓ Routing contract verified.")
 
 async def make_request(session, url, headers=None):
+    if headers is None:
+        headers = {}
+    if "X-Talos-Principal" not in headers:
+        headers["X-Talos-Principal"] = "admin"
+        
     async with session.get(url, headers=headers) as resp:
         # Read body to ensure complete
         text = await resp.text() 
         reg = resp.headers.get("X-Talos-Region")
+        if resp.status != 200:
+             print(f"⚠️ Req to {url} returned {resp.status}. Body: {text[:500]}")
         if not reg:
              print(f"⚠️ Req to {url} returned {resp.status} but no Region Header. Headers: {resp.headers}")
         return reg

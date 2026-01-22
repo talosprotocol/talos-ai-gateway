@@ -86,6 +86,7 @@ def upgrade() -> None:
         sa.Column('expires_at', sa.DateTime(), nullable=False),
         sa.Column('created_at', sa.DateTime(), server_default=sa.func.now()),
         sa.UniqueConstraint('request_id', name='uq_budget_reservation_req'),
+        sa.CheckConstraint("status IN ('ACTIVE', 'SETTLED', 'RELEASED', 'EXPIRED')", name='check_reservation_status_enum'),
     )
     op.create_index('idx_reservations_expires', 'budget_reservations', ['expires_at'])
 

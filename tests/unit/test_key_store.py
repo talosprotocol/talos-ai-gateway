@@ -54,7 +54,15 @@ def test_lookup_by_hash_cache_hit(store, mock_redis, mock_db):
         "allowed_model_groups": ["*"],
         "allowed_mcp_servers": ["*"],
         "revoked": False,
-        "expires_at": None
+        "expires_at": None,
+        "budget_mode": "off",
+        "overdraft_usd": "0",
+        "max_tokens_default": None,
+        "budget": {},
+        "team_budget_mode": "off",
+        "team_overdraft_usd": "0",
+        "team_max_tokens_default": None,
+        "team_budget": {}
     }
     
     mock_redis.get.return_value = json.dumps(key_data).encode()
@@ -81,8 +89,18 @@ def test_lookup_by_hash_db_fallback_and_cache_set(store, mock_db, mock_redis):
     mock_vk.allowed_mcp_servers = ["*"]
     mock_vk.revoked = False
     mock_vk.expires_at = None
+    mock_vk.budget_mode = "off"
+    mock_vk.overdraft_usd = 0
+    mock_vk.max_tokens_default = None
+    mock_vk.budget = {}
+    
+    # Setup Team on VK
     mock_vk.team = MagicMock(spec=Team)
     mock_vk.team.org_id = "org-1"
+    mock_vk.team.budget_mode = "off"
+    mock_vk.team.overdraft_usd = 0
+    mock_vk.team.max_tokens_default = None
+    mock_vk.team.budget = {}
     
     mock_redis.get.return_value = None
     mock_db.query.return_value.filter.return_value.first.return_value = mock_vk
@@ -124,7 +142,15 @@ def test_lookup_by_hash_revocation_check(store, mock_redis, mock_db):
         "allowed_model_groups": ["*"],
         "allowed_mcp_servers": ["*"],
         "revoked": True, # REVOKED
-        "expires_at": None
+        "expires_at": None,
+        "budget_mode": "off",
+        "overdraft_usd": "0",
+        "max_tokens_default": None,
+        "budget": {},
+        "team_budget_mode": "off",
+        "team_overdraft_usd": "0",
+        "team_max_tokens_default": None,
+        "team_budget": {}
     }
     
     mock_redis.get.return_value = json.dumps(key_data).encode()

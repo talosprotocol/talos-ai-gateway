@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import pytest
 
-SCHEMA_BASE = Path(__file__).resolve().parent.parent.parent.parent / "talos-contracts" / "schemas" / "a2a"
+SCHEMA_BASE = Path(__file__).resolve().parent.parent.parent.parent.parent / "contracts" / "schemas" / "a2a"
 
 def test_schema_closure_registry():
     index_path = SCHEMA_BASE / "index.json"

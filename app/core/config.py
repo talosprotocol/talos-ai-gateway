@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     # Core
     MODE: str = "dev"  # dev, prod
     REGION_ID: str = "local"
+    DEV_MODE: bool = False
     
     # Database (Split for Multi-Region)
     DATABASE_WRITE_URL: PostgresDsn = "postgresql://talos:talos@localhost:5432/talos"
