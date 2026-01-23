@@ -7,7 +7,6 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.main import app
-from app.api.a2a.routes import get_task_store
 from app.middleware.auth_public import AuthContext
 from app.adapters.postgres.models import Base, A2ATask
 from app.adapters.postgres.task_store import PostgresTaskStore

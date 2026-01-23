@@ -2,8 +2,8 @@
 import base64
 import unittest
 from unittest.mock import MagicMock
-from app.domain.secrets.kek_provider import EnvKekProvider
-from app.adapters.postgres.stores import PostgresSecretStore
+from app.domain.secrets.kek_provider import LocalKekProvider
+from app.adapters.postgres.secret_store import PostgresSecretStore
 
 class MockSecret:
     def __init__(self, name, ciphertext, nonce, tag, key_id, version=1):
@@ -17,7 +17,7 @@ class MockSecret:
 class TestPostgresSecretStore(unittest.TestCase):
     def setUp(self):
         self.db = MagicMock()
-        self.kek_provider = EnvKekProvider("test-master-key")
+        self.kek_provider = LocalKekProvider("test-master-key")
         self.store = PostgresSecretStore(self.db, self.kek_provider)
 
     def test_set_secret_encryption(self):
