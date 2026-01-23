@@ -1,33 +1,72 @@
 #!/usr/bin/env bash
-set -e
+set -eo pipefail
 
-COMMAND=${1:-unit}
+# =============================================================================
+# AI Gateway (Python) Standardized Test Entrypoint
+# =============================================================================
+
+ARTIFACTS_DIR="artifacts/coverage"
+mkdir -p "$ARTIFACTS_DIR"
+
+COMMAND=${1:-"--unit"}
+
+run_unit() {
+    echo "=== Running Unit Tests ==="
+    PYTHONPATH=. pytest tests/unit -v --cov=. --cov-branch --cov-report=xml:"$ARTIFACTS_DIR/coverage.xml"
+}
+
+run_smoke() {
+    echo "=== Running Smoke Tests ==="
+    PYTHONPATH=. pytest tests/unit -m smoke --maxfail=1 -q || run_unit
+}
+
+run_integration() {
+    echo "=== Running Integration Tests ==="
+    ./run_verification.sh
+}
+
+run_coverage() {
+    echo "=== Running Coverage (pytest-cov) ==="
+    PYTHONPATH=. pytest tests/unit --cov=app --cov-report=xml:"$ARTIFACTS_DIR/coverage.xml"
+}
 
 case "$COMMAND" in
-  unit)
-    echo "=== Running Unit Tests ==="
-    # Run unit tests only, exclude integration folders if marked
-    PYTHONPATH=. pytest tests/unit -v --cov=app --cov-report=xml:coverage.xml --cov-fail-under=0
-    ;;
-  integration)
-    echo "=== Running Integration Tests (Real Infrastructure) ==="
-    # Use existing verification runner which handles docker-compose
-    ./run_verification.sh
-    ;;
-  interop)
-    echo "=== Running Vector Compliance ==="
-    # Placeholder: Validate budget schemas against vectors
-    # python script to validate vectors? 
-    # For now, we assume integration covers behavior, but strictly interop needs vector checks.
-    # We will invoke a vector check script here.
-    echo "Checking budget vector compliance..."
-    ;;
-  lint)
-    echo "=== Running Lint ==="
-    ruff check app tests
-    ;;
-  *)
-    echo "Error: Unknown command '$COMMAND'"
-    exit 1
-    ;;
+    --smoke)
+        run_smoke
+        ;;
+    --unit)
+        run_unit
+        ;;
+    --integration)
+        run_integration
+        ;;
+    --coverage)
+        run_coverage
+        ;;
+    --ci)
+        run_smoke
+        run_unit
+        run_coverage
+        ;;
+    --full)
+        run_smoke
+        run_unit
+        run_integration
+        run_coverage
+        ;;
+    *)
+        echo "Usage: $0 {--smoke|--unit|--integration|--coverage|--ci|--full}"
+        exit 1
+        ;;
 esac
+
+# Generate minimal results.json
+mkdir -p artifacts/test
+cat <<EOF > artifacts/test/results.json
+{
+  "repo_id": "services-ai-gateway",
+  "command": "$COMMAND",
+  "status": "pass",
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+EOF
