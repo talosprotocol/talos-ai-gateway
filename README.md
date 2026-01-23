@@ -65,7 +65,7 @@ Environment variables:
 
 ## Architecture
 
-```
+```text
 app/
 ├── api/
 │   ├── public_ai/     # /v1/*
@@ -79,6 +79,10 @@ app/
 │   └── ...            # Other business logic
 └── adapters/         # External integrations
 ```
+
+## References
+
+1. [Talos Wiki](https://github.com/talosprotocol/talos/wiki)
 
 ## License
 
