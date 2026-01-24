@@ -437,11 +437,10 @@ async def get_key_store(db: Session = Depends(get_write_db)) -> KeyStore:
 
 from app.domain.interfaces import PrincipalStore
 from app.adapters.postgres.stores import PostgresPrincipalStore
-class MockPrincipalStore(PrincipalStore):
-    def get_principal(self, pid): return None
+from app.adapters.json_store.stores import JsonPrincipalStore
 
 def get_principal_store(db: Session = Depends(get_write_db)) -> PrincipalStore:
-    if USE_JSON_STORES: return MockPrincipalStore()
+    if USE_JSON_STORES: return JsonPrincipalStore()
     return PostgresPrincipalStore(db)
 
 from app.middleware.attestation_http import AttestationVerifier, RedisReplayDetector
@@ -475,11 +474,27 @@ _policy_engine_instance = None
 def get_policy_engine() -> PolicyEngine:
     global _policy_engine_instance
     if _policy_engine_instance is None:
-         # Simplified for brevity, same as legacy
-         roles = {"role-admin": {"id": "role-admin", "permissions": ["*:*"]}, "role-public": {"id": "role-public", "permissions": ["public:*"]}}
+         # Live Role Loading
+         import json
+         roles_path = os.getenv("ROLES_CONFIG_PATH", "config/roles.json")
+         roles = {}
+         if os.path.exists(roles_path):
+             try:
+                 with open(roles_path) as f:
+                     roles = json.load(f)
+             except Exception as e:
+                 logger.error(f"Failed to load roles from {roles_path}: {e}")
+         
+         if not roles:
+             # Fallback or simple default
+             roles = {"role-admin": {"id": "role-admin", "permissions": ["*:*"]}, 
+                      "role-public": {"id": "role-public", "permissions": ["public:*"]}}
+                      
          _policy_engine_instance = DeterministicPolicyEngine(roles, {})
     return _policy_engine_instance
 
+def get_capability_validator() -> CapabilityValidator:
+    key = os.getenv("SUPERVISOR_PUBLIC_KEY")
     if not key: return CapabilityValidator(supervisor_public_key="dev-placeholder")
     return CapabilityValidator(supervisor_public_key=key)
 

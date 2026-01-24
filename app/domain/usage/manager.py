@@ -1,7 +1,7 @@
 """Usage Manager for Phase 15."""
 from decimal import Decimal
 from typing import Optional, Dict, Any
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session  # type: ignore
 import logging
 
 from app.adapters.postgres.models import UsageEvent, UsageRollupDaily
@@ -27,6 +27,7 @@ class UsageManager:
         org_id: str,
         surface: str,
         target: str,
+        provider: str = "unknown",
         input_tokens: int = 0,
         output_tokens: int = 0,
         latency_ms: int = 0,
@@ -42,7 +43,7 @@ class UsageManager:
             if surface == "llm":
                 cost, pricing_ver = self.pricing.get_llm_cost(
                     model_name=target,
-                    provider="unknown", # TODO: pass provider
+                    provider=provider,
                     group_id=None,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens
@@ -100,7 +101,7 @@ class UsageManager:
         
         # This is a 'soft' update, we don't lock the rollup row for long 
         # as it's just for stats, but BudgetScope handles the strict enforcement.
-        from sqlalchemy.dialects.postgresql import insert
+        from sqlalchemy.dialects.postgresql import insert  # type: ignore
         stmt = insert(UsageRollupDaily).values(
             id=str(uuid7()),
             day=day,

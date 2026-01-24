@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 import hashlib
 import hmac
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from app.domain.registry import SurfaceItem
 import asyncio
 from app.domain.sink import AuditSink, StdOutSink
@@ -14,12 +14,28 @@ from app.domain.sink import AuditSink, StdOutSink
 from app.utils.id import uuid7
 
 class AuditLogger:
-    def __init__(self, sink: AuditSink = None):
-        self.sink = sink or StdOutSink()
-        self.ip_hmac_key = os.environ.get("AUDIT_IP_HMAC_KEY", "dev-ip-key-secret")
-        self.ip_hmac_key_id = os.environ.get("AUDIT_IP_HMAC_KEY_ID", "dev-key-v1")
-        # List of trusted proxy CIDRs (mocked for now, should be env-driven)
-        self.trusted_proxies = os.environ.get("TRUSTED_PROXIES", "127.0.0.1,::1").split(",")
+    def __init__(self, sink: Optional[AuditSink] = None):
+        self.sink: AuditSink = sink or StdOutSink()
+        self.ip_hmac_key: str = os.environ.get("AUDIT_IP_HMAC_KEY") or ""
+        self.ip_hmac_key_id: str = os.environ.get("AUDIT_IP_HMAC_KEY_ID", "dev-key-v1")
+        self.trusted_proxies: List[str] = []
+        
+        # Security hardening for production
+        is_prod = os.getenv("ENV", "development").lower() == "production"
+        if not self.ip_hmac_key:
+            if is_prod:
+                raise RuntimeError("AUDIT_IP_HMAC_KEY must be set in production")
+            self.ip_hmac_key = "dev-ip-key-secret-32-chars-long-!!!" # Standardized dev fallback
+            logging.warning("Using insecure default AUDIT_IP_HMAC_KEY")
+
+        trusted = os.environ.get("TRUSTED_PROXIES")
+        if trusted:
+            self.trusted_proxies = [p.strip() for p in trusted.split(",")]
+        else:
+            # Default to local only
+            self.trusted_proxies = ["127.0.0.1", "::1"]
+            if is_prod:
+                logging.warning("No TRUSTED_PROXIES configured. Audit client IPs might be lost.")
 
     async def log_event_async(
         self,
@@ -71,7 +87,9 @@ class AuditLogger:
         is_trusted = http_info.get("is_trusted", False) # Middleware must set this
         
         if client_ip and is_trusted and client_ip not in ("unknown", "127.0.0.1", "::1", "localhost"):
-            key_bytes = self.ip_hmac_key.encode('utf-8')
+            # Ensure key is present (should be set in __init__)
+            key = self.ip_hmac_key or "placeholder-key-safe-to-ignore"
+            key_bytes = key.encode('utf-8')
             ip_bytes = client_ip.encode('utf-8')
             hmac_hex = hmac.new(key_bytes, ip_bytes, hashlib.sha256).hexdigest()
             
@@ -131,7 +149,7 @@ class AuditLogger:
         if not metadata:
             return {}
             
-        safe = {}
+        safe: Dict[str, Any] = {}
         redacted_keys = []
         allowlist = set(surface.audit_meta_allowlist or [])
         
@@ -167,9 +185,8 @@ class AuditLogger:
                 redacted_keys.append(f"{k} (invalid type)")
                     
         if redacted_keys:
-            safe["meta_redaction_applied"] = True
             safe["meta_redacted_keys"] = sorted(redacted_keys) # Sorted List
-            # Log telemetry metric (placeholder for real metric system)
+            # Emit telemetry via logs (can be scraped by Loki/Fluentd)
             logging.warning(f"AUDIT_META_REDACTION: surface={surface.id} keys={redacted_keys}")
                     
         return safe
