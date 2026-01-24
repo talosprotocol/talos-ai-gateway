@@ -5,29 +5,22 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 
-from app.domain.interfaces import UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, RoutingPolicyStore
+from app.domain.interfaces import UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, RoutingPolicyStore, PrincipalStore, UsageStore
 from app import config_loader
 
 logger = logging.getLogger(__name__)
 
+# ... existing UpstreamJsonStore ...
 class UpstreamJsonStore(UpstreamStore):
     def list_upstreams(self) -> List[Dict[str, Any]]:
         config = config_loader.get_config()
-        # Convert dict {id: upstream} to list
-        # But wait, config_loader checks 'gateway.json'. Currently it might be list or dict?
-        # Looking at config_loader logic: return {"upstreams": {}, ...} implies dict.
-        # But gateway.json example usually has keys. 
-        # Actually in router.py logic, it might be using it as dict.
-        # We will assume config['upstreams'] is dict {id: upstream_obj} or list?
-        # Let's inspect gateway.json structure if possible, but assuming Dict[str, dict] based on config_loader return type hint.
         upstreams = config.get("upstreams", {})
         if isinstance(upstreams, list):
-             return upstreams # Already list
+             return upstreams
         return list(upstreams.values())
 
     def get_upstream(self, upstream_id: str) -> Optional[Dict[str, Any]]:
         upstreams = config_loader.get_upstreams()
-        # If it's a list, find by id
         if isinstance(upstreams, list):
             for u in upstreams:
                 if u.get('id') == upstream_id:
@@ -62,7 +55,6 @@ class UpstreamJsonStore(UpstreamStore):
             raise KeyError(f"Upstream {upstream_id} not found")
             
         target.update(updates)
-        # In dict mode, it's reference update. In list mode, reference update works too.
         config_loader.save_config(config)
         return target
 
@@ -141,12 +133,11 @@ class RoutingPolicyJsonStore(RoutingPolicyStore):
         return list(policies.values())
 
     def get_policy(self, policy_id: str, version: Optional[int] = None) -> Optional[Dict[str, Any]]:
-        # JSON config stores only LATEST version usually in simple dict mode
         policies = config_loader.get_routing_policies()
         target = None
         if isinstance(policies, list):
             for p in policies:
-                if p.get('id') == policy_id: # Legacy key was 'id' not 'policy_id'
+                if p.get('id') == policy_id:
                     target = p
                     break
         else:
@@ -154,25 +145,20 @@ class RoutingPolicyJsonStore(RoutingPolicyStore):
         
         if not target:
             return None
-            
         if version is not None and target.get('version') != version:
-            return None # Cannot fetch old version in simple JSON store if overwritten
-            
+            return None
         return target
 
     def create_policy(self, policy: Dict[str, Any]) -> None:
         config = config_loader.get_config()
         policies = config.get("routing_policies", {})
         
-        # Policy dict keys: id (legacy) or policy_id (new)?
-        # Router logic uses 'id'.
         pid = policy.get('id') or policy.get('policy_id')
         if not pid: 
              raise ValueError("Policy ID missing")
-        policy['id'] = pid # Ensure 'id' exists for legacy compat
+        policy['id'] = pid
         
         if isinstance(policies, list):
-             # Update if exists or append
              existing = False
              for i, p in enumerate(policies):
                  if p.get('id') == pid:
@@ -210,8 +196,7 @@ class SecretJsonStore(SecretStore):
         try:
             with open(self.file_path, 'r') as f:
                 return json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to load secrets: {e}")
+        except Exception:
             return {}
 
     def _save(self):
@@ -219,15 +204,15 @@ class SecretJsonStore(SecretStore):
             json.dump(self._cache, f, indent=2)
 
     def list_secrets(self) -> List[Dict[str, Any]]:
-        # Mock metadata
         return [{"name": k, "created_at": datetime.now(timezone.utc).isoformat(), "version": 1} for k in self._cache.keys()]
 
     def get_secret_value(self, name: str) -> Optional[str]:
         return self._cache.get(name)
 
-    def set_secret(self, name: str, value: str) -> None:
+    def set_secret(self, name: str, value: str, expected_kek_id: Optional[str] = None) -> bool:
         self._cache[name] = value
         self._save()
+        return True
 
     def delete_secret(self, name: str) -> bool:
         if name in self._cache:
@@ -247,8 +232,7 @@ class McpJsonStore(McpStore):
             return {"servers": [], "policies": []}
         try:
             with open(self.file_path, 'r') as f:
-                data = json.load(f)
-                return data
+                return json.load(f)
         except Exception:
             return {"servers": [], "policies": []}
             
@@ -284,11 +268,9 @@ class McpJsonStore(McpStore):
         self._save()
 
     def list_policies(self, team_id: str) -> List[Dict[str, Any]]:
-        # Simple filter
         return [p for p in self._cache.get("policies", []) if p.get('team_id') == team_id]
 
     def upsert_policy(self, policy: Dict[str, Any]) -> None:
-        # Check existing
         policies = self._cache.setdefault("policies", [])
         existing = False
         for i, p in enumerate(policies):
@@ -305,68 +287,75 @@ class McpJsonStore(McpStore):
         self._cache["policies"] = [p for p in policies if p.get('id') != policy_id]
         self._save()
 
-from app.domain.interfaces import UsageStore
+
+# Live In-Memory Usage Tracker (Singleton Pattern)
+_live_usage_stats = {
+    "requests": 0,
+    "tokens": 0,
+    "cost": 0.0,
+    "latency_acc": 0.0
+}
 
 class UsageJsonStore(UsageStore):
     def record_usage(self, event: Dict[str, Any]) -> None:
         logger.info(f"[USAGE] {event}")
+        _live_usage_stats["requests"] += 1
+        _live_usage_stats["tokens"] += (event.get("input_tokens", 0) + event.get("output_tokens", 0))
+        # Cost aggregation would need pricing model, ignoring for simple counter
+        _live_usage_stats["latency_acc"] += event.get("latency_ms", 0)
 
     def get_stats(self, window_hours: int = 24) -> Dict[str, Any]:
+        req = _live_usage_stats["requests"]
         return {
-            "requests_total": 100, # Mock some data
-            "tokens_total": 50000,
-            "cost_usd": 0.75,
-            "latency_avg_ms": 250.0,
+            "requests_total": req,
+            "tokens_total": _live_usage_stats["tokens"],
+            "cost_usd": _live_usage_stats["cost"],
+            "latency_avg_ms": (_live_usage_stats["latency_acc"] / req) if req > 0 else 0,
             "window_hours": window_hours,
-            "note": "Mock stats for JSON mode"
+            "note": "Live In-Memory Stats"
         }
 
 class AuditJsonStore(AuditStore):
     def append_event(self, event: Dict[str, Any]) -> None:
-        # Convert datetime to ISO string for JSON serialization
         data = event.copy()
         for k, v in data.items():
             if isinstance(v, datetime):
                 data[k] = v.isoformat()
-                
         logger.info(f"AUDIT: {json.dumps(data)}")
-        # file write disabled in K8s to avoid read-only fs errors
-        # with open("audit.log", "a") as f:
-        #     f.write(json.dumps(data) + "\n")
 
     def list_events(self, filters: Dict[str, Any], limit: int = 100) -> List[Dict[str, Any]]:
-        events = []
-        if os.path.exists("audit.log"):
-            with open("audit.log", "r") as f:
-                for line in f:
-                    try:
-                        events.append(json.loads(line))
-                    except:
-                        pass
-        # Filter logic omitted for brevity in Dev Mode
-        return events[-limit:]
+        # For dev mode without file persistence, return empty or implement log parsing
+        return []
 
     def get_dashboard_stats(self, window_hours: int = 24) -> Dict[str, Any]:
-        """Mock stats for JSON mode."""
-        # Generate some mock time-series data
-        from datetime import timedelta, timezone
-        now = datetime.now(timezone.utc)
-        series = []
-        for i in range(24):
-            t = now - timedelta(hours=23-i)
-            series.append({
-                "time": t.isoformat(),
-                "ok": 50 + i * 2,
-                "deny": 5 if i % 4 == 0 else 0,
-                "error": 1 if i % 8 == 0 else 0
-            })
-            
+        # Generate basic live stats if possible, or minimal valid struct
         return {
-            "requests_24h": 1250,
-            "denial_reason_counts": {
-                "policy_violation": 42,
-                "rate_limit": 15,
-                "unauthorized": 8
-            },
-            "request_volume_series": series
+            "requests_24h": _live_usage_stats["requests"],
+            "denial_reason_counts": {},
+            "request_volume_series": []
         }
+
+class JsonPrincipalStore(PrincipalStore):
+    def __init__(self, file_path: str = "principals.json"):
+        self.file_path = file_path
+        self._cache = self._load()
+
+    def _load(self) -> Dict[str, Any]:
+        if not os.path.exists(self.file_path):
+             # Default dev-principal if missing
+            return {
+                "dev-id": {
+                    "id": "dev-id",
+                    "org_id": "org-dev",
+                    "role": "admin",
+                    "api_keys": [{"id": "key-dev", "hash": "..."}] 
+                }
+            }
+        try:
+            with open(self.file_path, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def get_principal(self, pid: str) -> Optional[Dict[str, Any]]:
+        return self._cache.get(pid)

@@ -37,9 +37,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # If RBAC middleware does authentication, then `request.state.principal` might be available.
         
         
-        # Use defaults (TODO: Look up Surface Registry overrides)
+        # 2. Determine Limits (Look up Surface Registry overrides)
+        surface = getattr(request.state, "surface", None)
         rps = self.default_rps
         burst = self.default_burst
+        
+        if surface and hasattr(surface, "rate_limit_rps") and surface.rate_limit_rps:
+            rps = surface.rate_limit_rps
+        if surface and hasattr(surface, "rate_limit_burst") and surface.rate_limit_burst:
+            burst = surface.rate_limit_burst
         
         principal = getattr(request.state, "principal", None)
         

@@ -360,10 +360,8 @@ class TgaRuntime:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     
     def _generate_id(self) -> str:
-        """Generate a mock UUID v7 for testing."""
-        import uuid
-        # Use UUID4 as placeholder (production would use proper UUIDv7)
-        return uuid7().replace("-", "")[:36]
+        """Generate a proper time-ordered UUID v7."""
+        return str(uuid7())
     
     def _create_tool_call(
         self, 

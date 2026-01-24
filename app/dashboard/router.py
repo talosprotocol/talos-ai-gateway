@@ -153,7 +153,7 @@ async def dashboard(
             <div class="stat"><div class="stat-label">Providers</div><div class="stat-value accent" id="stat-providers">{len(upstreams)}</div></div>
             <div class="stat"><div class="stat-label">Models</div><div class="stat-value accent" id="stat-models">{len(model_groups)}</div></div>
             <div class="stat"><div class="stat-label">Status</div><div class="stat-value success">Online</div></div>
-            <div class="stat"><div class="stat-label">Version</div><div class="stat-value">0.1.0</div></div>
+            <div class="stat"><div class="stat-label">Version</div><div class="stat-value">0.1.0-dev</div></div>
         </div>
         
         <div class="section">
@@ -489,7 +489,7 @@ async def dashboard(
             try {{
                 const r = await fetch('/v1/chat/completions', {{
                     method:'POST',
-                    headers:{{'Content-Type':'application/json', 'Authorization':'Bearer sk-test-key-1'}},
+                    headers:{{'Content-Type':'application/json', 'Authorization':'Bearer sk-REPLACE-ME'}},
                     body:JSON.stringify({{model: document.getElementById('testModel').value, messages:[{{role:'user', content: document.getElementById('testPrompt').value}}]}})
                 }});
                 const d = await r.json();

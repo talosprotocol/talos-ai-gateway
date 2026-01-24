@@ -2,6 +2,10 @@
 from typing import Dict, List, Optional
 import hashlib
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.domain.interfaces import McpStore
 
 # In-memory schema cache for MVP
 SCHEMA_CACHE: Dict[str, dict] = {}
@@ -56,7 +60,7 @@ BUILTIN_SCHEMAS = {
 }
 
 
-def get_tools(server_id: str) -> List[dict]:
+def get_tools(server_id: str, mcp_store: Optional["McpStore"] = None) -> List[dict]:
     """Get tools for a server (with caching)."""
     cache_key = f"tools:{server_id}"
     cached = TOOL_LIST_CACHE.get(cache_key)
@@ -66,8 +70,16 @@ def get_tools(server_id: str) -> List[dict]:
         if datetime.now(expires_at.tzinfo) < expires_at:
             return cached["tools"]
     
-    # Fetch tools (fallback to builtin)
-    tools = BUILTIN_TOOLS.get(server_id, [])
+    # Try store first
+    tools = []
+    if mcp_store:
+        server = mcp_store.get_server(server_id)
+        if server and "tools" in server:
+             tools = server["tools"]
+    
+    # Fallback to builtin
+    if not tools:
+        tools = BUILTIN_TOOLS.get(server_id, [])
     
     # Cache for 60 seconds
     TOOL_LIST_CACHE[cache_key] = {
@@ -79,7 +91,7 @@ def get_tools(server_id: str) -> List[dict]:
     return tools
 
 
-def get_tool_schema(server_id: str, tool_name: str) -> Optional[dict]:
+def get_tool_schema(server_id: str, tool_name: str, mcp_store: Optional["McpStore"] = None) -> Optional[dict]:
     """Get JSON schema for a tool (with caching)."""
     cache_key = f"schema:{server_id}:{tool_name}"
     cached = SCHEMA_CACHE.get(cache_key)
@@ -89,9 +101,17 @@ def get_tool_schema(server_id: str, tool_name: str) -> Optional[dict]:
         if datetime.now(expires_at.tzinfo) < expires_at:
             return cached
     
-    # Fetch schema (fallback to builtin)
-    server_schemas = BUILTIN_SCHEMAS.get(server_id, {})
-    schema = server_schemas.get(tool_name)
+    # Try store first
+    schema = None
+    if mcp_store:
+        server = mcp_store.get_server(server_id)
+        if server and "tool_schemas" in server:
+            schema = server["tool_schemas"].get(tool_name)
+    
+    # Fallback to builtin
+    if not schema:
+        server_schemas = BUILTIN_SCHEMAS.get(server_id, {})
+        schema = server_schemas.get(tool_name)
     
     if not schema:
         return None
