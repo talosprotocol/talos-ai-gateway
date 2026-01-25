@@ -16,7 +16,7 @@ class MockReplayDetector(ReplayDetector):
 
 @pytest.fixture
 def vectors():
-    with open("deploy/repos/talos-contracts/test_vectors/crypto/http_attestation_v1.json") as f:
+    with open("contracts/test_vectors/crypto/http_attestation_v1.json") as f:
         return json.load(f)
 
 @pytest.fixture
