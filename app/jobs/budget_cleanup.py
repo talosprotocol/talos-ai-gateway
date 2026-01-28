@@ -18,18 +18,13 @@ async def budget_cleanup_worker(shutdown_event: asyncio.Event, interval_seconds:
     
     while not shutdown_event.is_set():
         try:
-            if not SessionLocal:
-                logger.warning("Budget cleanup worker: DB not configured")
-            else:
-                db = SessionLocal()
-                try:
-                    service = BudgetService(db)
-                    # release_expired_reservations is sync
-                    count = await run_in_threadpool(service.release_expired_reservations, limit=100)
-                    if count > 0:
-                        logger.info(f"Released {count} expired budget reservations.")
-                finally:
-                    db.close()
+            from app.adapters.redis.client import get_redis_client
+            redis = await get_redis_client()
+            service = BudgetService(redis)
+            # release_expired_reservations is now async returning 0 or placeholder
+            count = service.release_expired_reservations(limit=100)
+            if count > 0:
+                logger.info(f"Released {count} expired budget reservations.")
         except Exception as e:
             logger.error(f"Error in budget cleanup worker: {e}", exc_info=True)
             

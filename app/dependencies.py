@@ -3,13 +3,13 @@ import os
 import logging
 import time
 import threading
-from typing import Optional, Generator
+from typing import Optional, Generator, Any, List, Dict
 from dataclasses import dataclass, field
-
-from fastapi import Depends, Request, Response, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
+
+from fastapi import Depends, Request, Response, HTTPException
 
 from app.core.config import settings
 
@@ -115,7 +115,7 @@ engine = _write_engine  # Alias for backward compatibility
 
 # --- Database Dependencies ---
 
-def get_db(request: Request = None) -> Generator[Session, None, None]:
+def get_db(request: Optional[Request] = None) -> Generator[Session, None, None]:
     """Legacy dependency yielding a Write DB session."""
     with Session(_write_engine) as session:
         yield session
@@ -191,6 +191,7 @@ def get_read_db(request: Request, response: Response) -> Generator[Session, None
     # Case 3: Attempt replica
     try:
         # Test connection first
+        assert _read_engine is not None
         conn = _read_engine.connect()
         conn.close()
         
@@ -255,9 +256,10 @@ def get_read_db(request: Request, response: Response) -> Generator[Session, None
 # --- Original Dependencies (Updated mappings) ---
 
 from app.domain.interfaces import (
-    UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, 
+    UpstreamStore, ModelGroupStore, McpStore, AuditStore, 
     RoutingPolicyStore, RotationOperationStore
 )
+from app.domain.secrets.ports import SecretStore as SecretStorePort
 from app.adapters.json_store.stores import (
     UpstreamJsonStore, ModelGroupJsonStore, SecretJsonStore, McpJsonStore, AuditJsonStore, RoutingPolicyJsonStore
 )
@@ -285,8 +287,7 @@ def get_routing_policy_store(db: Session = Depends(get_write_db)) -> RoutingPoli
 
 from app.adapters.secrets.multi_provider import MultiKekProvider
 from app.adapters.postgres.secret_store import PostgresSecretStore
-from app.domain.secrets.ports import KekProvider, SecretStore
-
+from app.domain.secrets.ports import KekProvider
 _kek_provider: Optional[MultiKekProvider] = None
 
 def get_kek_provider() -> KekProvider:
@@ -299,14 +300,14 @@ def get_kek_provider() -> KekProvider:
 def get_secret_store(
     db: Session = Depends(get_write_db),
     kek: KekProvider = Depends(get_kek_provider)
-) -> SecretStore:
+) -> SecretStorePort:
     if USE_JSON_STORES: return SecretJsonStore()
     return PostgresSecretStore(db, kek)
 
 def get_read_secret_store(
     db: Session = Depends(get_read_db),
     kek: KekProvider = Depends(get_kek_provider)
-) -> SecretStore:
+) -> SecretStorePort:
     if USE_JSON_STORES: return SecretJsonStore()
     return PostgresSecretStore(db, kek)
 
@@ -319,7 +320,7 @@ def get_rotation_store(db: Session = Depends(get_write_db)) -> RotationOperation
 
 from app.domain.secrets.manager import SecretsManager
 def get_secrets_manager(
-    store: SecretStore = Depends(get_secret_store),
+    store: SecretStorePort = Depends(get_secret_store),
     kek: KekProvider = Depends(get_kek_provider)
 ) -> SecretsManager:
     return SecretsManager(kek, store)
@@ -373,7 +374,7 @@ async def get_rate_limiter() -> RateLimiter:
             # Import here to avoid circular
             from app.adapters.redis.client import get_redis_client
             redis_client = await get_redis_client()
-            storage = RedisRateLimitStorage(redis_client)
+            storage: Any = RedisRateLimitStorage(redis_client)
         else:
             storage = MemoryRateLimitStorage()
         _rate_limiter_instance = RateLimiter(storage)
@@ -450,13 +451,20 @@ async def get_attestation_verifier(p_store: PrincipalStore = Depends(get_princip
     return AttestationVerifier(p_store, replay)
 
 from app.domain.registry import SurfaceRegistry
-_registry_instance = None
-def get_surface_registry() -> SurfaceRegistry:
-    global _registry_instance
-    if _registry_instance is None:
+# Phase 7: Use new RBAC Registry
+from app.domain.rbac.registry import RBACSurfaceRegistry
+_rbac_registry_instance = None
+
+def get_surface_registry() -> RBACSurfaceRegistry:
+    global _rbac_registry_instance
+    if _rbac_registry_instance is None:
         path = os.getenv("SURFACE_INVENTORY_PATH", "gateway_surface.json")
-        _registry_instance = SurfaceRegistry(path)
-    return _registry_instance
+        # Ensure we look in root if not absolute
+        if not os.path.isabs(path):
+             # Assuming running from services/ai-gateway/
+             path = os.path.abspath(path)
+        _rbac_registry_instance = RBACSurfaceRegistry(path)
+    return _rbac_registry_instance
 
 from app.domain.audit import AuditLogger
 from app.domain.sink import AuditSink, StdOutSink, HttpSink
@@ -465,32 +473,83 @@ def get_audit_logger() -> AuditLogger:
     global _audit_logger_instance
     if _audit_logger_instance is None:
         sink_url = os.getenv("AUDIT_SINK_URL")
-        sink: AuditSink = HttpSink(sink_url, os.getenv("AUDIT_SINK_API_KEY")) if sink_url else StdOutSink()
+        sink: AuditSink = HttpSink(sink_url, os.getenv("AUDIT_SINK_API_KEY") or "dev") if sink_url else StdOutSink()
         _audit_logger_instance = AuditLogger(sink)
     return _audit_logger_instance
 
-from app.policy import PolicyEngine, DeterministicPolicyEngine
+# Phase 7: Updated Policy Engine
+from app.domain.rbac.policy_engine import PolicyEngine
+from app.domain.rbac.models import Role
 _policy_engine_instance = None
-def get_policy_engine() -> PolicyEngine:
+
+async def get_policy_engine_async() -> PolicyEngine:
     global _policy_engine_instance
     if _policy_engine_instance is None:
-         # Live Role Loading
+         engine = PolicyEngine()
+         
+         # Load Roles (Mock/Config)
          import json
          roles_path = os.getenv("ROLES_CONFIG_PATH", "config/roles.json")
-         roles = {}
+         roles_list = []
+         
          if os.path.exists(roles_path):
              try:
                  with open(roles_path) as f:
-                     roles = json.load(f)
+                     data = json.load(f)
+                     # Adapt dict-based Config to Role Models
+                     # Expecting list or dict. Phase 7 spec says schemas/rbac/role.schema.json
+                     # Let's assume the config definition matches the schema.
+                     # But for now, let's just create some default roles if missing or handle properly
+                     # If data is dict of id->role
+                     if isinstance(data, dict):
+                         for r in data.values():
+                             roles_list.append(Role(**r))
+                     elif isinstance(data, list):
+                         for r in data:
+                             roles_list.append(Role(**r))
              except Exception as e:
                  logger.error(f"Failed to load roles from {roles_path}: {e}")
          
-         if not roles:
-             # Fallback or simple default
-             roles = {"role-admin": {"id": "role-admin", "permissions": ["*:*"]}, 
-                      "role-public": {"id": "role-public", "permissions": ["public:*"]}}
-                      
-         _policy_engine_instance = DeterministicPolicyEngine(roles, {})
+         if not roles_list:
+             # Default Dev Roles
+             roles_list = [
+                 Role(role_id="role-admin", name="Admin", permissions=["*:*"], built_in=True),
+                 Role(role_id="role-public", name="Public", permissions=["system:health", "system:metrics"], built_in=True)
+             ]
+             
+         await engine.load_roles(roles_list)
+         
+         # Mock Bindings for Dev
+         from app.domain.rbac.models import Binding, BindingEntry, Scope, ScopeType
+         # Bind 'anonymous' to public role
+         public_binding = Binding(
+             principal_id="anonymous",
+             bindings=[
+                 BindingEntry(binding_id="bind_anon", role_id="role-public", scope=Scope(scope_type=ScopeType.GLOBAL))
+             ]
+         )
+         # Bind 'dev-user' to admin
+         admin_binding = Binding(
+             principal_id="dev-user",
+             bindings=[
+                 BindingEntry(binding_id="bind_admin", role_id="role-admin", scope=Scope(scope_type=ScopeType.GLOBAL))
+             ]
+         )
+         
+         await engine.load_bindings([public_binding, admin_binding])
+         
+         _policy_engine_instance = engine
+         
+    return _policy_engine_instance
+
+def get_policy_engine() -> PolicyEngine:
+    # Deprecated synchronous accessor, or bridge
+    # PolicyEngine methods are async now.
+    # For compatibility, we might need a sync wrapper or ensure callers wait.
+    # But RBACMiddleware is async, so it's fine.
+    # We'll return the instance if initialized, else warn.
+    if _policy_engine_instance is None:
+        raise RuntimeError("PolicyEngine must be initialized via async getter first")
     return _policy_engine_instance
 
 def get_capability_validator() -> CapabilityValidator:
@@ -502,9 +561,28 @@ def get_capability_validator() -> CapabilityValidator:
 from app.domain.budgets.service import BudgetService
 from app.domain.usage.manager import UsageManager
 
-def get_budget_service(db: Session = Depends(get_write_db)) -> BudgetService:
-    return BudgetService(db)
+async def get_budget_service() -> BudgetService:
+    from app.adapters.redis.client import get_redis_client
+    redis = await get_redis_client()
+    return BudgetService(redis)
 
-def get_usage_manager(db: Session = Depends(get_write_db)) -> UsageManager:
-    return UsageManager(db)
+async def get_usage_manager(
+    db: Session = Depends(get_write_db),
+    budget_service: BudgetService = Depends(get_budget_service)
+) -> UsageManager:
+    return UsageManager(db, budget_service)
+
+
+# --- Phase 9.2: Tool Guard ---
+from app.domain.mcp.tool_guard import ToolGuard
+_tool_guard_instance: Optional[ToolGuard] = None
+
+def get_tool_guard() -> ToolGuard:
+    global _tool_guard_instance
+    if _tool_guard_instance is None:
+        path = os.getenv("TALOS_MCP_TOOL_REGISTRY_PATH", "tool_registry.json")
+        if not os.path.isabs(path):
+            path = os.path.abspath(path)
+        _tool_guard_instance = ToolGuard(path)
+    return _tool_guard_instance
 

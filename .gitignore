@@ -147,3 +147,4 @@ dmypy.json
 config/secrets.json
 e2e_results.txt
 artifacts/
+verify_output*.txt

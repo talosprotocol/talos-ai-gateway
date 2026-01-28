@@ -11,4 +11,12 @@ class RegionHeaderMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
         response.headers["X-Talos-Region"] = self.region_id
+        
+        # Phase 12: Ensure Multi-Region Traceability Headers
+        if "X-Talos-DB-Role" not in response.headers:
+            response.headers["X-Talos-DB-Role"] = "primary" # Default assumption
+            
+        if "X-Talos-Read-Fallback" not in response.headers:
+            response.headers["X-Talos-Read-Fallback"] = "0"
+            
         return response

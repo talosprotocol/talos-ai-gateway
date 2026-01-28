@@ -63,6 +63,7 @@ class ExecutionLogEntry:
     artifact_digest: str
     tool_call_id: Optional[str] = None
     idempotency_key: Optional[str] = None
+    artifact_payload: Optional[Dict[str, Any]] = None
     
     def compute_digest(self) -> str:
         """Compute entry_digest from canonical JSON preimage."""

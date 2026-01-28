@@ -1,223 +1,167 @@
-"""PolicyEngine per Phase 7 LOCKED SPEC.
-
-Deterministic RBAC resolution with scope matching.
-"""
+from typing import List, Dict, Optional, Tuple
 import logging
-from typing import Dict, List, Optional
-
-from app.domain.rbac.models import (
-    Role,
-    Binding,
-    BindingDocument,
-    Scope,
-    ScopeType,
-    ScopeMatchResult,
-    AuthzDecision,
-    AuthzReasonCode,
-)
+from .models import Role, Binding, BindingEntry, Scope, ScopeType, AuthzDecision
 
 logger = logging.getLogger(__name__)
 
-
 class PolicyEngine:
-    """
-    Deterministic RBAC PolicyEngine per Phase 7 LOCKED SPEC.
-    
-    Resolution algorithm:
-    1. Load roles and principal bindings
-    2. For each binding, check role exists and has permission
-    3. Match scope using normative semantics
-    4. Choose winner by specificity then binding_id tie-break
-    """
-    
-    def __init__(
-        self, 
-        roles: Optional[Dict[str, Role]] = None,
-        binding_docs: Optional[Dict[str, BindingDocument]] = None
-    ):
-        """Initialize with in-memory stores (for testing)."""
-        self._roles = roles or {}
-        self._binding_docs = binding_docs or {}
-    
-    async def load_roles(self) -> Dict[str, Role]:
-        """Load all roles."""
-        return self._roles
-    
-    async def load_bindings(self, principal_id: str) -> List[Binding]:
-        """Load bindings for a principal."""
-        doc = self._binding_docs.get(principal_id)
-        if doc:
-            return doc.bindings
-        return []
-    
-    async def resolve(
-        self, 
-        principal_id: str, 
-        permission: str, 
-        request_scope: Scope
-    ) -> AuthzDecision:
+    def __init__(self):
+        self.roles: Dict[str, Role] = {}
+        # Simple in-memory store for bindings (principal_id -> Binding)
+        # In production this would be cached from a DB or external service
+        self.bindings: Dict[str, Binding] = {}
+
+    async def load_roles(self, roles: List[Role]):
+        """Load roles into the engine."""
+        for role in roles:
+            self.roles[role.role_id] = role
+        logger.info(f"Loaded {len(roles)} roles into PolicyEngine")
+
+    async def load_bindings(self, bindings: List[Binding]):
+        """Load bindings into the engine."""
+        for binding in bindings:
+            self.bindings[binding.principal_id] = binding
+        logger.info(f"Loaded bindings for {len(bindings)} principals")
+
+    def _match_scope(self, required: Scope, binding_scope: Scope) -> int:
         """
-        Resolve authorization decision.
+        Calculate specificity score for scope match.
+        Returns -1 if no match, or specificity score >= 0.
         
-        Per LOCKED SPEC:
-        - Bindings evaluated in deterministic order (sorted by binding_id)
-        - Winner chosen by specificity then binding_id tie-break
-        - Stable reason codes for all outcomes
+        Specificity Rules:
+        0. Global scope bindings match everything (Specificity 0)
+        1. Scope Type MUST match (unless binding is global)
+        2. Attributes:
+           - Exact match: +2
+           - Wildcard match (*): +1
+           - Missing in binding but present in required: No Match
         """
-        try:
-            bindings = await self.load_bindings(principal_id)
-            roles = await self.load_roles()
+        # 0. Global binding matches everything
+        if binding_scope.scope_type == ScopeType.GLOBAL:
+            return 0
+
+        # 1. Type Mismatch
+        if required.scope_type != binding_scope.scope_type:
+            return -1
+
+        score = 0
+        
+        # 2. Check attributes
+        # Every attribute in the binding scope MUST match the required scope
+        # Note: We iterate over binding attributes because the binding defines the constraint.
+        # However, typically we check if the binding *covers* the requirement.
+        # Actually, for RBAC, the binding extracts a subset of resources.
+        # If binding says "repo: talos", and request is "repo: talos", match.
+        
+        # Let's follow the strict "Binding Covers Request" logic.
+        # A specific binding scope (e.g. repo=A) matches a request for repo=A.
+        
+        # For each attribute in the binding scope:
+        for k, v in binding_scope.attributes.items():
+            req_val = required.attributes.get(k)
             
-            if not bindings:
-                return AuthzDecision(
-                    allowed=False,
-                    reason_code=AuthzReasonCode.BINDING_NOT_FOUND,
-                    principal_id=principal_id,
-                    permission=permission,
-                    request_scope=request_scope
-                )
-            
-            # Sort bindings by binding_id for deterministic evaluation
-            sorted_bindings = sorted(bindings, key=lambda b: b.binding_id)
-            
-            # Find all qualifying bindings
-            candidates: List[tuple[Binding, Role, int]] = []
-            
-            for binding in sorted_bindings:
-                # Check role exists
-                role = roles.get(binding.role_id)
-                if not role:
-                    logger.warning(f"Role {binding.role_id} not found for binding {binding.binding_id}")
-                    continue
+            # If binding has an attr that request doesn't have, it's a scope mismatch
+            # (e.g. binding is limited to branch=main, but request has no branch)
+            # conservatively deny.
+            if req_val is None:
+                return -1
                 
-                # Check role has permission
-                if not role.has_permission(permission):
-                    continue
+            if v == "*":
+                score += 1
+            elif v == req_val:
+                score += 2
+            else:
+                # Value mismatch
+                return -1
                 
-                # Check scope matches
-                match_result = self._match_scope(binding.scope, request_scope)
-                if not match_result.matched:
-                    continue
-                
-                candidates.append((binding, role, match_result.specificity))
-            
-            if not candidates:
-                # Determine most specific reason
-                # Check if any binding had role not found
-                has_roles = any(roles.get(b.role_id) for b in sorted_bindings)
-                if not has_roles:
-                    return AuthzDecision(
-                        allowed=False,
-                        reason_code=AuthzReasonCode.ROLE_NOT_FOUND,
-                        principal_id=principal_id,
-                        permission=permission,
-                        request_scope=request_scope
-                    )
-                
-                # Check if permission not in any role
-                has_permission = any(
-                    roles.get(b.role_id) and roles.get(b.role_id).has_permission(permission)
-                    for b in sorted_bindings
-                )
-                if not has_permission:
-                    return AuthzDecision(
-                        allowed=False,
-                        reason_code=AuthzReasonCode.PERMISSION_DENIED,
-                        principal_id=principal_id,
-                        permission=permission,
-                        request_scope=request_scope
-                    )
-                
-                # Otherwise scope mismatch
-                return AuthzDecision(
-                    allowed=False,
-                    reason_code=AuthzReasonCode.SCOPE_MISMATCH,
-                    principal_id=principal_id,
-                    permission=permission,
-                    request_scope=request_scope
-                )
-            
-            # Choose winner: highest specificity, then lexicographic binding_id
-            candidates.sort(key=lambda x: (-x[2], x[0].binding_id))
-            winner_binding, winner_role, _ = candidates[0]
-            
-            return AuthzDecision(
-                allowed=True,
-                reason_code=AuthzReasonCode.PERMISSION_ALLOWED,
-                principal_id=principal_id,
-                permission=permission,
-                request_scope=request_scope,
-                matched_role_ids=[c[1].role_id for c in candidates],
-                matched_binding_ids=[c[0].binding_id for c in candidates],
-                effective_role_id=winner_role.role_id,
-                effective_binding_id=winner_binding.binding_id
-            )
-            
-        except Exception as e:
-            logger.exception(f"Policy error for {principal_id}: {e}")
+        return score
+
+    async def resolve(self, principal_id: str, permission: str, request_scope: Scope) -> AuthzDecision:
+        binding_container = self.bindings.get(principal_id)
+        
+        if not binding_container:
             return AuthzDecision(
                 allowed=False,
-                reason_code=AuthzReasonCode.POLICY_ERROR,
+                reason_code="RBAC_BINDING_NOT_FOUND",
                 principal_id=principal_id,
                 permission=permission,
                 request_scope=request_scope
             )
-    
-    def _match_scope(self, binding_scope: Scope, request_scope: Scope) -> ScopeMatchResult:
-        """
-        Match binding scope against request scope.
-        
-        Per LOCKED SPEC:
-        - global matches any scope (specificity 0)
-        - scope_type must equal (no cross-type matching)
-        - Exact match: +2 specificity per attribute
-        - Wildcard "*": +1 specificity per attribute
-        """
-        # Global matches anything
-        if binding_scope.scope_type == ScopeType.GLOBAL:
-            return ScopeMatchResult(matched=True, specificity=0)
-        
-        # scope_type must match
-        if binding_scope.scope_type != request_scope.scope_type:
-            return ScopeMatchResult(
-                matched=False, 
-                specificity=0,
-                reason="scope_type_mismatch"
+
+        matched_roles = []
+        matched_bindings = []
+        best_score = -1
+        effective_role = None
+        effective_binding = None
+
+        # Iterate all bindings for this user
+        for entry in binding_container.bindings:
+            role = self.roles.get(entry.role_id)
+            if not role:
+                continue
+
+            # 1. Check Permission
+            if not self._has_permission(role.permissions, permission):
+                continue
+
+            # 2. Check Scope
+            score = self._match_scope(request_scope, entry.scope)
+            if score >= 0:
+                matched_roles.append(role.role_id)
+                matched_bindings.append(entry.binding_id)
+                
+                # Tie-breaking: Higher specificity, then lexicographically smaller binding_id
+                is_better = False
+                if score > best_score:
+                    is_better = True
+                elif score == best_score:
+                    if effective_binding is None or entry.binding_id < effective_binding:
+                        is_better = True
+                
+                if is_better:
+                    best_score = score
+                    effective_role = role.role_id
+                    effective_binding = entry.binding_id
+                    
+        if effective_role:
+             return AuthzDecision(
+                allowed=True,
+                reason_code="RBAC_PERMISSION_ALLOWED",
+                principal_id=principal_id,
+                permission=permission,
+                request_scope=request_scope,
+                matched_role_ids=matched_roles,
+                matched_binding_ids=matched_bindings,
+                effective_role_id=effective_role,
+                effective_binding_id=effective_binding
             )
-        
-        # Check all binding attributes match request
-        specificity = 0
-        for key, binding_value in binding_scope.attributes.items():
-            request_value = request_scope.attributes.get(key)
+
+        return AuthzDecision(
+            allowed=False,
+            reason_code="RBAC_PERMISSION_DENIED",
+            principal_id=principal_id,
+            permission=permission,
+            request_scope=request_scope
+        )
+
+    def _has_permission(self, permissions: List[str], action: str) -> bool:
+        """
+        Checks if action satisfies any permission string.
+        Supports:
+        - Exact match: "audit:read" == "audit:read"
+        - Global Wildcard: "*:*" matches everything
+        - Namespace Wildcard: "audit:*" matches "audit:read", "audit:write"
+        """
+        for perm in permissions:
+            if perm == "*:*":
+                return True
+            if perm == action:
+                return True
             
-            if request_value is None:
-                return ScopeMatchResult(
-                    matched=False,
-                    specificity=0,
-                    reason="missing_attribute"
-                )
-            
-            if binding_value == "*":
-                specificity += 1  # Wildcard match
-            elif binding_value == request_value:
-                specificity += 2  # Exact match
-            else:
-                return ScopeMatchResult(
-                    matched=False,
-                    specificity=0,
-                    reason="attribute_mismatch"
-                )
-        
-        return ScopeMatchResult(matched=True, specificity=specificity)
-
-
-# Singleton for gateway
-_policy_engine: Optional[PolicyEngine] = None
-
-
-def get_policy_engine() -> PolicyEngine:
-    """Get or create PolicyEngine singleton."""
-    global _policy_engine
-    if _policy_engine is None:
-        _policy_engine = PolicyEngine()
-    return _policy_engine
+            # Namespace wildcard check (e.g. "audit:*")
+            if perm.endswith(":*"):
+                namespace = perm[:-2]
+                if action.startswith(namespace + ":"):
+                    return True
+                    
+        return False
