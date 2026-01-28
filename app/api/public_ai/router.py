@@ -31,7 +31,7 @@ import os
 
 # Helper for audit - can be moved to dependency or service
 def audit(store: AuditStore, action: str, resource_type: str, principal_id: str, 
-          resource_id: str = None, outcome: str = "success", **details):
+          resource_id: Optional[str] = None, outcome: str = "success", **details):
     event = {
         "event_id": uuid7(),
         "timestamp": datetime.utcnow(),
@@ -128,7 +128,7 @@ async def chat_completions(
     
     estimate_usd, _ = budget_service.pricing.get_llm_cost(
         model_name=model_group_id,
-        provider=None, 
+        provider="unknown", 
         group_id=model_group_id,
         input_tokens=estimate_tokens, 
         output_tokens=0 
@@ -144,7 +144,7 @@ async def chat_completions(
     
     if reserving:
         try:
-            budget_headers = budget_service.reserve(
+            budget_headers = await budget_service.reserve(
                 request_id=str(request_id),
                 team_id=auth.team_id,
                 key_id=auth.key_id,
@@ -168,7 +168,7 @@ async def chat_completions(
             })
     else:
         # WARN/OFF mode or Forced WARN (streaming)
-        budget_headers = budget_service.reserve(
+        budget_headers = await budget_service.reserve(
             request_id=str(request_id),
             team_id=auth.team_id,
             key_id=auth.key_id,
@@ -187,7 +187,7 @@ async def chat_completions(
         audit(audit_store, "routing_decision", "llm", auth.key_id, model_group_id, "error", error_code="NO_UPSTREAM")
         # Release budget reservation if any
         if reserving:
-            budget_service.settle(str(request_id), Decimal("0"))
+            await budget_service.settle(str(request_id), auth.team_id, auth.key_id, estimate_usd, Decimal("0"))
         raise HTTPException(status_code=502, detail={
             "error": {"code": "UPSTREAM_5XX", "message": "No available upstream for model group"}
         })
@@ -239,7 +239,8 @@ async def chat_completions(
                 output_tokens=completion_tokens,
                 latency_ms=latency_ms,
                 status="success",
-                token_count_source="estimated"
+                token_count_source="estimated",
+                estimate_usd=estimate_usd
             )
             
             return res
@@ -248,11 +249,11 @@ async def chat_completions(
         messages = [{"role": m.role, "content": m.content} for m in request.messages]
         
         result = await invoke_openai_compatible(
-            endpoint=upstream["endpoint"],
-            model_name=model_name,
-            messages=messages,
+            endpoint=upstream["endpoint"], 
+            model_name=model_name, 
+            messages=messages, 
             api_key=api_key,
-            temperature=request.temperature,
+            temperature=request.temperature or 0.7,
             max_tokens=request.max_tokens
         )
         
@@ -274,15 +275,17 @@ async def chat_completions(
             org_id=auth.org_id or "",
             surface="llm",
             target=model_group_id,
+            provider=provider or "unknown",
             input_tokens=prompt_tokens,
             output_tokens=completion_tokens,
             latency_ms=latency_ms,
             status="success",
-            token_count_source="provider_reported"
+            token_count_source="provider_reported",
+            estimate_usd=estimate_usd
         )
-        
+
         return result
-        
+
     except Exception as e:
         latency_ms = int((time.time() - start_time) * 1000)
         status = "error"
@@ -304,9 +307,9 @@ async def chat_completions(
              output_tokens=0,
              latency_ms=latency_ms,
              status="error",
-             token_count_source="unknown"
+             token_count_source="unknown",
+             estimate_usd=estimate_usd
         )
-        budget_service.settle(request_id, Decimal("0"))
         
         if isinstance(e, HTTPException): raise e
         

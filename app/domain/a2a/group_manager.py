@@ -15,8 +15,9 @@ from app.domain.a2a.utils import uuid7
 logger = logging.getLogger(__name__)
 
 class A2AGroupManager:
-    def __init__(self, db: Session):
-        self.db = db
+    def __init__(self, write_db: Session, read_db: Optional[Session] = None):
+        self.db = write_db
+        self.read_db = read_db or write_db
 
     def _advisory_lock(self, group_id: str) -> None:
         """Acquire transaction-scoped advisory lock for single-writer concurrency.
@@ -129,7 +130,7 @@ class A2AGroupManager:
         self._append_event(group_id, "member_removed", actor_id, {}, target_id=member_id)
         return group
 
-    def close_group(self, group_id: str, actor_id: str) -> A2AGroup:
+    def close_group(self, group_id: str, actor_id: str) -> Optional[A2AGroup]:
         self._advisory_lock(group_id)
         group = self.get_group(group_id)
         if not group:

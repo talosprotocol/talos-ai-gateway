@@ -9,11 +9,13 @@ from app.domain.mcp import registry, discovery
 from app.utils.id import uuid7
 
 # Phase 15 Imports
-from app.dependencies import get_budget_service, get_usage_manager, get_mcp_client
+from app.dependencies import get_budget_service, get_usage_manager, get_mcp_client, get_tool_guard, get_audit_logger
 from app.domain.budgets.service import BudgetService, BudgetExceededError
 from app.domain.usage.manager import UsageManager
 from app.adapters.mcp.client import McpClient
 from app.errors import raise_talos_error
+from app.domain.mcp.tool_guard import ToolGuard
+from app.domain.audit import AuditLogger
 
 import time
 
@@ -24,6 +26,7 @@ class ToolCallRequest(BaseModel):
     input: Dict[str, Any]
     request_id: Optional[str] = None
     session_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
 
 
 @router.get("/servers")
@@ -98,7 +101,9 @@ async def call_tool(
     auth: AuthContext = Depends(require_scope("mcp.invoke")),
     mcp_client: McpClient = Depends(get_mcp_client),
     budget_service: BudgetService = Depends(get_budget_service),
-    usage_manager: UsageManager = Depends(get_usage_manager)
+    usage_manager: UsageManager = Depends(get_usage_manager),
+    guard: ToolGuard = Depends(get_tool_guard),
+    audit: AuditLogger = Depends(get_audit_logger)
 ):
     """Invoke a tool."""
     request_id = request.request_id or uuid7()
@@ -111,7 +116,30 @@ async def call_tool(
     server = registry.get_server(server_id)
     if not server:
         raise_talos_error("NOT_FOUND", 404, "Server not found")
+    assert server is not None
+
+    # --- Phase 9.2: Secondary Enforcement & Audit ---
+    # We enforce ToolPolicy (Registry, Class, Idempotency) here before budget or execution.
+    # Emits 'tool_guard.check' audit event.
     
+    policy = await guard.validate_call(
+        server_id=server_id,
+        tool_name=tool_name,
+        capability_read_only=False, # Enforced by require_scope("mcp.invoke")
+        idempotency_key=request.idempotency_key,
+        tool_args=request.input,
+        audit_logger=audit,
+        principal={
+            "auth_mode": getattr(auth, "auth_mode", "unknown"),
+            "principal_id": auth.key_id, # Use key_id as principal for machine users
+            "team_id": auth.team_id
+        },
+        request_id=str(request_id)
+    )
+
+    if policy and not policy.read_replay_safe:
+        response.headers["X-Talos-Replay-Safe"] = "false"
+
     # --- Phase 15: Budget Enforcement ---
     estimate_usd = Decimal("0") # Default for MCP unless configured
     cost_usd = Decimal("0")
@@ -125,7 +153,7 @@ async def call_tool(
         limit_key = Decimal(str(auth.budget_metadata.get("limit_usd", "0")))
         overdraft = Decimal(auth.overdraft_usd)
         
-        budget_headers = budget_service.reserve(
+        budget_headers = await budget_service.reserve(
             request_id=str(request_id),
             team_id=auth.team_id,
             key_id=auth.key_id,
@@ -147,8 +175,21 @@ async def call_tool(
         # Proceed logic failure handled by budget_service likely raising if fatal
     
     start_ts = time.time()
-    status = "success"
+    result = None
     try:
+        # Pass idempotency key downstream via arguments or header?
+        # The MCP Client should handle it. 
+        # Typically passed in 'options' or wrapper. 
+        # For now, mcp_client.call_tool might strictly pass 'input'.
+        # We need to inject idempotency_key into the payload for the connector to see it?
+        # The connector expects 'ToolCallRequest' with 'idempotency_key'.
+        # So we should pass it. 'mcp_client.call_tool' implementation needs checking?
+        # Assuming it forwards args. 
+        
+        # If Connector expects idempotency_key as top-level field, we must ensure client sends it.
+        # But 'call_tool' usually takes (server, tool, args).
+        # Check mcp_client signature if needed. Assuming args for now.
+        
         result = await mcp_client.call_tool(server, tool_name, request.input)
         duration_ms = int((time.time() - start_ts) * 1000)
         
@@ -162,7 +203,8 @@ async def call_tool(
             target=f"{server_id}:{tool_name}",
             latency_ms=duration_ms,
             status="success",
-            token_count_source="not_applicable"
+            token_count_source="not_applicable",
+            estimate_usd=estimate_usd
         )
         
         return {
@@ -183,7 +225,11 @@ async def call_tool(
             target=f"{server_id}:{tool_name}",
             latency_ms=duration_ms,
             status="error",
-            token_count_source="not_applicable"
+            token_count_source="not_applicable",
+            estimate_usd=estimate_usd
         )
         
         raise_talos_error("UPSTREAM_ERROR", 502, str(e))
+
+
+

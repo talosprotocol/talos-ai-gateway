@@ -70,7 +70,7 @@ services:
       DATABASE_WRITE_URL: postgresql://talos:talos@postgres-primary:5432/talos
       DATABASE_READ_URL: postgresql://talos:talos@postgres-primary:5432/talos
       REDIS_URL: redis://redis:6379/0
-      TALOS_REGION_ID: region-a
+      TALOS_REGION_ID: us
       RUN_MIGRATIONS: "true"
       MODE: dev
       DEV_MODE: "true"  # Enable debug/sleep endpoint
@@ -98,7 +98,7 @@ services:
       DATABASE_WRITE_URL: postgresql://talos:talos@postgres-primary:5432/talos
       DATABASE_READ_URL: postgresql://talos:talos@postgres-replica:5432/talos
       REDIS_URL: redis://redis:6379/0
-      TALOS_REGION_ID: region-b
+      TALOS_REGION_ID: eu
       RUN_MIGRATIONS: "false"
       MODE: dev
       DEV_MODE: "true"  # Enable debug/sleep endpoint
@@ -129,7 +129,7 @@ services:
     volumes:
       - ./config/global-router.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
-      - "8005:80"
+      - "8080:80"
     depends_on:
       gateway-region-a:
         condition: service_healthy

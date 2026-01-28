@@ -221,6 +221,22 @@ class SecretJsonStore(SecretStore):
             return True
         return False
 
+    def get_stale_counts(self) -> Dict[str, int]:
+        # JSON store doesn't track KEK IDs per secret yet.
+        return {"unknown": len(self._cache)}
+
+    def get_secrets_batch(self, batch_size: int, cursor: Optional[str] = None) -> List[Dict[str, Any]]:
+        names = sorted(self._cache.keys())
+        start_idx = 0
+        if cursor:
+            try:
+                start_idx = names.index(cursor) + 1
+            except ValueError:
+                pass
+        
+        batch_names = names[start_idx:start_idx + batch_size]
+        return [{"name": name, "version": 1} for name in batch_names]
+
 
 class McpJsonStore(McpStore):
     def __init__(self, file_path: str = "mcp_config.json"):

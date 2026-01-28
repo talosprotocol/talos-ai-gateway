@@ -14,9 +14,9 @@ logger = logging.getLogger(__name__)
 class UsageManager:
     """Consolidated service for recording usage and settling budgets."""
     
-    def __init__(self, db: Session, budget_service: Optional[BudgetService] = None, pricing: Optional[PricingRegistry] = None):
+    def __init__(self, db: Session, budget_service: BudgetService, pricing: Optional[PricingRegistry] = None):
         self.db = db
-        self.budget_service = budget_service or BudgetService(db)
+        self.budget_service = budget_service
         self.pricing = pricing or get_pricing_registry()
 
     async def record_event(
@@ -32,7 +32,8 @@ class UsageManager:
         output_tokens: int = 0,
         latency_ms: int = 0,
         status: str = "success",
-        token_count_source: str = "unknown"
+        token_count_source: str = "unknown",
+        estimate_usd: Decimal = Decimal("0.00")
     ) -> Decimal:
         """
         Record usage event and settle budget reservation.
@@ -78,7 +79,13 @@ class UsageManager:
             
             # 3. Settle Budget
             # This is also idempotent inside settle()
-            self.budget_service.settle(request_id, cost)
+            await self.budget_service.settle(
+                request_id=request_id,
+                team_id=team_id,
+                key_id=key_id,
+                estimate_usd=estimate_usd,
+                actual_cost_usd=cost
+            )
             
             # 4. Optional: Async Rollup Trigger
             # For Phase 15, we do synchronous rollup update or wait for job.

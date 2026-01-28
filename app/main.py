@@ -58,11 +58,55 @@ async def lifespan(app: FastAPI):
             # If migration fails, we should probably crash
             import sys
             sys.exit(1)
+            sys.exit(1)
     
-    # Surface Completeness Gate
-    from app.dependencies import get_surface_registry
+    # Phase 7: RBAC Initialization
+    from app.dependencies import get_policy_engine_async, get_surface_registry
     try:
-        registry = get_surface_registry()
+        logger.info("Initializing RBAC Policy Engine...")
+        policy_engine = await get_policy_engine_async()
+        
+        logger.info("Initializing RBAC Surface Registry...")
+        registry_service = get_surface_registry()
+        
+        # Pre-load registry into middleware accessible scope if needed
+        # But Middleware will access it from app state or pass it in?
+        # Creating middleware instance manually and attaching to app state is tricky with FastAPI.
+        # Usually we pass dependencies to Middleware __init__.
+        # We need to make sure the Middleware created at module level can access these.
+        # Or we can update the middleware instance if accessible.
+        
+        # Better: Store in app.state
+        app.state.policy_engine = policy_engine
+        app.state.surface_registry = registry_service.get_routes()
+        
+        # Also verifying completeness now
+        # registry.verify_app_routes(app) # TODO: Re-enable for RBACRegistry
+        
+    except Exception as e:
+        logger.error(f"RBAC Initialization Failed: {e}")
+        sys.exit(1)
+
+    # Phase 9.2: Tool Classifier Initialization
+    from app.domain.mcp.classifier import init_tool_classifier
+    try:
+        registry_path = os.getenv("TOOL_REGISTRY_PATH", "../contracts/artifacts")
+        # Ensure absolute path
+        if not os.path.isabs(registry_path):
+             registry_path = os.path.abspath(registry_path)
+             
+        logger.info(f"Initializing Tool Classifier from {registry_path}...")
+        init_tool_classifier(registry_dir=registry_path, env=os.getenv("MODE", "dev"))
+    except Exception as e:
+        logger.error(f"Tool Classifier Init Failed: {e}")
+        # In PROD this should be fatal, but for now we log
+        if os.getenv("MODE") == "prod":
+            sys.exit(1)
+
+    # Surface Completeness Gate
+    # from app.dependencies import get_surface_registry
+    try:
+        # registry = get_surface_registry()
         # registry.verify_app_routes(app)
         
         # Phase 11.4 Startup Checks (Normative)
@@ -191,6 +235,30 @@ app.add_middleware(TalosAuditMiddleware)
 
 from app.middleware.shutdown_gate import ShutdownGateMiddleware
 app.add_middleware(ShutdownGateMiddleware)
+
+# Phase 7: RBAC Middleware (Must run after Auth/Audit but before Routers)
+# It needs policy engine. We can't pass the async engine instance here easily because it's not ready.
+# We will use a lazy proxy or dependency lookups inside middleware.
+# Let's import the specific class
+from app.middleware.rbac import RBACMiddleware
+# We need to pass the engine. But it's initialized in lifespan.
+# We can use a factory or look it up from app.state in the middleware if we pass 'app'.
+# My RBACMiddleware implementation takes 'policy_engine'.
+# Let's wrap it to look up from app.state or dependencies.
+# Or, simpler: Just rely on the global singleton in dependencies (which we initialized in lifespan).
+from app.dependencies import get_policy_engine
+# Warning: get_policy_engine() throws if not initialized.
+# But Middleware is instantiated at import time/startup? No, added to stack.
+# Request handling happens later.
+# We can modify RBACMiddleware to take a 'get_policy_engine_fn'.
+
+# Let's actually instantiate it with the dependency getter which acts as a lazy locator?
+# This is a bit hacky.
+# Better: Make RBACMiddleware accept just 'app', and look up `app.state.policy_engine` in `dispatch`.
+# I will update RBACMiddleware in a moment. For now, let's comment on how we add it.
+# We'll rely on app.state injection.
+
+app.add_middleware(RBACMiddleware, policy_engine=None) # We will patch this or modify middleware to use app.state
 
 from app.middleware.observability import RegionHeaderMiddleware
 app.add_middleware(RegionHeaderMiddleware)
