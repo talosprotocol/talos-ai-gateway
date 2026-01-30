@@ -1,0 +1,99 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: talos-gateway-db
+    environment:
+      POSTGRES_DB: talos
+      POSTGRES_USER: talos
+      POSTGRES_PASSWORD: talos_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U talos"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis (for rate limiting)
+  redis:
+    image: redis:7-alpine
+    container_name: talos-gateway-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Jaeger (OTLP collector for tracing)
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: talos-gateway-jaeger
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
+  # Talos Gateway (Phase 11 configuration)
+  gateway:
+    build:
+      context: ../..  # Build from repo root
+      dockerfile: services/ai-gateway/Dockerfile
+    container_name: talos-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    environment:
+      # Application mode
+      MODE: dev
+      
+      # Database configuration
+      DATABASE_WRITE_URL: postgresql://talos:talos_dev_password@postgres:5432/talos
+      DATABASE_READ_URL: postgresql://talos:talos_dev_password@postgres:5432/talos
+      
+      # Phase 11: Rate Limiting
+      RATE_LIMIT_ENABLED: "true"
+      RATE_LIMIT_BACKEND: redis
+      REDIS_URL: redis://redis:6379
+      RATE_LIMIT_DEFAULT_RPS: "5"
+      RATE_LIMIT_DEFAULT_BURST: "10"
+      
+      # Phase 11: Distributed Tracing
+      TRACING_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      OTEL_RESOURCE_ATTRIBUTES: service.name=talos-gateway,environment=dev
+      
+      # Audit logging
+      AUDIT_IP_HMAC_KEY: dev-ip-key-secret-32-chars-long!!!
+      AUDIT_IP_HMAC_KEY_ID: dev-key-v1
+      
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    volumes:
+      - ./app:/app/app
+      - ./tests:/app/tests
+
+volumes:
+  postgres_data:
+
+networks:
+  default:
+    name: talos-phase11-network
