@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     # Security
     MASTER_KEY: str = "insecure-default-key-for-dev-only-do-not-use-in-prod"
     TGA_SUPERVISOR_PUBLIC_KEY: Optional[str] = None
+    TALOS_CONNECTOR_URL: Optional[str] = "http://localhost:8082"
 
     # Multi-Region Safety (Phase 12)
     # List of endpoint IDs (or paths) allowed to use read replicas

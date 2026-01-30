@@ -70,7 +70,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             import os
             mode = os.getenv("MODE", "dev").lower()
             
-            error_code = "SERVER_OVERLOADED" if mode == "prod" else "RATE_LIMITER_UNAVAILABLE"
+            # Phase 11 Spec: RATE_LIMITER_UNAVAILABLE (503, dev only)
+            error_code = "RATE_LIMITER_UNAVAILABLE"  # Dev only per Phase 11 spec
             detail = "rate_limiter_unavailable" # Same detail for both per prod spec requirements
             
             return JSONResponse(

@@ -190,7 +190,14 @@ async def call_tool(
         # But 'call_tool' usually takes (server, tool, args).
         # Check mcp_client signature if needed. Assuming args for now.
         
-        result = await mcp_client.call_tool(server, tool_name, request.input)
+        result = await mcp_client.call_tool(
+            server_config=server,
+            tool_name=tool_name,
+            arguments=request.input,
+            idempotency_key=request.idempotency_key,
+            principal_id=auth.key_id,
+            capability_read_only=False
+        )
         duration_ms = int((time.time() - start_ts) * 1000)
         
         # Record & Settle

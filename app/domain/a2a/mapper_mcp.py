@@ -110,7 +110,14 @@ class McpMapper:
 
         # 6. Execute via Client
         try:
-            result = await self.mcp_client.call_tool(server_config, tool_name, arguments)
+            result = await self.mcp_client.call_tool(
+                server_config=server_config,
+                tool_name=tool_name,
+                arguments=arguments,
+                idempotency_key=tool_call.get("idempotency_key"),
+                principal_id=auth_context.key_id,
+                capability_read_only=False
+            )
         except Exception as e:
             # Map transport/execution errors to Domain Error
             raise JsonRpcException(-32000, "Tool Execution Failed", data={"talos_code": "MCP_TRANSPORT_ERROR", "details": str(e)})

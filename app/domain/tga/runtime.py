@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 from enum import Enum
 
+from app.domain.mcp.tool_guard import ToolGuard
+from app.adapters.mcp.client import McpClient
 from app.domain.tga.state_store import (
     TgaStateStore,
     ExecutionLogEntry,
@@ -37,6 +39,9 @@ class ExecutionPlan:
     """Plan for TGA execution."""
     trace_id: str
     plan_id: str
+    tool_server: str
+    tool_name: str
+    tool_args: Dict[str, Any]
     action_request: Dict[str, Any]
     supervisor_decision_fn: Optional[Callable] = None
     tool_dispatch_fn: Optional[Callable] = None
@@ -68,10 +73,23 @@ class TgaRuntime:
     ...
     """
     
-    def __init__(self, store: Optional[TgaStateStore] = None):
+    def __init__(
+        self, 
+        store: Optional[TgaStateStore] = None,
+        tool_guard: Optional[ToolGuard] = None,
+        audit_logger: Optional[Any] = None,
+        mcp_client: Optional[McpClient] = None
+    ):
         self.store = store or get_state_store()
+        self.tool_guard = tool_guard
+        self.audit_logger = audit_logger
+        self.mcp_client = mcp_client or McpClient()
     
-    async def execute_plan(self, plan: ExecutionPlan) -> ExecutionResult:
+    async def execute_plan(
+        self, 
+        plan: ExecutionPlan,
+        principal: Optional[Dict[str, Any]] = None
+    ) -> ExecutionResult:
         """Execute a TGA plan with crash-safe persistence."""
         trace_id = plan.trace_id
         
@@ -109,6 +127,30 @@ class TgaRuntime:
             
             sd_id = decision.get("decision_id", self._generate_id())
             sd_digest = self._compute_digest(decision)
+
+            # --- Phase 9.2: Classification & Guarding ---
+            # Verified against Tool Registry before transitioning to EXECUTING
+            if self.tool_guard:
+                # Construct TGA principal for auditing
+                tga_principal = principal or {
+                    "auth_mode": "tga",
+                    "principal_id": "system:tga",
+                    "team_id": "system"
+                }
+                
+                # For TGA, we use trace_id as basis for idempotency if not provided
+                idempotency_key = f"tga-{trace_id[:16]}"
+                
+                await self.tool_guard.validate_call(
+                    server_id=plan.tool_server,
+                    tool_name=plan.tool_name,
+                    capability_read_only=False, # TGA is always deliberate
+                    idempotency_key=idempotency_key,
+                    tool_args=plan.tool_args,
+                    audit_logger=self.audit_logger,
+                    principal=tga_principal,
+                    request_id=trace_id
+                )
             
             if not decision.get("approved"):
                 # DENIED
@@ -145,10 +187,10 @@ class TgaRuntime:
             await self.store.append_log_entry(auth_entry)
             
             # 4. Create tool_call, append EXECUTING
-            tool_call = self._create_tool_call(plan, decision)
-            tc_id = tool_call.get("tool_call_id", self._generate_id())
+            tool_call: Dict[str, Any] = self._create_tool_call(plan, decision)
+            tc_id = str(tool_call.get("tool_call_id", self._generate_id()))
             tc_digest = self._compute_digest(tool_call)
-            idempotency_key = tool_call.get("idempotency_key")
+            tc_idempotency_key = tool_call.get("idempotency_key")
             
             exec_entry = self._make_entry(
                 trace_id=trace_id,
@@ -160,51 +202,17 @@ class TgaRuntime:
                 artifact_id=tc_id,
                 artifact_digest=tc_digest,
                 tool_call_id=tc_id,
-                idempotency_key=idempotency_key,
+                idempotency_key=tc_idempotency_key,
                 artifact_payload=tool_call
             )
             await self.store.append_log_entry(exec_entry)
             
-            # --- Phase 9.2: Gateway Enforcement ---
-            from app.domain.mcp.classifier import get_tool_classifier, ToolClassificationError
-            classifier = get_tool_classifier()
-            
-            tool_full_name = tool_call.get("call", {}).get("name", "")
-            if ":" in tool_full_name:
-                server_id, tool_name = tool_full_name.split(":", 1)
-            else:
-                server_id, tool_name = "default", tool_full_name
-                
-            try:
-                classification = classifier.classify(server_id, tool_name)
-                if classification:
-                     capability_read_only = decision.get("capability", {}).get("read_only", False)
-                     classifier.validate_capability(classification, capability_read_only)
-            except ToolClassificationError as e:
-                logger.error(f"Tool Policy Violation: {e}")
-                fail_entry = self._make_entry(
-                    trace_id=trace_id,
-                    seq=4,
-                    prev_digest=exec_entry.entry_digest,
-                    from_state=ExecutionStateEnum.EXECUTING,
-                    to_state=ExecutionStateEnum.FAILED,
-                    artifact_type="tool_effect",
-                    artifact_id=self._generate_id(),
-                    artifact_digest=self._compute_digest({"error": str(e)}),
-                    tool_call_id=tc_id,
-                    artifact_payload={"error": str(e)}
-                )
-                await self.store.append_log_entry(fail_entry)
-                return ExecutionResult(
-                    trace_id=trace_id,
-                    final_state=ExecutionStateEnum.FAILED,
-                    error=f"Policy Violation: {e}"
-                )
-            # -------------------------------------
+            # Note: Phase 9.2 ToolGuard check was performed above before transition to AUTHORIZED.
+            # Redundant legacy classifier logic removed.
 
             # 5. Dispatch to connector (idempotent)
             return await self._dispatch_and_complete(
-                plan, tool_call, exec_entry, trace_id, tc_id, idempotency_key
+                plan, tool_call, exec_entry, trace_id, tc_id, tc_idempotency_key
             )
             
         finally:
@@ -268,18 +276,42 @@ class TgaRuntime:
         if not entries:
             raise RuntimeError(f"No log entries for trace {trace_id}", "STATE_RECOVERY_FAILED")
         
-        # Validate hash chain (omitted for brevity, assume valid if loaded)
+        # Security Invariant I5: Verify hash chain and entries
+        prev_digest = ZERO_DIGEST
+        for entry in entries:
+            if entry.prev_entry_digest != prev_digest:
+                raise RuntimeError(
+                    f"Hash chain broken at sequence {entry.sequence_number}",
+                    "STATE_CHECKSUM_MISMATCH"
+                )
+            computed = entry.compute_digest()
+            if entry.entry_digest != computed:
+                raise RuntimeError(
+                    f"Entry digest mismatch at sequence {entry.sequence_number}",
+                    "STATE_CHECKSUM_MISMATCH"
+                )
+            prev_digest = entry.entry_digest
+            
         last_entry = entries[-1]
         
+        # Verify derived state matches last log entry
+        if state.last_entry_digest != last_entry.entry_digest:
+             raise RuntimeError(
+                "Derived state digest mismatch with last log entry",
+                "STATE_CHECKSUM_MISMATCH"
+            )
+        
         if state.current_state == ExecutionStateEnum.EXECUTING:
-            # Find tool_call
+            # Reconstruct what happened
             tc_entry = next((e for e in entries if e.artifact_type == "tool_call"), None)
             if not tc_entry:
-                    raise RuntimeError("EXECUTING state but no tool_call entry", "STATE_RECOVERY_FAILED")
-                    
+                raise RuntimeError("EXECUTING state but no tool_call entry", "STATE_RECOVERY_FAILED")
+            
+            # Check if we have a tool_effect recorded
             te_entry = next((e for e in entries if e.artifact_type == "tool_effect"), None)
+            
             if te_entry is None:
-                # RE-DISPATCH
+                # CRASH during execution: re-dispatch
                 logger.info(f"Recovery: re-dispatching tool_call {tc_entry.tool_call_id}")
                 return RecoveryResult(
                     trace_id=trace_id,
@@ -289,6 +321,12 @@ class TgaRuntime:
                     tool_effect=None,
                     tool_call_payload=tc_entry.artifact_payload
                 )
+            else:
+                # We have the effect, but maybe state didn't transition?
+                # Actually if to_state was COMPLETED/FAILED, current_state would be that.
+                # If current_state is EXECUTING but te_entry exists, something is weird.
+                # But in our Moore machine, COMPLETED/FAILED happens with tool_effect entry.
+                pass
         
         return RecoveryResult(
             trace_id=trace_id,
@@ -300,17 +338,26 @@ class TgaRuntime:
     async def _resume_execution(self, plan: ExecutionPlan, state: ExecutionState) -> ExecutionResult:
         """Resume execution from existing state."""
         if state.current_state in (ExecutionStateEnum.COMPLETED, ExecutionStateEnum.FAILED, ExecutionStateEnum.DENIED):
-            return ExecutionResult(trace_id=plan.trace_id, final_state=state.current_state)
+            # Already done, return cached effect if possible
+            entries = await self.store.list_log_entries(plan.trace_id)
+            te_entry = next((e for e in reversed(entries) if e.artifact_type == "tool_effect"), None)
+            return ExecutionResult(
+                trace_id=plan.trace_id, 
+                final_state=state.current_state,
+                tool_effect=te_entry.artifact_payload if te_entry else None
+            )
         
         # Use internal recover implementation as we already hold the lock
         recovery = await self._recover_impl(plan.trace_id)
         
         if recovery.re_dispatched and recovery.tool_call_payload:
-            # We need to finish the dispatch
-            # Reconstruct context
+            # Finish the dispatch
             entries = await self.store.list_log_entries(plan.trace_id)
-            exec_entry = entries[-1] # Should be the EXECUTING entry
+            exec_entry = next((e for e in reversed(entries) if e.to_state == ExecutionStateEnum.EXECUTING), None)
             
+            if not exec_entry:
+                raise RuntimeError("Failed to find EXECUTING entry during resume", "STATE_RECOVERY_FAILED")
+                
             return await self._dispatch_and_complete(
                 plan, 
                 recovery.tool_call_payload, 

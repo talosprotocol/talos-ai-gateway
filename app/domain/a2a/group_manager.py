@@ -1,6 +1,6 @@
 import logging
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -46,7 +46,7 @@ class A2AGroupManager:
             raise ValueError("Optimistic locking failure")
 
         event_id = uuid7()
-        ts = datetime.utcnow()
+        ts = datetime.now(timezone.utc)
         
         event_payload = {
             "schema_id": "talos.a2a.group_event",
@@ -90,7 +90,7 @@ class A2AGroupManager:
             group_id=group_id,
             owner_id=owner_id,
             state="active",
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         self.db.add(group)
         self.db.flush()
@@ -107,13 +107,14 @@ class A2AGroupManager:
     def add_member(self, group_id: str, actor_id: str, req: GroupMemberAddRequest) -> A2AGroup:
         self._advisory_lock(group_id)
         group = self.get_group(group_id)
-        if not group or group.state != "active":
-             raise ValueError("Group not available")
+        if not group:
+             raise ValueError("A2A_GROUP_NOT_FOUND")
+        if group.state != "active":
+             raise ValueError("A2A_GROUP_STATE_INVALID")
              
         # Check permission (only owner?)
         if actor_id != group.owner_id:
-             # Basic RBAC for group managing
-             raise PermissionError("Only owner can add members")
+             raise PermissionError("A2A_MEMBER_NOT_ALLOWED")
              
         self._append_event(group_id, "member_added", actor_id, {}, target_id=req.member_id)
         return group
@@ -121,11 +122,13 @@ class A2AGroupManager:
     def remove_member(self, group_id: str, actor_id: str, member_id: str) -> A2AGroup:
         self._advisory_lock(group_id)
         group = self.get_group(group_id)
-        if not group or group.state != "active":
-             raise ValueError("Group not available")
+        if not group:
+             raise ValueError("A2A_GROUP_NOT_FOUND")
+        if group.state != "active":
+             raise ValueError("A2A_GROUP_STATE_INVALID")
              
         if actor_id != group.owner_id and actor_id != member_id:
-             raise PermissionError("Permission denied")
+             raise PermissionError("A2A_MEMBER_NOT_ALLOWED")
              
         self._append_event(group_id, "member_removed", actor_id, {}, target_id=member_id)
         return group
@@ -134,11 +137,11 @@ class A2AGroupManager:
         self._advisory_lock(group_id)
         group = self.get_group(group_id)
         if not group:
-            return None
+            raise ValueError("A2A_GROUP_NOT_FOUND")
         
         if actor_id != group.owner_id:
-             raise PermissionError("Only owner can close group")
+             raise PermissionError("A2A_MEMBER_NOT_ALLOWED")
              
-        group.state = "closed"
+        group.state = "closed"  # type: ignore
         self._append_event(group_id, "group_closed", actor_id, {})
         return group

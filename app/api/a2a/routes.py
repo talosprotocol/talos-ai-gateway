@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
-from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from typing import Optional, List
 from app.domain.a2a.models import (
     SessionCreateRequest, SessionAcceptRequest, SessionRotateRequest, FrameSendRequest,
     GroupCreateRequest, GroupMemberAddRequest
@@ -7,25 +7,33 @@ from app.domain.a2a.models import (
 from app.domain.a2a.session_manager import A2ASessionManager
 from app.domain.a2a.frame_store import A2AFrameStore
 from app.domain.a2a.group_manager import A2AGroupManager
-from app.dependencies import get_a2a_session_manager, get_a2a_frame_store, get_a2a_group_manager
+from app.domain.audit import AuditLogger
+from app.dependencies import (
+    get_a2a_session_manager, get_a2a_frame_store, get_a2a_group_manager,
+    get_audit_logger
+)
 
 router = APIRouter()
 
 def get_actor_id(request: Request) -> str:
+    # Use request.state.principal set by AuthMiddleware
     if not hasattr(request.state, "principal") or not request.state.principal:
-        # Should be caught by middleware normally
         raise HTTPException(status_code=401, detail="Unauthorized")
-    return request.state.principal.id
+    return request.state.principal.get("principal_id") or request.state.principal.get("id")
 
 @router.post("/sessions", status_code=201)
 def create_session(
     req: SessionCreateRequest,
+    request: Request,
     sm: A2ASessionManager = Depends(get_a2a_session_manager),
     actor_id: str = Depends(get_actor_id)
 ):
     if actor_id == req.responder_id:
         raise HTTPException(status_code=400, detail="Initiator cannot be responder")
-    return sm.create_session(actor_id, req)
+    
+    session = sm.create_session(actor_id, req)
+    request.state.audit_meta["session_id"] = session.session_id
+    return session
 
 @router.get("/sessions/{id}")
 def get_session(
@@ -36,21 +44,20 @@ def get_session(
     session = sm.get_session(id)
     if not session:
         raise HTTPException(status_code=404, detail="A2A_SESSION_NOT_FOUND")
-    # RBAC handles permission to READ, but business logic might enforce participation?
-    # Spec: "Only session participants?" Not explicitly in RBAC, but maybe implied.
-    # RBAC just says "a2a.session.read" on "session/{id}".
     return session
 
 @router.post("/sessions/{id}/accept")
 def accept_session(
     id: str,
     req: SessionAcceptRequest,
+    request: Request,
     sm: A2ASessionManager = Depends(get_a2a_session_manager),
     actor_id: str = Depends(get_actor_id)
 ):
-    # actor_id must be responder. Validated in SM.
     try:
-        return sm.accept_session(id, actor_id, req)
+        session = sm.accept_session(id, actor_id, req)
+        request.state.audit_meta["session_id"] = id
+        return session
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
@@ -60,11 +67,14 @@ def accept_session(
 def rotate_session(
     id: str,
     req: SessionRotateRequest,
+    request: Request,
     sm: A2ASessionManager = Depends(get_a2a_session_manager),
     actor_id: str = Depends(get_actor_id)
 ):
     try:
-        return sm.rotate_session(id, actor_id, req)
+        session = sm.rotate_session(id, actor_id, req)
+        request.state.audit_meta["session_id"] = id
+        return session
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
@@ -73,11 +83,14 @@ def rotate_session(
 @router.delete("/sessions/{id}")
 def close_session(
     id: str,
+    request: Request,
     sm: A2ASessionManager = Depends(get_a2a_session_manager),
     actor_id: str = Depends(get_actor_id)
 ):
     try:
-        return sm.close_session(id, actor_id)
+        session = sm.close_session(id, actor_id)
+        request.state.audit_meta["session_id"] = id
+        return session
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
@@ -87,6 +100,7 @@ def close_session(
 def send_frame(
     id: str,
     req: FrameSendRequest,
+    request: Request,
     sm: A2ASessionManager = Depends(get_a2a_session_manager),
     fs: A2AFrameStore = Depends(get_a2a_frame_store),
     actor_id: str = Depends(get_actor_id)
@@ -100,23 +114,25 @@ def send_frame(
         
     # Enforce isolation: actor == sender
     if actor_id != req.frame.sender_id:
-        raise HTTPException(status_code=403, detail="Frame sender must be actor")
+        raise HTTPException(status_code=403, detail="A2A_MEMBER_NOT_ALLOWED")
         
     # Enforce participation
     if actor_id not in [session.initiator_id, session.responder_id]:
-        raise HTTPException(status_code=403, detail="Not a participant")
+        raise HTTPException(status_code=403, detail="A2A_MEMBER_NOT_ALLOWED")
         
     # Derive recipient
-    recipient_id = session.responder_id if actor_id == session.initiator_id else session.initiator_id
+    recipient_id = str(session.responder_id) if actor_id == session.initiator_id else str(session.initiator_id)
     
     # Validation
     if req.frame.session_id != id:
-        raise HTTPException(status_code=400, detail="Session ID mismatch")
+        raise HTTPException(status_code=400, detail="A2A_SESSION_ID_MISMATCH")
         
     try:
-        return fs.store_frame(req.frame, recipient_id)
+        result = fs.store_frame(req.frame, recipient_id)
+        request.state.audit_meta["session_id"] = id
+        request.state.audit_meta["sender_seq"] = req.frame.sender_seq
+        return result
     except ValueError as e:
-        # Map specific errors
         msg = str(e)
         if "REPLAY" in msg:
             raise HTTPException(status_code=409, detail=msg)
@@ -125,23 +141,29 @@ def send_frame(
 @router.get("/sessions/{id}/frames")
 def list_frames(
     id: str,
+    request: Request,
     cursor: Optional[str] = None,
     limit: int = 100,
     fs: A2AFrameStore = Depends(get_a2a_frame_store),
     actor_id: str = Depends(get_actor_id)
 ):
-    # Recipient isolation
+    # Recipient isolation is enforced within list_frames by passing actor_id
     frames, next_cursor = fs.list_frames(id, actor_id, cursor, limit)
-    # Wrap response if needed or just list
+    
+    request.state.audit_meta["session_id"] = id
+    request.state.audit_meta["frame_count"] = len(frames)
     return {"items": frames, "next_cursor": next_cursor}
 
 @router.post("/groups", status_code=201)
 def create_group(
     req: GroupCreateRequest,
+    request: Request,
     gm: A2AGroupManager = Depends(get_a2a_group_manager),
     actor_id: str = Depends(get_actor_id)
 ):
-    return gm.create_group(actor_id, req)
+    group = gm.create_group(actor_id, req)
+    request.state.audit_meta["group_id"] = group.group_id
+    return group
 
 @router.get("/groups/{id}")
 def get_group(
@@ -158,11 +180,15 @@ def get_group(
 def add_group_member(
     id: str,
     req: GroupMemberAddRequest,
+    request: Request,
     gm: A2AGroupManager = Depends(get_a2a_group_manager),
     actor_id: str = Depends(get_actor_id)
 ):
     try:
-        return gm.add_member(id, actor_id, req)
+        group = gm.add_member(id, actor_id, req)
+        request.state.audit_meta["group_id"] = id
+        request.state.audit_meta["target_id"] = req.member_id
+        return group
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
@@ -172,11 +198,15 @@ def add_group_member(
 def remove_group_member(
     id: str,
     pid: str,
+    request: Request,
     gm: A2AGroupManager = Depends(get_a2a_group_manager),
     actor_id: str = Depends(get_actor_id)
 ):
     try:
-        return gm.remove_member(id, actor_id, pid)
+        group = gm.remove_member(id, actor_id, pid)
+        request.state.audit_meta["group_id"] = id
+        request.state.audit_meta["target_id"] = pid
+        return group
     except PermissionError as e:
          raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
@@ -185,13 +215,15 @@ def remove_group_member(
 @router.delete("/groups/{id}")
 def close_group(
     id: str,
+    request: Request,
     gm: A2AGroupManager = Depends(get_a2a_group_manager),
     actor_id: str = Depends(get_actor_id)
 ):
     try:
         res = gm.close_group(id, actor_id)
-        if not res:
-            raise HTTPException(status_code=404, detail="A2A_GROUP_NOT_FOUND")
+        request.state.audit_meta["group_id"] = id
         return res
     except PermissionError as e:
          raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))

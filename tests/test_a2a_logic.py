@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, ANY
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from app.domain.a2a.session_manager import A2ASessionManager
 from app.domain.a2a.models import SessionCreateRequest, SessionAcceptRequest, SessionRotateRequest
 from app.adapters.postgres.models import A2ASession, A2ASessionEvent
@@ -43,7 +43,7 @@ def test_accept_session(session_manager, mock_db):
         state="pending",
         initiator_id="initiator",
         responder_id="responder",
-        expires_at=datetime.utcnow() + timedelta(hours=1)
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
     )
     mock_db.query.return_value.filter.return_value.first.return_value = existing
     mock_db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None # No prev events found
@@ -83,7 +83,7 @@ def test_rotate_session(session_manager, mock_db):
         state="active",
         initiator_id="initiator",
         responder_id="responder",
-        expires_at=datetime.utcnow() + timedelta(hours=1)
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
     )
     mock_db.query.return_value.filter.return_value.first.return_value = existing
     mock_db.query.return_value.filter.return_value.order_by.return_value.first.return_value = None
@@ -112,5 +112,5 @@ def test_rotate_session_invalid_state(session_manager, mock_db):
         ratchet_state_digest=valid_digest
     )
     
-    with pytest.raises(ValueError, match="Invalid state transition"):
+    with pytest.raises(ValueError, match="A2A_SESSION_STATE_INVALID"):
         session_manager.rotate_session(session_id, "initiator", req)

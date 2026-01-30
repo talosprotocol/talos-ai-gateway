@@ -1,6 +1,6 @@
 import logging
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -18,7 +18,7 @@ A2A_SESSION_DEFAULT_TTL = 86400  # 24 hours
 
 class A2ASessionManager:
     # Phase 12: Accept Split DB
-    def __init__(self, write_db: Session, read_db: Session = None):
+    def __init__(self, write_db: Session, read_db: Optional[Session] = None):
         self.write_db = write_db
         # If read_db not provided (e.g. unit tests not updated), default to write_db
         self.read_db = read_db if read_db else write_db
@@ -51,7 +51,7 @@ class A2ASessionManager:
 
         # Construct event
         event_id = uuid7()
-        ts = datetime.utcnow()
+        ts = datetime.now(timezone.utc)
         
         # Prepare for hashing
         event_payload = {
@@ -91,7 +91,7 @@ class A2ASessionManager:
     def create_session(self, initiator_id: str, req: SessionCreateRequest) -> A2ASession:
         session_id = uuid7()
         
-        expires_at = req.expires_at or (datetime.utcnow() + timedelta(seconds=A2A_SESSION_DEFAULT_TTL))
+        expires_at = req.expires_at or (datetime.now(timezone.utc) + timedelta(seconds=A2A_SESSION_DEFAULT_TTL))
         
         # Create Projection on WRITE DB
         session = A2ASession(
@@ -120,21 +120,21 @@ class A2ASessionManager:
         self._advisory_lock(session_id)
         session = self.get_session(session_id)
         if not session:
-            raise ValueError("Session not found")
+            raise ValueError("A2A_SESSION_NOT_FOUND")
             
         if session.responder_id != responder_id:
-             raise PermissionError("Not the designated responder") # Or 403
+             raise PermissionError("A2A_MEMBER_NOT_ALLOWED")
              
         if session.state != "pending":
-            raise ValueError(f"Invalid state transition: {session.state} -> active")
+            raise ValueError("A2A_SESSION_STATE_INVALID")
             
-        if session.expires_at and session.expires_at < datetime.utcnow():
-            raise ValueError("Session expired")
+        if session.expires_at and session.expires_at < datetime.now(timezone.utc):
+            raise ValueError("A2A_SESSION_EXPIRED")
 
         # Update core state
-        session.state = "active"
-        session.ratchet_state_blob = req.ratchet_state_blob_b64u
-        session.ratchet_state_digest = req.ratchet_state_digest
+        session.state = "active"  # type: ignore
+        session.ratchet_state_blob = req.ratchet_state_blob_b64u  # type: ignore
+        session.ratchet_state_digest = req.ratchet_state_digest  # type: ignore
         
         # Append event
         self._append_event(session_id, "session_accepted", responder_id, {})
@@ -145,19 +145,19 @@ class A2ASessionManager:
         self._advisory_lock(session_id)
         session = self.get_session(session_id)
         if not session:
-             raise ValueError("Session not found")
+             raise ValueError("A2A_SESSION_NOT_FOUND")
              
         if actor_id not in [session.initiator_id, session.responder_id]:
-            raise PermissionError("Not a session participant")
+            raise PermissionError("A2A_MEMBER_NOT_ALLOWED")
 
         if session.state != "active":
-             raise ValueError(f"Invalid state transition: {session.state} -> rotate")
+             raise ValueError("A2A_SESSION_STATE_INVALID")
 
-        if session.expires_at and session.expires_at < datetime.utcnow():
-            raise ValueError("Session expired")
+        if session.expires_at and session.expires_at < datetime.now(timezone.utc):
+            raise ValueError("A2A_SESSION_EXPIRED")
 
-        session.ratchet_state_blob = req.ratchet_state_blob_b64u
-        session.ratchet_state_digest = req.ratchet_state_digest
+        session.ratchet_state_blob = req.ratchet_state_blob_b64u  # type: ignore
+        session.ratchet_state_digest = req.ratchet_state_digest  # type: ignore
         
         self._append_event(session_id, "session_rotated", actor_id, {})
         return session
@@ -166,16 +166,15 @@ class A2ASessionManager:
         self._advisory_lock(session_id)
         session = self.get_session(session_id)
         if not session:
-             raise ValueError("Session not found")
+             raise ValueError("A2A_SESSION_NOT_FOUND")
 
         if actor_id not in [session.initiator_id, session.responder_id]:
-             # Maybe admin override?
-             # detailed in spec: "close valid from pending or active -> closed"
-             raise PermissionError("Not a session participant")
+             # Basic check, maybe admin can close too but for now participant only
+             raise PermissionError("A2A_MEMBER_NOT_ALLOWED")
 
         if session.state == "closed":
             return session
 
-        session.state = "closed"
+        session.state = "closed"  # type: ignore
         self._append_event(session_id, "session_closed", actor_id, {})
         return session
