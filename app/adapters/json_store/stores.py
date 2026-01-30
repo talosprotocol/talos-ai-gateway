@@ -5,7 +5,8 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 
-from app.domain.interfaces import UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, RoutingPolicyStore, PrincipalStore, UsageStore
+from app.domain.interfaces import UpstreamStore, ModelGroupStore, McpStore, AuditStore, RoutingPolicyStore, PrincipalStore, UsageStore
+from app.domain.secrets.ports import SecretStore
 from app import config_loader
 
 logger = logging.getLogger(__name__)

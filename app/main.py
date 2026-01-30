@@ -126,9 +126,9 @@ async def lifespan(app: FastAPI):
                 # Verify connectivity
                 from app.adapters.redis.client import get_redis_client
                 logger.info("Verifying Redis connectivity for PROD startup...")
-                # We need to await this
                 r = await get_redis_client()
-                await r.ping()
+                # Cast or ignore for mypy if it's confused about Awaitable[bool] | bool
+                await r.ping()  # type: ignore
                 logger.info("Redis connectivity verified.")
 
             # 2. Tracing Checks
@@ -179,12 +179,12 @@ app = FastAPI(
 
 from app.middleware.audit import TalosAuditMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor # type: ignore
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor # type: ignore
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter # type: ignore
 import os
 
 # OpenTelemetry Setup
