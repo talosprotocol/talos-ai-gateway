@@ -1,7 +1,9 @@
 """SQLAlchemy Models for Control Plane."""
-from sqlalchemy import Column, String, JSON, Integer, DateTime, Boolean, ForeignKey, Index, CheckConstraint, Float, Text, UniqueConstraint, desc, Numeric, Date  # type: ignore
-from sqlalchemy.orm import relationship, DeclarativeBase  # type: ignore
+from sqlalchemy import Column, String, JSON, Integer, DateTime, Boolean, ForeignKey, Index, CheckConstraint, Float, Text, UniqueConstraint, desc, Numeric, Date, func  # type: ignore
+from sqlalchemy.orm import relationship, DeclarativeBase, Mapped, mapped_column  # type: ignore
+from sqlalchemy.dialects import postgresql
 from datetime import datetime
+from typing import Optional
 
 class Base(DeclarativeBase):
     pass
@@ -489,3 +491,39 @@ class UsageRollupDaily(Base):
     )
 
 
+
+class TgaTrace(Base):
+    """TGA Execution Trace State."""
+    __tablename__ = "tga_traces"
+    
+    trace_id: Mapped[str] = mapped_column(String, primary_key=True)
+    schema_id: Mapped[str] = mapped_column(String)
+    schema_version: Mapped[str] = mapped_column(String)
+    plan_id: Mapped[str] = mapped_column(String)
+    current_state: Mapped[str] = mapped_column(String) # ExecutionStateEnum
+    last_sequence_number: Mapped[int] = mapped_column(Integer)
+    last_entry_digest: Mapped[str] = mapped_column(String)
+    state_digest: Mapped[str] = mapped_column(String)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class TgaLog(Base):
+    """TGA Execution Log Entry."""
+    __tablename__ = "tga_logs"
+    
+    trace_id: Mapped[str] = mapped_column(String, ForeignKey("tga_traces.trace_id"), primary_key=True)
+    sequence_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    entry_digest: Mapped[str] = mapped_column(String, nullable=False)
+    prev_entry_digest: Mapped[str] = mapped_column(String, nullable=False)
+    ts: Mapped[str] = mapped_column(String, nullable=False)
+    from_state: Mapped[str] = mapped_column(String, nullable=False)
+    to_state: Mapped[str] = mapped_column(String, nullable=False)
+    artifact_type: Mapped[str] = mapped_column(String, nullable=False)
+    artifact_id: Mapped[str] = mapped_column(String, nullable=False)
+    artifact_digest: Mapped[str] = mapped_column(String, nullable=False)
+    tool_call_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    idempotency_key: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    artifact_payload: Mapped[Optional[dict]] = mapped_column(postgresql.JSONB, nullable=True)
+    schema_id: Mapped[str] = mapped_column(String, nullable=False)
+    schema_version: Mapped[str] = mapped_column(String, nullable=False)

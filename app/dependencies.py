@@ -115,7 +115,7 @@ engine = _write_engine  # Alias for backward compatibility
 
 # --- Database Dependencies ---
 
-def get_db(request: Optional[Request] = None) -> Generator[Session, None, None]:
+def get_db() -> Generator[Session, None, None]:
     """Legacy dependency yielding a Write DB session."""
     with Session(_write_engine) as session:
         yield session

@@ -1,16 +1,17 @@
 """MCP Client Adapter."""
 import logging
 import os
-from typing import Dict, Any
+import requests
+from typing import Dict, Any, Optional
+from app.core.config import settings
 
 try:
     from mcp import StdioServerParameters
     from mcp.client.stdio import stdio_client
     from mcp.client.sse import sse_client
     from mcp.client.session import ClientSession
-    from mcp.types import CallToolResult, TextContent, ImageContent, EmbeddedResource
+    from mcp.types import CallToolResult
 except ImportError:
-    # Fallback/Mock if SDK issues
     StdioServerParameters = None
     stdio_client = None
     sse_client = None
@@ -23,14 +24,21 @@ class McpClient:
         self, 
         server_config: Dict[str, Any], 
         tool_name: str, 
-        arguments: Dict[str, Any]
+        arguments: Dict[str, Any],
+        idempotency_key: Optional[str] = None,
+        principal_id: Optional[str] = None,
+        capability_read_only: bool = False
     ) -> Dict[str, Any]:
+        """
+        Call an MCP tool, routing through the connector if configured.
+        """
+        if settings.TALOS_CONNECTOR_URL:
+             return await self._call_connector(
+                 server_config, tool_name, arguments, idempotency_key, principal_id, capability_read_only
+             )
         
-        if not ClientSession:
-             raise ImportError("MCP SDK not installed or imports failed")
-
+        # Fallback to direct connection if no connector configured
         transport = server_config.get("transport", "stdio")
-        
         try:
             if transport == "stdio":
                 return await self._call_stdio(server_config, tool_name, arguments)
@@ -39,24 +47,70 @@ class McpClient:
             else:
                 raise ValueError(f"Unsupported transport: {transport}")
         except Exception as e:
-            logger.error(f"MCP Tool Call Failed: {e}")
+            logger.error(f"Direct MCP Tool Call Failed: {e}")
+            raise
+
+    async def _call_connector(
+        self,
+        server: Dict[str, Any],
+        tool: str,
+        args: Dict[str, Any],
+        idempotency_key: Optional[str],
+        principal_id: Optional[str],
+        capability_read_only: bool
+    ) -> Dict[str, Any]:
+        """Route tool call through the talos-mcp-connector service."""
+        server_id = server.get("id")
+        if not server_id:
+             # If server config is passed without ID, we might need to derive it 
+             # or the connector might not know about it if it's dynamic.
+             # In production, servers are registered in the connector config.
+             server_id = server.get("name") # Fallback
+        
+        url = f"{settings.TALOS_CONNECTOR_URL}/servers/{server_id}/tools/{tool}/call"
+        
+        payload = {
+            "args": args,
+            "idempotency_key": idempotency_key,
+            "capability_read_only": capability_read_only
+        }
+        
+        headers = {}
+        if principal_id:
+            headers["X-Talos-Principal"] = principal_id
+
+        try:
+            # Use requests for simplicity since it's in requirements.txt
+            # In a fully async app, httpx would be better, but we follow existing patterns.
+            import asyncio
+            response = await asyncio.to_thread(
+                requests.post, url, json=payload, headers=headers, timeout=30
+            )
+            
+            if response.status_code == 409:
+                 from app.errors import TalosError
+                 raise TalosError("IDEMPOTENCY_CONFLICT", 409, response.json().get("detail", "Conflict"))
+            
+            response.raise_for_status()
+            data = response.json()
+            return data.get("result", {})
+            
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"Connector call failed ({e.response.status_code}): {e.response.text}")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to call MCP Connector: {e}")
             raise
 
     async def _call_stdio(self, server: Dict[str, Any], tool: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        if not ClientSession: raise ImportError("MCP SDK not installed")
         command = server.get("command")
-        if not command:
-             raise ValueError("Command required for stdio transport")
-             
-        server_args = server.get("args", [])
-        env = server.get("env", {})
-        
-        full_env = os.environ.copy()
-        full_env.update(env)
+        if not command: raise ValueError("Command required")
         
         params = StdioServerParameters(
             command=command,
-            args=server_args,
-            env=full_env
+            args=server.get("args", []),
+            env={**os.environ, **server.get("env", {})}
         )
         
         async with stdio_client(params) as (read, write):
@@ -66,9 +120,9 @@ class McpClient:
                 return self._format_result(result)
 
     async def _call_sse(self, server: Dict[str, Any], tool: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        if not ClientSession: raise ImportError("MCP SDK not installed")
         endpoint = server.get("endpoint")
-        if not endpoint:
-             raise ValueError("Endpoint required for SSE transport")
+        if not endpoint: raise ValueError("Endpoint required")
              
         async with sse_client(endpoint) as (read, write):
              async with ClientSession(read, write) as session:
@@ -77,18 +131,10 @@ class McpClient:
                  return self._format_result(result)
 
     def _format_result(self, result: Any) -> Dict[str, Any]:
-        # result is CallToolResult
         content = []
-        
         for item in result.content:
-            if item.type == "text":
+            if hasattr(item, 'text'):
                 content.append({"type": "text", "text": item.text})
-            elif item.type == "image":
+            elif hasattr(item, 'data'):
                  content.append({"type": "image", "data": item.data, "mimeType": item.mimeType})
-            elif item.type == "resource":
-                 content.append({"type": "resource", "uri": item.resource.uri, "text": item.resource.text if hasattr(item.resource, 'text') else None})
-        
-        return {
-            "content": content,
-            "is_error": result.isError
-        }
+        return {"content": content, "is_error": getattr(result, 'isError', False)}

@@ -1,6 +1,7 @@
 import logging
 import hashlib
 import base64
+from datetime import datetime, timezone
 from typing import Optional, List, Tuple
 from sqlalchemy.orm import Session
 
@@ -14,23 +15,25 @@ A2A_MAX_FRAME_BYTES = 1_048_576  # 1 MiB
 A2A_MAX_FUTURE_DELTA = 1024
 
 class A2AFrameStore:
-    def __init__(self, write_db: Session, read_db: Session = None):
+    def __init__(self, write_db: Session, read_db: Optional[Session] = None):
         self.write_db = write_db
         self.read_db = read_db if read_db else write_db
 
     def _verify_size(self, b64u_str: str):
-        # Approximate size check or decode check
-        if len(b64u_str) > A2A_MAX_FRAME_BYTES * 1.4:
-             raise ValueError("Frame too large (pre-decode)")
-        
+        # Precise size check
         try:
+            # base64url padding check and decode
             padded = b64u_str + '=' * (-len(b64u_str) % 4)
             data = base64.urlsafe_b64decode(padded)
             if len(data) > A2A_MAX_FRAME_BYTES:
-                raise ValueError("Frame too large")
+                raise ValueError("A2A_FRAME_SIZE_EXCEEDED")
             return data
-        except Exception as e:
-            raise ValueError(f"Invalid base64url: {str(e)}")
+        except ValueError as e:
+            if str(e) == "A2A_FRAME_SIZE_EXCEEDED":
+                raise e
+            raise ValueError("A2A_FRAME_SCHEMA_INVALID")
+        except Exception:
+            raise ValueError("A2A_FRAME_SCHEMA_INVALID")
 
     def _verify_digests(self, frame: EncryptedFrame, ciphertext_bytes: bytes):
         # 1. ciphertext_hash
@@ -104,11 +107,9 @@ class A2AFrameStore:
         recipient_id: str, 
         cursor: Optional[str] = None, 
         limit: int = 100,
-        consistency: str = "strong" # Phase 12 Add
+        consistency: str = "strong"
     ) -> Tuple[List[A2AFrame], Optional[str]]:
         
-        # Determine DB Source
-        # Spec A1: Default Strong (write_db). Eventual allowed if explicitly requested.
         db = self.write_db
         if consistency == "eventual":
             db = self.read_db
@@ -118,13 +119,38 @@ class A2AFrameStore:
             A2AFrame.recipient_id == recipient_id
         )
         
-        query = query.order_by(A2AFrame.created_at.asc(), A2AFrame.sender_id.asc(), A2AFrame.sender_seq.asc())
-        
+        # Cursor logic: (created_at, sender_id, sender_seq)
         if cursor:
-             # Cursor impl placeholder
-             pass
-             
+            try:
+                # b64u decode
+                padded = cursor + '=' * (-len(cursor) % 4)
+                raw = base64.urlsafe_b64decode(padded).decode('utf-8')
+                ts_str, s_id, s_seq = raw.split('|')
+                ts = datetime.fromisoformat(ts_str)
+                seq = int(s_seq)
+                
+                # Filter rows strictly after the cursor
+                # (created_at > ts) OR (created_at == ts AND sender_id > s_id) OR (created_at == ts AND sender_id == s_id AND sender_seq > seq)
+                from sqlalchemy import or_, and_
+                query = query.filter(
+                    or_(
+                        A2AFrame.created_at > ts,
+                        and_(A2AFrame.created_at == ts, A2AFrame.sender_id > s_id),
+                        and_(A2AFrame.created_at == ts, A2AFrame.sender_id == s_id, A2AFrame.sender_seq > seq)
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Invalid A2A cursor: {cursor}, error: {e}")
+                # Fallback to beginning on invalid cursor
+        
+        query = query.order_by(A2AFrame.created_at.asc(), A2AFrame.sender_id.asc(), A2AFrame.sender_seq.asc())
         frames = query.limit(limit).all()
+        
         next_cursor = None
+        if len(frames) == limit:
+            last = frames[-1]
+            # Encode next cursor
+            raw_next = f"{last.created_at.isoformat()}|{last.sender_id}|{last.sender_seq}"
+            next_cursor = base64.urlsafe_b64encode(raw_next.encode('utf-8')).decode('ascii').rstrip('=')
         
         return frames, next_cursor
