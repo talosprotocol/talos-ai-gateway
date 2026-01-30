@@ -1,7 +1,7 @@
 """Postgres Store Implementations."""
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional, cast
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import desc
 from app.utils.id import uuid7
@@ -17,9 +17,9 @@ from app.adapters.postgres.models import (
 
 logger = logging.getLogger(__name__)
 
-def to_dict(obj):
+def to_dict(obj: Any) -> Dict[str, Any]:
     if not obj:
-        return None
+        return {}
     d = {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
     return d
 
@@ -52,7 +52,8 @@ class PostgresUpstreamStore(UpstreamStore):
             if hasattr(obj, k):
                 setattr(obj, k, v)
         
-        obj.version += 1
+        if hasattr(obj, 'version'):
+            obj.version = obj.version + 1 # type: ignore[assignment]
         self.db.commit()
         return to_dict(obj)
 
@@ -137,9 +138,12 @@ class PostgresModelGroupStore(ModelGroupStore):
             if hasattr(obj, k):
                 setattr(obj, k, v)
         
-        obj.version += 1
+        if hasattr(obj, 'version'):
+            obj.version = cast(int, obj.version) + 1 # type: ignore[assignment]
         self.db.commit()
-        return self.get_model_group(group_id)
+        res = self.get_model_group(group_id)
+        assert res is not None
+        return res
 
     def delete_model_group(self, group_id: str) -> None:
         obj = self.db.query(ModelGroup).filter(ModelGroup.id == group_id).first()
@@ -225,7 +229,8 @@ class PostgresMcpStore(McpStore):
             if hasattr(obj, k):
                 setattr(obj, k, v)
         
-        obj.version += 1
+        if hasattr(obj, 'version'):
+            obj.version = cast(int, obj.version) + 1 # type: ignore[assignment]
         self.db.commit()
         return to_dict(obj)
 
@@ -245,7 +250,8 @@ class PostgresMcpStore(McpStore):
             for k, v in policy.items():
                 if hasattr(obj, k):
                     setattr(obj, k, v)
-            obj.version += 1
+            if hasattr(obj, 'version'):
+                obj.version = cast(int, obj.version) + 1 # type: ignore[assignment]
         else:
             obj = McpPolicy(**policy)
             self.db.add(obj)
@@ -316,7 +322,7 @@ class PostgresAuditStore(AuditStore):
             if isinstance(ts, datetime):
                 core_event["timestamp"] = ts.isoformat()
             else:
-                 core_event["timestamp"] = str(ts)
+                core_event["timestamp"] = str(ts)
 
         from app.domain.a2a.canonical import canonical_json_bytes
         canonical_bytes = canonical_json_bytes(core_event)
@@ -343,15 +349,15 @@ class PostgresAuditStore(AuditStore):
         since = datetime.now(timezone.utc) - timedelta(hours=window_hours)
         
         # 1. Total requests in window
-        total = self.db.query(func.count(AuditEvent.id)).filter(AuditEvent.timestamp >= since).scalar() or 0
+        total = self.db.query(func.count(AuditEvent.id)).filter(AuditEvent.timestamp >= since).scalar() or 0 # type: ignore
         
         # 2. Denial reason counts
         denial_res = self.db.query(
-            AuditEvent.details['denial_reason'].astext.label('reason'),
-            func.count(AuditEvent.id).label('count')
+            AuditEvent.details['denial_reason'].astext.label('reason'), # type: ignore
+            func.count(AuditEvent.id).label('count') # type: ignore
         ).filter(
-            AuditEvent.timestamp >= since,
-            AuditEvent.status == 'deny'
+            AuditEvent.timestamp >= since, # type: ignore
+            AuditEvent.status == 'deny' # type: ignore
         ).group_by('reason').all()
         
         denial_counts = {r.reason: r.count for r in denial_res if r.reason}
@@ -360,12 +366,12 @@ class PostgresAuditStore(AuditStore):
         # We'll use a simpler approach for now: group by hour truncated timestamp
         # NOTE: This is slightly DB-specific (Postgres date_trunc)
         series_res = self.db.query(
-            func.date_trunc('hour', AuditEvent.timestamp).label('hour'),
-            func.count(AuditEvent.id).filter(AuditEvent.status == 'success').label('ok'),
-            func.count(AuditEvent.id).filter(AuditEvent.status == 'deny').label('deny'),
-            func.count(AuditEvent.id).filter(AuditEvent.status == 'error').label('error')
+            func.date_trunc('hour', AuditEvent.timestamp).label('hour'), # type: ignore
+            func.count(AuditEvent.id).filter(AuditEvent.status == 'success').label('ok'), # type: ignore
+            func.count(AuditEvent.id).filter(AuditEvent.status == 'deny').label('deny'), # type: ignore
+            func.count(AuditEvent.id).filter(AuditEvent.status == 'error').label('error') # type: ignore
         ).filter(
-            AuditEvent.timestamp >= since
+            AuditEvent.timestamp >= since # type: ignore
         ).group_by('hour').order_by('hour').all()
         
         series = [
