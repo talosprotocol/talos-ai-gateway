@@ -27,6 +27,7 @@ dependencies = [
     "aiohttp>=3.9.0",
     "requests>=2.31.0",
     "uuid6>=0.5.0",
+    "talos-sdk-py @ git+https://github.com/talosprotocol/talos-sdk-py.git",
 ]
 
 [project.scripts]
@@ -55,3 +56,4 @@ target-version = "py311"
 [tool.mypy]
 python_version = "3.11"
 strict = true
+mypy_path = "../../sdks/python/src"

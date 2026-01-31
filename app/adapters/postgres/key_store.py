@@ -11,7 +11,7 @@ import hmac
 import os
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Optional, NamedTuple, Dict, Any
+from typing import Optional, NamedTuple, Dict, Any, Union
 
 from sqlalchemy.orm import Session
 
@@ -21,9 +21,9 @@ class KeyData(NamedTuple):
     id: str
     team_id: str
     org_id: str
-    scopes: list
-    allowed_model_groups: list
-    allowed_mcp_servers: list
+    scopes: list[Any]
+    allowed_model_groups: list[Any]
+    allowed_mcp_servers: list[Any]
     revoked: bool
     expires_at: Optional[datetime]
     # Phase 15: Budget & Policy
@@ -64,7 +64,7 @@ class PostgresKeyStore(KeyStore):
         db: Session,
         pepper: Optional[str] = None,
         pepper_id: str = "p1",
-        redis_client=None,
+        redis_client: Optional[Any] = None,
         cache_ttl_seconds: int = 30,
     ):
         """Initialize store.
@@ -77,7 +77,7 @@ class PostgresKeyStore(KeyStore):
             cache_ttl_seconds: Cache TTL (default: 30s, max 120s)
         """
         self._db = db
-        self._pepper = (pepper or os.getenv("TALOS_KEY_PEPPER", "dev-pepper-change-in-prod")).encode()
+        self._pepper = (pepper or os.getenv("TALOS_KEY_PEPPER") or "dev-pepper-change-in-prod").encode()
         self._pepper_id = pepper_id
         self._redis = redis_client
         # Hard max TTL of 120s
@@ -105,8 +105,10 @@ class PostgresKeyStore(KeyStore):
         # Try cache first
         if self._redis:
             cached = self._try_cache_get(key_hash)
-            if cached is not None:
-                return cached if cached else None  # False = negative cache
+            if cached is False:
+                return None
+            if isinstance(cached, KeyData):
+                return cached
 
         # Database lookup
         from ..postgres.models import VirtualKey
@@ -119,22 +121,28 @@ class PostgresKeyStore(KeyStore):
                 self._cache_negative(key_hash)
             return None
 
+        # mypy thinks these are Columns because of legacy Declarative style in models.py
+        # Runtime is fine. We cast to silence mypy or ignore.
+        # Prefer ignore for brevity over massive casting block.
         key_data = KeyData(
-            id=vk.id,
-            team_id=vk.team_id,
-            org_id=vk.team.org_id if vk.team else None,
-            scopes=vk.scopes or [],
-            allowed_model_groups=vk.allowed_model_groups or [],
-            allowed_mcp_servers=vk.allowed_mcp_servers or [],
-            revoked=vk.revoked,
-            expires_at=vk.expires_at,
-            budget_mode=vk.budget_mode,
+            # Explicit casts for SQLAlchemy Column types
+            # Note: We use type: ignore because SQLAlchemy Column[T] vs instance type inference 
+            # is tricky for mypy in this context without specific plugin support for the property access pattern
+            id=str(vk.id), # Explicit string conversion safer
+            team_id=str(vk.team_id),
+            org_id=str(vk.team.org_id) if vk.team and vk.team.org_id else "unknown", # Handle optionality safety
+            scopes=vk.scopes or [], # type: ignore
+            allowed_model_groups=vk.allowed_model_groups or [], # type: ignore
+            allowed_mcp_servers=vk.allowed_mcp_servers or [], # type: ignore
+            revoked=bool(vk.revoked),
+            expires_at=vk.expires_at, # type: ignore
+            budget_mode=str(vk.budget_mode),
             overdraft_usd=str(vk.overdraft_usd),
-            max_tokens_default=vk.max_tokens_default,
-            budget=vk.budget or {},
+            max_tokens_default=vk.max_tokens_default, # type: ignore
+            budget=vk.budget or {}, # type: ignore
             team_budget_mode=vk.team.budget_mode if vk.team else "off",
             team_overdraft_usd=str(vk.team.overdraft_usd) if vk.team else "0",
-            team_max_tokens_default=vk.team.max_tokens_default if vk.team else None,
+            team_max_tokens_default=vk.team.max_tokens_default if vk.team else None, 
             team_budget=vk.team.budget if vk.team else {}
         )
 
@@ -143,8 +151,10 @@ class PostgresKeyStore(KeyStore):
 
         return key_data
 
-    def _try_cache_get(self, key_hash: str) -> Optional[KeyData | bool]:
+    def _try_cache_get(self, key_hash: str) -> Optional[Union[KeyData, bool]]:
         """Try to get from cache. Returns None if not in cache."""
+        if not self._redis:
+            return None
         try:
             import json
             data = self._redis.get(f"key:{key_hash}")
@@ -159,6 +169,8 @@ class PostgresKeyStore(KeyStore):
 
     def _cache_set(self, key_hash: str, key_data: KeyData) -> None:
         """Cache key data."""
+        if not self._redis:
+            return
         try:
             import json
             data = json.dumps({
@@ -185,6 +197,8 @@ class PostgresKeyStore(KeyStore):
 
     def _cache_negative(self, key_hash: str) -> None:
         """Cache negative result for short duration."""
+        if not self._redis:
+            return
         try:
             self._redis.setex(f"key:{key_hash}", 30, "__NEGATIVE__")
         except Exception:
@@ -199,33 +213,22 @@ class PostgresKeyStore(KeyStore):
                 pass
 
 
-def get_key_store(db: Session = None, redis_client=None) -> KeyStore:
+def get_key_store(db: Optional[Session] = None, redis_client: Any = None) -> KeyStore:
     """Factory function to get appropriate key store.
     
     In production, returns PostgresKeyStore (requires db session).
     """
-    dev_mode = os.getenv("DEV_MODE", "false").lower() in ("true", "1", "yes")
     pepper = os.getenv("TALOS_KEY_PEPPER")
     pepper_id = os.getenv("TALOS_PEPPER_ID", "p1")
     
-    if not dev_mode:
-        if not pepper:
-            raise RuntimeError("CRITICAL: TALOS_KEY_PEPPER environment variable is missing in production mode.")
-        if pepper == "dev-pepper-change-in-prod":
-            raise RuntimeError("CRITICAL: Default pepper detected in production mode. Security breach risk.")
-        
-        if db is None:
-            raise RuntimeError("Database session required for production KeyStore")
-    else:
-        # Use a stable dev pepper if none provided
-        pepper = pepper or "dev-pepper-change-in-prod"
-        if db is None:
-            # Fallback for dev if no DB provided (though usually DB is present)
-            # In Phase 0/1 we decided to remove MockKeyStore from prod imports.
-            # If we need a Mock for local dev without Postgres, it must be in a 
-            # test-only or dev-only file. For now, we expect Postgres even in dev
-            # unless we explicitly implement a JsonKeyStore.
-            pass
+    if not pepper:
+        raise RuntimeError("CRITICAL: TALOS_KEY_PEPPER environment variable is missing in production mode.")
+    if pepper == "dev-pepper-change-in-prod":
+        raise RuntimeError("CRITICAL: Default pepper detected in production mode. Security breach risk.")
+    
+    if db is None:
+        raise RuntimeError("Database session required for production KeyStore")
+
 
     return PostgresKeyStore(
         db=db, 

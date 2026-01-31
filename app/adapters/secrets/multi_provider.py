@@ -23,11 +23,23 @@ class MultiKekProvider(KekProvider):
             current_kek_id: The ID of the primary key for new encryptions.
         """
         self._keys: Dict[str, AESGCM] = {}
-        self._current_kek_id = current_kek_id or os.getenv("TALOS_CURRENT_KEK_ID")
+        cid = current_kek_id or os.getenv("TALOS_CURRENT_KEK_ID")
+        if not cid:
+            # We must fail fast if we can't determine the current KEK ID
+            # But to keep __init__ safe, we can defer to validate_startup, 
+            # OR we enforce it here. Given "Production Grade", failing fast is better.
+            # However, existing code called _validate_startup.
+            # To satisfy mypy property 'str' return, we must ensure it is str.
+            # If we allow it to be empty temporarily, property is unsafe.
+            # Let's Initialize as empty string but validation will fail.
+            self._current_kek_id: str = ""
+        else:
+            self._current_kek_id = cid
+            
         self._load_keys()
         self._validate_startup()
 
-    def _load_keys(self):
+    def _load_keys(self) -> None:
         """Load all keys from the environment."""
         # 1. Load from TALOS_KEK_<ID>
         # Pattern ensures ID contains only alphanumeric characters, underscores, and hyphens.
@@ -44,43 +56,17 @@ class MultiKekProvider(KekProvider):
                     logger.info(f"Loaded KEK: {kek_id}")
                 except Exception as e:
                     logger.error(f"Failed to load KEK {kek_id}: {e}")
-                    if os.getenv("DEV_MODE", "false").lower() not in ("true", "1", "yes"):
-                        raise RuntimeError(f"CRITICAL: Failed to load KEK {kek_id}") from e
+                    raise RuntimeError(f"CRITICAL: Failed to load KEK {kek_id}") from e
 
-        # 2. Legacy fallback for dev mode
-        if "legacy" not in self._keys:
-            master_key = os.getenv("TALOS_MASTER_KEY") or os.getenv("MASTER_KEY")
-            if master_key:
-                import hashlib
-                key_bytes = hashlib.sha256(master_key.encode()).digest()
-                self._keys["legacy"] = AESGCM(key_bytes)
-                logger.warning("Loaded legacy KEK from TALOS_MASTER_KEY")
 
-    def _validate_startup(self):
+
+    def _validate_startup(self) -> None:
         """Ensure the provider is in a valid state for operation."""
-        is_dev = os.getenv("DEV_MODE", "false").lower() in ("true", "1", "yes")
-        
         if not self._current_kek_id:
-            if not is_dev:
-                raise RuntimeError("CRITICAL: TALOS_CURRENT_KEK_ID must be set in production.")
-            # Dev fallback
-            if "legacy" in self._keys:
-                self._current_kek_id = "legacy"
-            elif self._keys:
-                self._current_kek_id = list(self._keys.keys())[0]
-            else:
-                # Absolute minimal fallback for dev if nothing is set
-                import hashlib
-                key_bytes = hashlib.sha256(b"dev-only").digest()
-                self._keys["dev-insecure"] = AESGCM(key_bytes)
-                self._current_kek_id = "dev-insecure"
-                logger.warning("Using insecure DEV KEK. DO NOT USE IN PRODUCTION.")
+            raise RuntimeError("CRITICAL: TALOS_CURRENT_KEK_ID must be set in production.")
 
         if self._current_kek_id not in self._keys:
-            if not is_dev:
-                raise RuntimeError(f"CRITICAL: Current KEK ID '{self._current_kek_id}' is not loaded.")
-            else:
-                logger.error(f"Current KEK ID '{self._current_kek_id}' not found in loaded keys.")
+            raise RuntimeError(f"CRITICAL: Current KEK ID '{self._current_kek_id}' is not loaded.")
 
     def encrypt(self, plaintext: bytes, aad: Optional[bytes] = None) -> EncryptedEnvelope:
         """Encrypt plaintext using the current primary KEK."""
@@ -117,6 +103,8 @@ class MultiKekProvider(KekProvider):
             tag = self._b64u_decode(envelope.tag_b64u)
         except Exception as e:
             raise ValueError(f"ENVELOPE_INVALID: Failed to decode binary fields: {e}")
+        
+        current_aad: Optional[bytes] = None
         
         # Verify AAD binding if present in envelope
         if envelope.aad_b64u:
