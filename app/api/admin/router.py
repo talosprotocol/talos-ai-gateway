@@ -25,7 +25,7 @@ import uuid
 import json
 from decimal import Decimal
 
-from sqlalchemy.orm import Session  # type: ignore
+from sqlalchemy.orm import Session
 from app.dependencies import (
     get_upstream_store, get_model_group_store, get_secret_store, 
     get_mcp_store, get_audit_store, get_routing_policy_store, get_usage_store,
@@ -45,11 +45,11 @@ router = APIRouter()
 
 # Load provider catalog from contracts
 CATALOG_PATH = Path(__file__).parent.parent.parent.parent / "talos-contracts" / "catalog" / "provider_templates.json"
-_catalog_cache: Optional[dict] = None
+_catalog_cache: Optional[Dict[str, Any]] = None
 
 from app.domain.a2a.utils import uuid7
 
-def get_provider_catalog() -> dict:
+def get_provider_catalog() -> Dict[str, Any]:
     """Load provider catalog from contracts."""
     global _catalog_cache
     if _catalog_cache is None:
@@ -123,7 +123,7 @@ from app.middleware.auth_admin import require_permission, get_rbac_context, Rbac
 # ============ Helper ============
 
 def audit(store: AuditStore, action: str, resource_type: str, principal_id: str, 
-          resource_id: Optional[str] = None, outcome: str = "success", **details):
+          resource_id: Optional[str] = None, outcome: str = "success", **details: Any) -> None:
     event = {
         "event_id": uuid7(),
         "timestamp": datetime.now(timezone.utc),
@@ -145,7 +145,7 @@ def audit(store: AuditStore, action: str, resource_type: str, principal_id: str,
 async def get_provider_templates(
     principal: RbacContext = Depends(require_permission("llm.read")),
     audit_store: AuditStore = Depends(get_audit_store)
-):
+) -> Dict[str, Any]:
     """Get provider catalog templates from contracts."""
     catalog = get_provider_catalog()
     audit(audit_store, "catalog.read", "catalog", principal.id, outcome="success", context="dashboard")
@@ -161,7 +161,7 @@ async def get_provider_templates(
 async def list_upstreams(
     principal: RbacContext = Depends(require_permission("llm.read")),
     store: UpstreamStore = Depends(get_upstream_store)
-):
+) -> Dict[str, List[Dict[str, Any]]]:
     """List all LLM upstreams."""
     return {"upstreams": store.list_upstreams()}
 
@@ -171,7 +171,7 @@ async def get_upstream(
     upstream_id: str, 
     principal: RbacContext = Depends(require_permission("llm.read")),
     store: UpstreamStore = Depends(get_upstream_store)
-):
+) -> Dict[str, Any]:
     """Get a single upstream."""
     upstream = store.get_upstream(upstream_id)
     if not upstream:
@@ -188,7 +188,7 @@ async def create_upstream(
     principal: RbacContext = Depends(require_permission("llm.admin")),
     store: UpstreamStore = Depends(get_upstream_store),
     audit_store: AuditStore = Depends(get_audit_store)
-):
+) -> Dict[str, Any]:
     """Create a new upstream."""
     if store.get_upstream(data.id):
         raise HTTPException(status_code=400, detail={
@@ -214,7 +214,7 @@ async def update_upstream(
     principal: RbacContext = Depends(require_permission("llm.admin")),
     store: UpstreamStore = Depends(get_upstream_store),
     audit_store: AuditStore = Depends(get_audit_store)
-):
+) -> Dict[str, Any]:
     """Update an upstream with concurrency control."""
     try:
         updated = store.update_upstream(upstream_id, data.dict(exclude_unset=True, exclude={"expected_version"}), expected_version=data.expected_version)
@@ -234,7 +234,7 @@ async def disable_upstream(
     upstream_id: str, 
     principal: RbacContext = Depends(require_permission("llm.admin")),
     store: UpstreamStore = Depends(get_upstream_store)
-):
+) -> Dict[str, Any]:
     """Disable an upstream."""
     try:
         updated = store.update_upstream(upstream_id, {"enabled": False})
@@ -248,7 +248,7 @@ async def enable_upstream(
     upstream_id: str, 
     principal: RbacContext = Depends(require_permission("llm.admin")),
     store: UpstreamStore = Depends(get_upstream_store)
-):
+) -> Dict[str, Any]:
     """Enable an upstream."""
     try:
         updated = store.update_upstream(upstream_id, {"enabled": True})
@@ -264,7 +264,7 @@ async def delete_upstream(
     store: UpstreamStore = Depends(get_upstream_store),
     mg_store: ModelGroupStore = Depends(get_model_group_store),
     audit_store: AuditStore = Depends(get_audit_store)
-):
+) -> Dict[str, bool]:
     """Delete an upstream (checks dependencies)."""
     if "resource.delete" not in principal.effective_permissions and "platform.admin" not in principal.effective_permissions:
         raise HTTPException(status_code=403, detail={"error": {"code": "PERMISSION_DENIED"}})
@@ -300,7 +300,7 @@ async def delete_upstream(
 async def list_model_groups(
     principal: RbacContext = Depends(require_permission("llm.read")),
     store: ModelGroupStore = Depends(get_model_group_store)
-):
+) -> Dict[str, List[Dict[str, Any]]]:
     """List all model groups."""
     return {"model_groups": store.list_model_groups()}
 
@@ -311,7 +311,7 @@ async def create_model_group(
     principal: RbacContext = Depends(require_permission("llm.admin")),
     store: ModelGroupStore = Depends(get_model_group_store),
     audit_store: AuditStore = Depends(get_audit_store)
-):
+) -> Dict[str, Any]:
     """Create a new model group."""
     if store.get_model_group(data.id):
         raise HTTPException(status_code=400, detail={
@@ -337,7 +337,7 @@ async def update_model_group(
     principal: RbacContext = Depends(require_permission("llm.admin")),
     store: ModelGroupStore = Depends(get_model_group_store),
     audit_store: AuditStore = Depends(get_audit_store)
-):
+) -> Dict[str, Any]:
     """Update a model group with concurrency control."""
     try:
         updated = store.update_model_group(group_id, data.dict(exclude_unset=True, exclude={"expected_version"}), expected_version=data.expected_version)
@@ -356,7 +356,7 @@ async def disable_model_group(
     group_id: str, 
     principal: RbacContext = Depends(require_permission("llm.admin")),
     store: ModelGroupStore = Depends(get_model_group_store)
-):
+) -> Dict[str, Any]:
     try:
         updated = store.update_model_group(group_id, {"enabled": False})
         return {"success": True, "model_group": updated}
@@ -369,7 +369,7 @@ async def enable_model_group(
     group_id: str, 
     principal: RbacContext = Depends(require_permission("llm.admin")),
     store: ModelGroupStore = Depends(get_model_group_store)
-):
+) -> Dict[str, Any]:
     try:
         updated = store.update_model_group(group_id, {"enabled": True})
         return {"success": True, "model_group": updated}
@@ -383,7 +383,7 @@ async def delete_model_group(
     principal: RbacContext = Depends(require_permission("llm.admin")),
     store: ModelGroupStore = Depends(get_model_group_store),
     audit_store: AuditStore = Depends(get_audit_store)
-):
+) -> Dict[str, bool]:
     if "resource.delete" not in principal.effective_permissions and "platform.admin" not in principal.effective_permissions:
         raise HTTPException(status_code=403, detail={"error": {"code": "PERMISSION_DENIED"}})
     
@@ -404,17 +404,17 @@ async def delete_model_group(
 async def list_routing_policies(
     principal: RbacContext = Depends(require_permission("llm.read")),
     store: RoutingPolicyStore = Depends(get_routing_policy_store)
-):
+) -> Dict[str, List[Dict[str, Any]]]:
     """List all routing policies."""
     return {"routing_policies": store.list_policies()}
 
 
 @router.post("/llm/routing-policies", status_code=201)
 async def create_routing_policy(
-    data: dict, 
+    data: Dict[str, Any], 
     principal: RbacContext = Depends(require_permission("llm.admin")),
     store: RoutingPolicyStore = Depends(get_routing_policy_store)
-):
+) -> Dict[str, Any]:
     """Create a new routing policy version."""
     policy_id = data.get("policy_id") or data.get("id", "default")
     data['policy_id'] = policy_id # ensure consistent
@@ -439,13 +439,14 @@ async def create_routing_policy(
 async def get_llm_health(
     principal: RbacContext = Depends(require_permission("llm.read")),
     store: UpstreamStore = Depends(get_upstream_store)
-):
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
     """Get health status for all upstreams."""
     upstreams = store.list_upstreams()
-    health = {}
+    health: Dict[str, Dict[str, Any]] = {}
     
     for u in upstreams:
-        health[u.get("id")] = {
+        u_id = str(u.get("id", "unknown"))
+        health[u_id] = {
             "status": "ok" if u.get("enabled", True) else "disabled",
             "consecutive_failures": 0,
             "last_check_time": datetime.now(timezone.utc).isoformat(),
@@ -462,18 +463,18 @@ async def get_llm_health(
 async def list_mcp_servers(
     principal: RbacContext = Depends(require_permission("mcp.read")),
     store: McpStore = Depends(get_read_mcp_store)
-):
+) -> Dict[str, List[Dict[str, Any]]]:
     """List all MCP servers."""
     return {"servers": store.list_servers()}
 
 
 @router.post("/mcp/servers", status_code=201)
 async def create_mcp_server(
-    data: dict, 
+    data: Dict[str, Any], 
     principal: RbacContext = Depends(require_permission("mcp.admin")),
     store: McpStore = Depends(get_mcp_store),
     audit_store: AuditStore = Depends(get_audit_store)
-):
+) -> Dict[str, Any]:
     server_id = data.get("id")
     if not server_id:
         raise HTTPException(status_code=400, detail={"error": {"code": "VALIDATION_ERROR", "message": "ID required"}})
@@ -497,7 +498,7 @@ async def disable_mcp_server(
     server_id: str, 
     principal: RbacContext = Depends(require_permission("mcp.admin")),
     store: McpStore = Depends(get_mcp_store)
-):
+) -> Dict[str, Any]:
     try:
         updated = store.update_server(server_id, {"enabled": False})
         return {"success": True, "server": updated}
@@ -510,7 +511,7 @@ async def enable_mcp_server(
     server_id: str, 
     principal: RbacContext = Depends(require_permission("mcp.admin")),
     store: McpStore = Depends(get_mcp_store)
-):
+) -> Dict[str, Any]:
     try:
         updated = store.update_server(server_id, {"enabled": True})
         return {"success": True, "server": updated}
@@ -524,7 +525,7 @@ async def delete_mcp_server(
     principal: RbacContext = Depends(require_permission("mcp.admin")),
     store: McpStore = Depends(get_mcp_store),
     audit_store: AuditStore = Depends(get_audit_store)
-):
+) -> Dict[str, bool]:
     if "resource.delete" not in principal.effective_permissions and "platform.admin" not in principal.effective_permissions:
         raise HTTPException(status_code=403, detail={"error": {"code": "PERMISSION_DENIED"}})
     
@@ -543,7 +544,7 @@ async def list_mcp_policies(
     team_id: Optional[str] = None, 
     principal: RbacContext = Depends(require_permission("mcp.read")),
     store: McpStore = Depends(get_read_mcp_store)
-):
+) -> Dict[str, List[Dict[str, Any]]]:
     if not team_id:
         return {"policies": []} # Required support listing all? Store might need impl
     return {"policies": store.list_policies(team_id)}
@@ -551,11 +552,11 @@ async def list_mcp_policies(
 
 @router.post("/mcp/policies", status_code=201)
 async def create_mcp_policy(
-    data: dict, 
+    data: Dict[str, Any], 
     principal: RbacContext = Depends(require_permission("mcp.admin")),
     store: McpStore = Depends(get_mcp_store),
     audit_store: AuditStore = Depends(get_audit_store)
-):
+) -> Dict[str, Any]:
     policy_id = data.get("id") or uuid7()
     data["id"] = policy_id
     data["created_at"] = datetime.utcnow().isoformat()
@@ -574,7 +575,7 @@ async def delete_mcp_policy(
     principal: RbacContext = Depends(require_permission("mcp.admin")),
     store: McpStore = Depends(get_mcp_store),
     audit_store: AuditStore = Depends(get_audit_store)
-):
+) -> JSONResponse:
     # Not implemented in store?
     store.delete_policy(policy_id)
     
@@ -590,7 +591,7 @@ async def delete_mcp_policy(
 async def list_secrets(
     principal: RbacContext = Depends(require_permission("keys.read")),
     store: SecretStore = Depends(get_secret_store)  # PRIMARY: read-your-writes required
-):
+) -> Dict[str, List[Dict[str, Any]]]:
     return {"secrets": store.list_secrets()}
 
 
@@ -599,7 +600,7 @@ async def get_kek_status(
     principal: RbacContext = Depends(require_permission("keys.read")),
     store: SecretStore = Depends(get_secret_store),
     kek_provider: KekProvider = Depends(get_kek_provider)
-):
+) -> KekStatusResponse:
     """Get KEK status and retirement counts."""
     return KekStatusResponse(
         current_kek_id=kek_provider.current_kek_id,
@@ -614,7 +615,7 @@ async def rotate_all_secrets(
     principal: RbacContext = Depends(require_permission("keys.write")),
     rotation_store: RotationOperationStore = Depends(get_rotation_store),
     kek_provider: KekProvider = Depends(get_kek_provider)
-):
+) -> Dict[str, Any]:
     """Trigger background rotation of all secrets."""
     active = rotation_store.get_active_operation()
     if active:
@@ -651,7 +652,7 @@ async def get_rotation_op_status(
     op_id: str,
     principal: RbacContext = Depends(require_permission("keys.read")),
     rotation_store: RotationOperationStore = Depends(get_rotation_store)
-):
+) -> Dict[str, Any]:
     """Get status of a specific rotation operation."""
     op = rotation_store.get_operation(op_id)
     if not op:
@@ -661,11 +662,11 @@ async def get_rotation_op_status(
 
 @router.post("/secrets", status_code=201)
 async def create_secret(
-    data: dict, 
+    data: Dict[str, Any], 
     principal: RbacContext = Depends(require_permission("keys.write")),
     store: SecretStore = Depends(get_secret_store),
     audit_store: AuditStore = Depends(get_audit_store)
-):
+) -> Dict[str, Any]:
     name = data.get("name")
     value = data.get("value")
     if not name or not value:
@@ -685,7 +686,7 @@ async def delete_secret(
     principal: RbacContext = Depends(require_permission("keys.write")),
     store: SecretStore = Depends(get_secret_store),
     audit_store: AuditStore = Depends(get_audit_store)
-):
+) -> Dict[str, bool]:
     store.delete_secret(name)
     audit(audit_store, "secret.delete", "secret", principal.id,
           resource_id=name, outcome="success")
@@ -700,7 +701,7 @@ async def export_config(
     u_store: UpstreamStore = Depends(get_upstream_store),
     mg_store: ModelGroupStore = Depends(get_model_group_store),
     rp_store: RoutingPolicyStore = Depends(get_routing_policy_store)
-):
+) -> Dict[str, Dict[str, Any]]:
     config: Dict[str, Dict[str, Any]] = {
         "upstreams": {},
         "model_groups": {},
@@ -726,9 +727,9 @@ async def export_config(
 
 @router.post("/config:validate")
 async def validate_config(
-    data: dict, 
+    data: Dict[str, Any], 
     principal: RbacContext = Depends(require_permission("llm.admin"))
-):
+) -> Dict[str, Any]:
     """Validate config without applying."""
     errors = []
     # Implementation largely identical to before, just validation logic
@@ -746,12 +747,12 @@ async def validate_config(
 
 @router.post("/config:apply")
 async def apply_config(
-    data: dict, 
+    data: Dict[str, Any], 
     principal: RbacContext = Depends(require_permission("llm.admin")),
     u_store: UpstreamStore = Depends(get_upstream_store),
     mg_store: ModelGroupStore = Depends(get_model_group_store),
     audit_store: AuditStore = Depends(get_audit_store)
-):
+) -> Dict[str, Any]:
     # Validation
     val = await validate_config(data, principal)
     if not val["valid"]:
@@ -779,7 +780,7 @@ async def apply_config(
 @router.post("/config:reload")
 async def reload_config(
     principal: RbacContext = Depends(require_permission("platform.admin"))
-):
+) -> Dict[str, Any]:
     # Only meaningful for persistence that supports reload (File)
     # JsonStore might support it. Postgres does not.
     # We can skip or implementing reload on Store interface if needed.
@@ -790,7 +791,7 @@ async def get_stats(
     window_hours: int = 24,
     principal: RbacContext = Depends(require_permission("audit.read")),
     store: UsageStore = Depends(get_read_usage_store)
-):
+) -> Dict[str, Any]:
     """Get aggregated usage stats for the dashboard."""
     return store.get_stats(window_hours)
 
@@ -800,13 +801,13 @@ async def get_audit_stats(
     window_hours: int = 24,
     principal: RbacContext = Depends(require_permission("audit.read")),
     store: AuditStore = Depends(get_read_audit_store)
-):
+) -> Dict[str, Any]:
     """Get aggregated audit stats (denials, volume series) for the dashboard."""
     return store.get_dashboard_stats(window_hours)
 
 
 @router.get("/me")
-async def get_me(principal: RbacContext = Depends(get_rbac_context)):
+async def get_me(principal: RbacContext = Depends(get_rbac_context)) -> RbacContext:
     return principal
 
 # ============ Debug Ops ============
@@ -814,8 +815,8 @@ async def get_me(principal: RbacContext = Depends(get_rbac_context)):
 @router.get("/test/sleep")
 async def debug_sleep(
     seconds: int = 1,
-    principal: dict = Depends(require_permission("platform.admin"))
-):
+    principal: Dict[str, Any] = Depends(require_permission("platform.admin"))
+) -> Dict[str, int]:
     """
     Sleep for N seconds.
     Only available in DEV_MODE.
@@ -835,9 +836,9 @@ async def debug_sleep(
 @router.post("/test/budget/simulate-leak")
 async def simulate_leak(
     req: BudgetSimulationSchema,
-    principal: dict = Depends(require_permission("platform.admin")),
+    principal: Dict[str, Any] = Depends(require_permission("platform.admin")),
     db: Session = Depends(get_write_db)
-):
+) -> Dict[str, Any]:
     """
     Simulate a leaked reservation (ACTIVE status, expired).
     Only available in DEV_MODE.
@@ -845,7 +846,6 @@ async def simulate_leak(
     if not settings.DEV_MODE:
         raise HTTPException(status_code=404)
         
-    from app.domain.budgets.service import BudgetService
     from app.adapters.postgres.models import BudgetReservation
     from datetime import datetime, timedelta
     import uuid
@@ -864,7 +864,7 @@ async def simulate_leak(
     db.add(res)
     
     # Also need to update the scope row's reserved_usd to match the leaked amount
-    from sqlalchemy import text  # type: ignore
+    from sqlalchemy import text
     db.execute(
         text("UPDATE budget_scopes SET reserved_usd = reserved_usd + :amount WHERE scope_type = :st AND scope_id = :si"),
         {"amount": Decimal(req.amount), "st": req.scope_type, "si": req.scope_id}
@@ -876,19 +876,17 @@ async def simulate_leak(
 
 @router.post("/test/budget/trigger-cleanup")
 async def trigger_cleanup(
-    principal: dict = Depends(require_permission("platform.admin")),
-    db: Session = Depends(get_write_db)
-):
+    principal: Dict[str, Any] = Depends(require_permission("platform.admin")),
+    service: Any = Depends(get_budget_service)
+) -> Dict[str, Any]:
     """
     Manually trigger the budget cleanup logic (release_expired_reservations).
     """
     if not settings.DEV_MODE:
         raise HTTPException(status_code=404)
         
-    from app.domain.budgets.service import BudgetService
-    service = BudgetService(db)
+    # service is injected with Redis now
     count = service.release_expired_reservations(limit=100)
-    db.commit()
     return {"status": "cleaned", "released_count": count}
 
 
@@ -896,9 +894,9 @@ async def trigger_cleanup(
 async def get_test_scope(
     scope_type: str,
     scope_id: str,
-    principal: dict = Depends(require_permission("platform.admin")),
+    principal: Dict[str, Any] = Depends(require_permission("platform.admin")),
     db: Session = Depends(get_write_db) # Using Write DB for tests to avoid replication lag
-):
+) -> Dict[str, str]:
     """
     Get budget scope state for testing.
     Only available in DEV_MODE.
@@ -927,38 +925,10 @@ async def get_test_scope(
 
 # ============ Budget Operations ============
 
-@router.get("/budgets/usage")
-async def get_budget_usage(
-    day: Optional[str] = None, # YYYY-MM-DD
-    team_id: Optional[str] = None,
-    parent_key_id: Optional[str] = None, # Filter by key
-    limit: int = 100,
-    offset: int = 0,
-    principal: dict = Depends(require_permission("audit.read")), # Re-using audit.read or analytics perm
-    db: Any = Depends(get_read_usage_store) # Actually usage store is abstracted, but we need SQL for rollups
-):
-    """
-    Get budget usage stats.
-    Note: Phase 15 MVP uses direct DB access via UsageStore specialized method or direct SQL.
-    We'll use a direct query here since UsageStore interface might not have this specific rollup getter yet.
-    Ideally we add it to UsageStore.
-    But UsageStore is for Events.
-    Let's inject Session directly for this specific admin query or upgrade UsageStore.
-    Upgrading UsageStore is better for Clean Arch, but for speed in Phase 4 we can use get_read_db locally if allowed.
-    Admin router is PRIMARY-REQUIRED usually, but this is a read.
-    Let's use get_read_db explicitly.
-    """
-    from app.dependencies import get_read_db
-    from sqlalchemy import text
-    from sqlalchemy.orm import Session
-    
-    # We need a session, depends on how we get it. 
-    # Can't easily use Depends(get_read_db) inside function body if not in signature.
-    # We should add it to signature.
-    pass
+# Removed incomplete/duplicate get_budget_usage (was dead code)
 
 # Refactored implementation with dedicated dependency
-from app.dependencies import get_read_db
+from app.dependencies import get_read_db, get_budget_service
 from sqlalchemy.orm import Session
 from app.adapters.postgres.models import UsageRollupDaily
 
@@ -969,9 +939,9 @@ async def list_budget_usage(
     key_id: Optional[str] = None,
     limit_count: int = 100,
     offset: int = 0,
-    principal: dict = Depends(require_permission("audit.read")),
+    principal: Dict[str, Any] = Depends(require_permission("audit.read")),
     session: Session = Depends(get_read_db)
-):
+) -> Dict[str, List[Dict[str, Any]]]:
     """List daily usage rollups."""
     query = session.query(UsageRollupDaily)
     
