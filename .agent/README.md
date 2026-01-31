@@ -1,4 +1,5 @@
 # Agent workspace: services/ai-gateway
+> **Project**: services/ai-gateway
 
 This folder contains agent-facing context, tasks, workflows, and planning artifacts for this submodule.
 
