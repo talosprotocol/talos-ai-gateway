@@ -20,7 +20,7 @@ SECRET_PATTERNS = [
 class SecretRedactionFilter(logging.Filter):
     """Filter that redacts secret-like patterns from log records."""
     
-    def filter(self, record):
+    def filter(self, record: logging.LogRecord) -> bool:
         if not isinstance(record.msg, str):
             return True
             
@@ -42,7 +42,7 @@ class SecretRedactionFilter(logging.Filter):
             
         return True
 
-def setup_logging_redaction():
+def setup_logging_redaction() -> None:
     """Apply the SecretRedactionFilter to all existing loggers."""
     redact_filter = SecretRedactionFilter()
     

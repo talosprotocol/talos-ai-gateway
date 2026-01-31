@@ -1,7 +1,7 @@
 """Public AI API Router - OpenAI Compatible with Real Upstream Calls."""
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from app.utils.id import uuid7
 import json
 import time
@@ -31,7 +31,7 @@ import os
 
 # Helper for audit - can be moved to dependency or service
 def audit(store: AuditStore, action: str, resource_type: str, principal_id: str, 
-          resource_id: Optional[str] = None, outcome: str = "success", **details):
+          resource_id: Optional[str] = None, outcome: str = "success", **details: Any) -> None:
     event = {
         "event_id": uuid7(),
         "timestamp": datetime.utcnow(),
@@ -72,7 +72,7 @@ async def chat_completions(
     rl_store: RateLimitStore = Depends(get_rate_limit_store),
     budget_service: BudgetService = Depends(get_budget_service),
     usage_manager: UsageManager = Depends(get_usage_manager)
-):
+) -> Any:
     """OpenAI-compatible chat completions endpoint."""
     request_id = uuid7()
     start_time = time.time()
@@ -328,7 +328,7 @@ async def chat_completions(
 async def list_models(
     auth: AuthContext = Depends(require_scope("llm.read")),
     store: ModelGroupStore = Depends(get_model_group_store)
-):
+) -> Dict[str, Any]:
     """List allowed models for the authenticated key."""
     all_groups = store.list_model_groups()
     

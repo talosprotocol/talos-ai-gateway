@@ -4,6 +4,7 @@ from app.domain.a2a.models import (
     SessionCreateRequest, SessionAcceptRequest, SessionRotateRequest, FrameSendRequest,
     GroupCreateRequest, GroupMemberAddRequest
 )
+from app.adapters.postgres.models import A2ASession, A2AGroup
 from app.domain.a2a.session_manager import A2ASessionManager
 from app.domain.a2a.frame_store import A2AFrameStore
 from app.domain.a2a.group_manager import A2AGroupManager
@@ -12,6 +13,10 @@ from app.dependencies import (
     get_a2a_session_manager, get_a2a_frame_store, get_a2a_group_manager,
     get_audit_logger
 )
+from app.adapters.postgres.models import A2ASession, A2AGroup
+from typing import Any, Dict, cast
+from app.adapters.postgres.models import A2ASession, A2AGroup
+from typing import Any, Dict, cast
 
 router = APIRouter()
 
@@ -19,7 +24,7 @@ def get_actor_id(request: Request) -> str:
     # Use request.state.principal set by AuthMiddleware
     if not hasattr(request.state, "principal") or not request.state.principal:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    return request.state.principal.get("principal_id") or request.state.principal.get("id")
+    return cast(str, request.state.principal.get("principal_id") or request.state.principal.get("id"))
 
 @router.post("/sessions", status_code=201)
 def create_session(
@@ -27,7 +32,7 @@ def create_session(
     request: Request,
     sm: A2ASessionManager = Depends(get_a2a_session_manager),
     actor_id: str = Depends(get_actor_id)
-):
+) -> A2ASession:
     if actor_id == req.responder_id:
         raise HTTPException(status_code=400, detail="Initiator cannot be responder")
     
@@ -40,7 +45,7 @@ def get_session(
     id: str,
     sm: A2ASessionManager = Depends(get_a2a_session_manager),
     actor_id: str = Depends(get_actor_id)
-):
+) -> A2ASession:
     session = sm.get_session(id)
     if not session:
         raise HTTPException(status_code=404, detail="A2A_SESSION_NOT_FOUND")
@@ -53,7 +58,7 @@ def accept_session(
     request: Request,
     sm: A2ASessionManager = Depends(get_a2a_session_manager),
     actor_id: str = Depends(get_actor_id)
-):
+) -> A2ASession:
     try:
         session = sm.accept_session(id, actor_id, req)
         request.state.audit_meta["session_id"] = id
@@ -70,7 +75,7 @@ def rotate_session(
     request: Request,
     sm: A2ASessionManager = Depends(get_a2a_session_manager),
     actor_id: str = Depends(get_actor_id)
-):
+) -> A2ASession:
     try:
         session = sm.rotate_session(id, actor_id, req)
         request.state.audit_meta["session_id"] = id
@@ -86,7 +91,7 @@ def close_session(
     request: Request,
     sm: A2ASessionManager = Depends(get_a2a_session_manager),
     actor_id: str = Depends(get_actor_id)
-):
+) -> A2ASession:
     try:
         session = sm.close_session(id, actor_id)
         request.state.audit_meta["session_id"] = id
@@ -104,7 +109,7 @@ def send_frame(
     sm: A2ASessionManager = Depends(get_a2a_session_manager),
     fs: A2AFrameStore = Depends(get_a2a_frame_store),
     actor_id: str = Depends(get_actor_id)
-):
+) -> Any:
     # Validate session
     session = sm.get_session(id)
     if not session:
@@ -146,7 +151,7 @@ def list_frames(
     limit: int = 100,
     fs: A2AFrameStore = Depends(get_a2a_frame_store),
     actor_id: str = Depends(get_actor_id)
-):
+) -> Dict[str, Any]:
     # Recipient isolation is enforced within list_frames by passing actor_id
     frames, next_cursor = fs.list_frames(id, actor_id, cursor, limit)
     
@@ -160,7 +165,7 @@ def create_group(
     request: Request,
     gm: A2AGroupManager = Depends(get_a2a_group_manager),
     actor_id: str = Depends(get_actor_id)
-):
+) -> A2AGroup:
     group = gm.create_group(actor_id, req)
     request.state.audit_meta["group_id"] = group.group_id
     return group
@@ -170,7 +175,7 @@ def get_group(
     id: str,
     gm: A2AGroupManager = Depends(get_a2a_group_manager),
     actor_id: str = Depends(get_actor_id)
-):
+) -> A2AGroup:
     group = gm.get_group(id)
     if not group:
          raise HTTPException(status_code=404, detail="A2A_GROUP_NOT_FOUND")
@@ -183,7 +188,7 @@ def add_group_member(
     request: Request,
     gm: A2AGroupManager = Depends(get_a2a_group_manager),
     actor_id: str = Depends(get_actor_id)
-):
+) -> A2AGroup:
     try:
         group = gm.add_member(id, actor_id, req)
         request.state.audit_meta["group_id"] = id
@@ -201,7 +206,7 @@ def remove_group_member(
     request: Request,
     gm: A2AGroupManager = Depends(get_a2a_group_manager),
     actor_id: str = Depends(get_actor_id)
-):
+) -> A2AGroup:
     try:
         group = gm.remove_member(id, actor_id, pid)
         request.state.audit_meta["group_id"] = id
@@ -218,7 +223,7 @@ def close_group(
     request: Request,
     gm: A2AGroupManager = Depends(get_a2a_group_manager),
     actor_id: str = Depends(get_actor_id)
-):
+) -> Optional[A2AGroup]:
     try:
         res = gm.close_group(id, actor_id)
         request.state.audit_meta["group_id"] = id
