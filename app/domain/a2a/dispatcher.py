@@ -1,7 +1,7 @@
 from app.utils.id import uuid7
 import time
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, cast
 
 from app.api.a2a.jsonrpc import validator, JsonRpcException
 from app.domain.a2a.mapper_llm import map_input_to_llm_messages, map_llm_response_to_task
@@ -15,7 +15,8 @@ from app.adapters.upstreams_ai.client import (
     invoke_openai_compatible, get_api_key
 )
 from app.adapters.mcp.client import McpClient
-from app.adapters.redis.client import rate_limit_key, get_redis_client
+from redis.asyncio import Redis
+from app.adapters.redis.client import get_redis_client, rate_limit_key
 
 ALLOWED_METHODS = {"tasks.send", "tasks.get", "tasks.cancel"}
 
@@ -39,9 +40,9 @@ class A2ADispatcher:
         self.task_store = task_store
         self.mcp_mapper = McpMapper(mcp_client, audit_store, capability_validator)
         self._redis_promise = get_redis_client()
-        self.redis = None
+        self.redis: Optional[Redis[Any]] = None
 
-    async def _get_redis(self):
+    async def _get_redis(self) -> Optional[Redis[Any]]:
         if self.redis is None:
             self.redis = await self._redis_promise
         return self.redis
@@ -110,7 +111,7 @@ class A2ADispatcher:
                 }
             }
 
-    async def _publish_event(self, task_id: str, status: str, version: int, request_id: str):
+    async def _publish_event(self, task_id: str, status: str, version: int, request_id: str) -> None:
         redis = await self._get_redis()
         if not redis: return
         
@@ -125,10 +126,10 @@ class A2ADispatcher:
         
         try:
             # PubSub
-            await self.redis.publish(f"a2a:tasks:{task_id}", json.dumps(event))
+            await redis.publish(f"a2a:tasks:{task_id}", json.dumps(event))
             
             # Cache Last Event (1h TTL)
-            await self.redis.setex(f"a2a:last_event:{task_id}", 3600, json.dumps(event))
+            await redis.setex(f"a2a:last_event:{task_id}", 3600, json.dumps(event))
         except Exception:
             # Non-blocking failure
             pass
@@ -172,7 +173,9 @@ class A2ADispatcher:
         }
         
         
-        await run_in_threadpool(self.task_store.create_task, task_data)
+        # Cast to Any to satisfy mypy argument check for run_in_threadpool
+        # ideally task_data should be a valid TypedDict or Pydantic model
+        await run_in_threadpool(self.task_store.create_task, cast(Any, task_data))
         current_version = 1
         
         # New: Check for explicit tool_call in params (Phase A2)
@@ -352,7 +355,7 @@ class A2ADispatcher:
 
         raise JsonRpcException(-32000, "Cancellation not supported", data={"talos_code": "NOT_CANCELABLE"})
 
-    def _audit(self, action: str, outcome: str, resource_id: str = None, details: Dict = None, error_code: str = None):
+    def _audit(self, action: str, outcome: str, resource_id: Optional[str] = None, details: Optional[Dict[str, Any]] = None, error_code: Optional[str] = None) -> None:
         event = {
             "event_id": uuid7(),
             "timestamp": datetime.now(timezone.utc),
@@ -372,7 +375,7 @@ class A2ADispatcher:
             event["details"]["error_code"] = error_code
         self.audit_store.append_event(event)
 
-    def _record_usage(self, target: str, status: str, latency: int, result: Dict = None):
+    def _record_usage(self, target: str, status: str, latency: int, result: Optional[Dict[str, Any]] = None) -> None:
         usage = {
             "id": uuid7(),
             "key_id": self.auth.key_id,
