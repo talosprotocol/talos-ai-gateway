@@ -43,7 +43,7 @@ class PostgresTgaStateStore(TgaStateStore):
             # 2. Lock row
             self.session.execute(
                 select(TgaTrace.trace_id)
-                .where(TgaTrace.trace_id == (trace_id)) # type: ignore
+                .where(TgaTrace.trace_id == trace_id)
                 .with_for_update()
             )
         except Exception as e:
@@ -59,7 +59,7 @@ class PostgresTgaStateStore(TgaStateStore):
 
     async def load_state(self, trace_id: str) -> Optional[ExecutionState]:
         """Load current execution state for a trace."""
-        trace = self.session.query(TgaTrace).filter(TgaTrace.trace_id == (trace_id)).first() # type: ignore
+        trace = self.session.query(TgaTrace).filter(TgaTrace.trace_id == trace_id).first()
         if not trace or not trace.current_state:
             return None
         

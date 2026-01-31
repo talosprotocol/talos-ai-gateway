@@ -3,7 +3,7 @@ import json
 import os
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, cast
 
 from app.domain.interfaces import UpstreamStore, ModelGroupStore, McpStore, AuditStore, RoutingPolicyStore, PrincipalStore, UsageStore
 from app.domain.secrets.ports import SecretStore
@@ -57,7 +57,7 @@ class UpstreamJsonStore(UpstreamStore):
             
         target.update(updates)
         config_loader.save_config(config)
-        return target
+        return cast(Dict[str, Any], target)
 
     def delete_upstream(self, upstream_id: str) -> None:
         config = config_loader.get_config()
@@ -113,7 +113,7 @@ class ModelGroupJsonStore(ModelGroupStore):
         
         target.update(updates)
         config_loader.save_config(config)
-        return target
+        return cast(Dict[str, Any], target)
 
     def delete_model_group(self, group_id: str) -> None:
         config = config_loader.get_config()
@@ -196,11 +196,11 @@ class SecretJsonStore(SecretStore):
             return {}
         try:
             with open(self.file_path, 'r') as f:
-                return json.load(f)
+                return cast(Dict[str, str], json.load(f))
         except Exception:
             return {}
 
-    def _save(self):
+    def _save(self) -> None:
         with open(self.file_path, 'w') as f:
             json.dump(self._cache, f, indent=2)
 
@@ -249,21 +249,21 @@ class McpJsonStore(McpStore):
             return {"servers": [], "policies": []}
         try:
             with open(self.file_path, 'r') as f:
-                return json.load(f)
+                return cast(Dict[str, Any], json.load(f))
         except Exception:
             return {"servers": [], "policies": []}
             
-    def _save(self):
+    def _save(self) -> None:
         with open(self.file_path, 'w') as f:
             json.dump(self._cache, f, indent=2)
 
     def list_servers(self) -> List[Dict[str, Any]]:
-        return self._cache.get("servers", [])
+        return cast(List[Dict[str, Any]], self._cache.get("servers", []))
 
     def get_server(self, server_id: str) -> Optional[Dict[str, Any]]:
         for s in self._cache.get("servers", []):
             if s.get('id') == server_id:
-                return s
+                return cast(Dict[str, Any], s)
         return None
 
     def create_server(self, server: Dict[str, Any]) -> None:
@@ -276,7 +276,7 @@ class McpJsonStore(McpStore):
             if s.get('id') == server_id:
                 s.update(updates)
                 self._save()
-                return s
+                return cast(Dict[str, Any], s)
         raise KeyError("Server not found")
 
     def delete_server(self, server_id: str) -> None:
@@ -370,7 +370,7 @@ class JsonPrincipalStore(PrincipalStore):
             }
         try:
             with open(self.file_path, 'r') as f:
-                return json.load(f)
+                return cast(Dict[str, Any], json.load(f))
         except Exception:
             return {}
 

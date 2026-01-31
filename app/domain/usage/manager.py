@@ -1,7 +1,7 @@
 """Usage Manager for Phase 15."""
 from decimal import Decimal
 from typing import Optional, Dict, Any
-from sqlalchemy.orm import Session  # type: ignore
+from sqlalchemy.orm import Session
 import logging
 
 from app.adapters.postgres.models import UsageEvent, UsageRollupDaily
@@ -102,13 +102,13 @@ class UsageManager:
             self.db.rollback()
             return Decimal("0.00")
 
-    def _update_rollups(self, event: UsageEvent):
+    def _update_rollups(self, event: UsageEvent) -> None:
         """Update daily rollups via atomic increment."""
         day = event.timestamp.date()
         
         # This is a 'soft' update, we don't lock the rollup row for long 
         # as it's just for stats, but BudgetScope handles the strict enforcement.
-        from sqlalchemy.dialects.postgresql import insert  # type: ignore
+        from sqlalchemy.dialects.postgresql import insert
         stmt = insert(UsageRollupDaily).values(
             id=str(uuid7()),
             day=day,

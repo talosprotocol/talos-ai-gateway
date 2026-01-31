@@ -8,9 +8,9 @@ from app.domain.interfaces import PrincipalStore
 from app.domain.registry import SurfaceRegistry, SurfaceItem
 from app.errors import raise_talos_error
 from app.domain.audit import AuditLogger
-from talos_sdk.validation import validate_principal, IdentityValidationError  # type: ignore
+from talos_sdk.validation import validate_principal, IdentityValidationError
 from app.policy import PolicyEngine
-import uuid6  # type: ignore
+from app.utils.id import uuid7
 import logging
 import os
 from datetime import datetime, timezone
@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 
 class AuthContext:
     """Authentication context for requests."""
-    def __init__(self, key_id: str, team_id: str, org_id: str, scopes: list, 
-                 allowed_model_groups: list, allowed_mcp_servers: list,
+    def __init__(self, key_id: str, team_id: str, org_id: str, scopes: list[str], 
+                 allowed_model_groups: list[str], allowed_mcp_servers: list[str],
                  principal_id: Optional[str] = None,
                  # Phase 15: Budget Context
                  budget_mode: str = "off",
@@ -121,7 +121,8 @@ async def get_auth_context(
             request.state.principal = {
                 "schema_id": "talos.principal",
                 "schema_version": "v2",
-                "id": str(uuid6.uuid7()),
+                "schema_version": "v2",
+                "id": uuid7(),
                 "principal_id": f"service:{internal_service}",
                 "team_id": "talos-system",
                 "type": "service_account",
@@ -286,7 +287,8 @@ async def get_auth_context(
         validation_principal = {
             "schema_id": "talos.principal",
             "schema_version": "v2",
-            "id": str(uuid6.uuid7()),
+            "schema_version": "v2",
+            "id": uuid7(),
             "principal_id": principal_id,
             "team_id": team_id,
             "type": "service_account", 
@@ -414,9 +416,9 @@ async def get_auth_context_or_none(
         return None
 
 
-def require_scope(scope: str):
+def require_scope(scope: str) -> Any:
     """Dependency that requires a specific scope."""
-    async def checker(auth: AuthContext = Depends(get_auth_context)):
+    async def checker(auth: AuthContext = Depends(get_auth_context)) -> AuthContext:
         if not auth.has_scope(scope):
             raise HTTPException(status_code=403, detail={"error": {"code": "POLICY_DENIED", "message": f"Missing scope: {scope}"}})
         return auth

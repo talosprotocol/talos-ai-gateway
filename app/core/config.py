@@ -1,7 +1,7 @@
 import os
-from pydantic_settings import BaseSettings  # type: ignore
+from pydantic_settings import BaseSettings
 from pydantic import PostgresDsn
-from typing import Optional
+from typing import Optional, cast
 
 class Settings(BaseSettings):
     # Core
@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     DEV_MODE: bool = False
     
     # Database (Split for Multi-Region)
-    DATABASE_WRITE_URL: PostgresDsn = "postgresql://talos:talos@localhost:5432/talos"  # type: ignore
+    DATABASE_WRITE_URL: PostgresDsn = cast(PostgresDsn, "postgresql://talos:talos@localhost:5432/talos")
     DATABASE_READ_URL: Optional[PostgresDsn] = None
     
     # Logic Gates

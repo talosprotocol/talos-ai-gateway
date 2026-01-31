@@ -2,20 +2,27 @@
 import logging
 import os
 import requests
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, cast, TYPE_CHECKING
 from app.core.config import settings
 
-try:
+if TYPE_CHECKING:
     from mcp import StdioServerParameters
     from mcp.client.stdio import stdio_client
     from mcp.client.sse import sse_client
     from mcp.client.session import ClientSession
     from mcp.types import CallToolResult
-except ImportError:
-    StdioServerParameters = None
-    stdio_client = None
-    sse_client = None
-    ClientSession = None
+else:
+    try:
+        from mcp import StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        from mcp.client.sse import sse_client
+        from mcp.client.session import ClientSession
+        from mcp.types import CallToolResult
+    except ImportError:
+        StdioServerParameters = None
+        stdio_client = None
+        sse_client = None
+        ClientSession = None
 
 logger = logging.getLogger(__name__)
 
@@ -88,12 +95,12 @@ class McpClient:
             )
             
             if response.status_code == 409:
-                 from app.errors import TalosError
-                 raise TalosError("IDEMPOTENCY_CONFLICT", 409, response.json().get("detail", "Conflict"))
+                 from app.errors import raise_talos_error
+                 raise_talos_error("IDEMPOTENCY_CONFLICT", 409, response.json().get("detail", "Conflict"))
             
             response.raise_for_status()
             data = response.json()
-            return data.get("result", {})
+            return cast(Dict[str, Any], data.get("result", {}))
             
         except requests.exceptions.HTTPError as e:
             logger.error(f"Connector call failed ({e.response.status_code}): {e.response.text}")
@@ -103,7 +110,7 @@ class McpClient:
             raise
 
     async def _call_stdio(self, server: Dict[str, Any], tool: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        if not ClientSession: raise ImportError("MCP SDK not installed")
+        if ClientSession is None or stdio_client is None or StdioServerParameters is None: raise ImportError("MCP SDK not installed")
         command = server.get("command")
         if not command: raise ValueError("Command required")
         
@@ -120,7 +127,7 @@ class McpClient:
                 return self._format_result(result)
 
     async def _call_sse(self, server: Dict[str, Any], tool: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        if not ClientSession: raise ImportError("MCP SDK not installed")
+        if ClientSession is None or sse_client is None: raise ImportError("MCP SDK not installed")
         endpoint = server.get("endpoint")
         if not endpoint: raise ValueError("Endpoint required")
              

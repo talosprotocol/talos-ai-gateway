@@ -6,7 +6,7 @@ def raise_talos_error(
     status_code: int, 
     message: str, 
     details: Optional[Dict[str, Any]] = None
-):
+) -> None:
     """Raise a standardized Talos HTTPException.
     
     Args:
@@ -15,7 +15,7 @@ def raise_talos_error(
         message: Human readable message
         details: Optional extra details
     """
-    error_body = {
+    error_body: Dict[str, Any] = {
         "code": code,
         "message": message
     }

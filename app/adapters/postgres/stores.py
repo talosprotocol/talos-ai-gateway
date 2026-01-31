@@ -53,7 +53,9 @@ class PostgresUpstreamStore(UpstreamStore):
                 setattr(obj, k, v)
         
         if hasattr(obj, 'version'):
-            obj.version = obj.version + 1 # type: ignore[assignment]
+             current_version = getattr(obj, 'version')
+             if isinstance(current_version, int):
+                 setattr(obj, 'version', current_version + 1)
         self.db.commit()
         return to_dict(obj)
 
@@ -139,7 +141,9 @@ class PostgresModelGroupStore(ModelGroupStore):
                 setattr(obj, k, v)
         
         if hasattr(obj, 'version'):
-            obj.version = cast(int, obj.version) + 1 # type: ignore[assignment]
+             current_version = getattr(obj, 'version')
+             if isinstance(current_version, int):
+                 setattr(obj, 'version', current_version + 1)
         self.db.commit()
         res = self.get_model_group(group_id)
         assert res is not None
@@ -230,7 +234,9 @@ class PostgresMcpStore(McpStore):
                 setattr(obj, k, v)
         
         if hasattr(obj, 'version'):
-            obj.version = cast(int, obj.version) + 1 # type: ignore[assignment]
+             current_version = getattr(obj, 'version')
+             if isinstance(current_version, int):
+                 setattr(obj, 'version', current_version + 1)
         self.db.commit()
         return to_dict(obj)
 
@@ -251,7 +257,9 @@ class PostgresMcpStore(McpStore):
                 if hasattr(obj, k):
                     setattr(obj, k, v)
             if hasattr(obj, 'version'):
-                obj.version = cast(int, obj.version) + 1 # type: ignore[assignment]
+                 current_version = getattr(obj, 'version')
+                 if isinstance(current_version, int):
+                     setattr(obj, 'version', current_version + 1)
         else:
             obj = McpPolicy(**policy)
             self.db.add(obj)
@@ -349,15 +357,16 @@ class PostgresAuditStore(AuditStore):
         since = datetime.now(timezone.utc) - timedelta(hours=window_hours)
         
         # 1. Total requests in window
-        total = self.db.query(func.count(AuditEvent.id)).filter(AuditEvent.timestamp >= since).scalar() or 0 # type: ignore
+        total_count = self.db.query(func.count(AuditEvent.event_id)).filter(AuditEvent.timestamp >= since).scalar()
+        total = total_count if total_count is not None else 0
         
         # 2. Denial reason counts
         denial_res = self.db.query(
-            AuditEvent.details['denial_reason'].astext.label('reason'), # type: ignore
-            func.count(AuditEvent.id).label('count') # type: ignore
+            AuditEvent.details['denial_reason'].astext.label('reason'),
+            func.count(AuditEvent.event_id).label('count')
         ).filter(
-            AuditEvent.timestamp >= since, # type: ignore
-            AuditEvent.status == 'deny' # type: ignore
+            AuditEvent.timestamp >= since,
+            AuditEvent.status == 'deny'
         ).group_by('reason').all()
         
         denial_counts = {r.reason: r.count for r in denial_res if r.reason}
@@ -366,12 +375,12 @@ class PostgresAuditStore(AuditStore):
         # We'll use a simpler approach for now: group by hour truncated timestamp
         # NOTE: This is slightly DB-specific (Postgres date_trunc)
         series_res = self.db.query(
-            func.date_trunc('hour', AuditEvent.timestamp).label('hour'), # type: ignore
-            func.count(AuditEvent.id).filter(AuditEvent.status == 'success').label('ok'), # type: ignore
-            func.count(AuditEvent.id).filter(AuditEvent.status == 'deny').label('deny'), # type: ignore
-            func.count(AuditEvent.id).filter(AuditEvent.status == 'error').label('error') # type: ignore
+            func.date_trunc('hour', AuditEvent.timestamp).label('hour'),
+            func.count(AuditEvent.event_id).filter(AuditEvent.status == 'success').label('ok'),
+            func.count(AuditEvent.event_id).filter(AuditEvent.status == 'deny').label('deny'),
+            func.count(AuditEvent.event_id).filter(AuditEvent.status == 'error').label('error')
         ).filter(
-            AuditEvent.timestamp >= since # type: ignore
+            AuditEvent.timestamp >= since
         ).group_by('hour').order_by('hour').all()
         
         series = [

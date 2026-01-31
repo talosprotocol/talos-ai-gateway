@@ -23,8 +23,9 @@ from app.logging_hardening import setup_logging_redaction
 # Initialize logging redaction filters early
 setup_logging_redaction()
 
+from typing import AsyncGenerator
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup
     shutdown_event = asyncio.Event()
     worker_task = asyncio.create_task(retention_worker(shutdown_event))
@@ -128,7 +129,8 @@ async def lifespan(app: FastAPI):
                 logger.info("Verifying Redis connectivity for PROD startup...")
                 r = await get_redis_client()
                 # Cast or ignore for mypy if it's confused about Awaitable[bool] | bool
-                await r.ping()  # type: ignore
+                from typing import cast, Awaitable
+                await cast(Awaitable[bool], r.ping())
                 logger.info("Redis connectivity verified.")
 
             # 2. Tracing Checks
@@ -179,16 +181,16 @@ app = FastAPI(
 
 from app.middleware.audit import TalosAuditMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor # type: ignore
-from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor # type: ignore
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter # type: ignore
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 import os
 
 # OpenTelemetry Setup
-def setup_opentelemetry(app: FastAPI):
+def setup_opentelemetry(app: FastAPI) -> None:
     # Provider
     resource = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=talos-gateway")
     provider = TracerProvider()
@@ -269,7 +271,7 @@ from fastapi.responses import JSONResponse
 from fastapi import Request, HTTPException
 
 @app.exception_handler(HTTPException)
-async def a2a_http_exception_handler(request: Request, exc: HTTPException):
+async def a2a_http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
     # Specialized error handling for A2A routes to ensure top-level 'error' key
     if request.url.path.startswith("/a2a/"):
         if isinstance(exc.detail, dict) and "error" in exc.detail:
@@ -303,7 +305,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 @app.exception_handler(Exception)
-async def debug_exception_handler(request: Request, exc: Exception):
+async def debug_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     import traceback
     traceback.print_exc()
     return JSONResponse(status_code=500, content={"detail": f"DEBUG: {str(exc)}", "traceback": traceback.format_exc()})
