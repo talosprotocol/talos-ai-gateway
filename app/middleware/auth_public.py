@@ -1,36 +1,57 @@
+"""Authentication Middleware."""
 
-from fastapi import Request, Depends, Header, HTTPException
-from typing import Optional, Dict, Any
-from app.dependencies import get_key_store, get_attestation_verifier, get_principal_store, get_surface_registry, get_audit_logger, get_policy_engine
-from app.adapters.postgres.key_store import KeyStore
-from app.middleware.attestation_http import AttestationVerifier, AttestationError
-from app.domain.interfaces import PrincipalStore
-from app.domain.registry import SurfaceRegistry, SurfaceItem
-from app.errors import raise_talos_error
-from app.domain.audit import AuditLogger
-from talos_sdk import validate_principal, IdentityValidationError
-from app.policy import PolicyEngine
-from app.utils.id import uuid7
 import logging
 import os
 from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
+from fastapi import Depends, Header, HTTPException, Request
+
+from app.adapters.postgres.key_store import KeyStore
+from app.dependencies import (
+    get_attestation_verifier,
+    get_audit_logger,
+    get_key_store,
+    get_policy_engine,
+    get_principal_store,
+    get_surface_registry,
+)
+from app.domain.audit import AuditLogger
+from app.domain.interfaces import PrincipalStore
+from app.domain.registry import SurfaceItem, SurfaceRegistry
+from app.errors import raise_talos_error
+from app.middleware.attestation_http import (
+    AttestationError,
+    AttestationVerifier,
+)
+from app.policy import PolicyEngine
+from app.utils.id import uuid7
+from talos_sdk import IdentityValidationError, validate_principal
 
 logger = logging.getLogger(__name__)
 
+
 class AuthContext:
     """Authentication context for requests."""
-    def __init__(self, key_id: str, team_id: str, org_id: str, scopes: list[str], 
-                 allowed_model_groups: list[str], allowed_mcp_servers: list[str],
-                 principal_id: Optional[str] = None,
-                 # Phase 15: Budget Context
-                 budget_mode: str = "off",
-                 team_budget_mode: str = "off",
-                 overdraft_usd: str = "0",
-                 team_overdraft_usd: str = "0",
-                 max_tokens_default: Optional[int] = None,
-                 team_max_tokens_default: Optional[int] = None,
-                 budget_metadata: Optional[Dict[str, Any]] = None,
-                 team_budget_metadata: Optional[Dict[str, Any]] = None):
+    def __init__(
+        self,
+        key_id: str,
+        team_id: str,
+        org_id: str,
+        scopes: list[str],
+        allowed_model_groups: list[str],
+        allowed_mcp_servers: list[str],
+        principal_id: Optional[str] = None,
+        # Phase 15: Budget Context
+        budget_mode: str = "off",
+        team_budget_mode: str = "off",
+        overdraft_usd: str = "0",
+        team_overdraft_usd: str = "0",
+        max_tokens_default: Optional[int] = None,
+        team_max_tokens_default: Optional[int] = None,
+        budget_metadata: Optional[Dict[str, Any]] = None,
+        team_budget_metadata: Optional[Dict[str, Any]] = None,
+    ):
         self.key_id = key_id
         self.team_id = team_id
         self.org_id = org_id
@@ -38,7 +59,7 @@ class AuthContext:
         self.allowed_model_groups = allowed_model_groups
         self.allowed_mcp_servers = allowed_mcp_servers
         self.principal_id = principal_id
-        
+
         # Budget
         self.budget_mode = budget_mode
         self.team_budget_mode = team_budget_mode
@@ -49,6 +70,7 @@ class AuthContext:
         self.budget_metadata = budget_metadata or {}
         self.team_budget_metadata = team_budget_metadata or {}
 
+        self.team_budget_metadata = team_budget_metadata or {}
 
     def has_scope(self, scope: str) -> bool:
         for s in self.scopes:
@@ -59,10 +81,16 @@ class AuthContext:
         return False
 
     def can_access_model_group(self, group_id: str) -> bool:
-        return "*" in self.allowed_model_groups or group_id in self.allowed_model_groups
+        return (
+            "*" in self.allowed_model_groups
+            or group_id in self.allowed_model_groups
+        )
 
     def can_access_mcp_server(self, server_id: str) -> bool:
-        return "*" in self.allowed_mcp_servers or server_id in self.allowed_mcp_servers
+        return (
+            "*" in self.allowed_mcp_servers
+            or server_id in self.allowed_mcp_servers
+        )
 
 
 async def get_auth_context(
@@ -86,11 +114,13 @@ async def get_auth_context(
     
     try:
         # 0. Resolve Surface
-        # Use fallback if route not available (e.g. testing or middleware ordering)
+        # Use fallback if route not available (e.g. testing or middleware
+        # ordering)
         if hasattr(request, "route") and request.route:
             route_path = request.route.path
         else:
-            # Fallback to current path (works for static paths, but templates might fail)
+            # Fallback to current path (works for static paths, but templates
+            # might fail)
             route_path = request.url.path
 
         surface = registry.match_request(request.method, route_path)
@@ -101,15 +131,16 @@ async def get_auth_context(
         
         # Internal Service Bypass REMOVED for Production Hardening
         # All requests must be authenticated via valid headers or mTLS
-
-
-        
         if authorization is None:
-            raise_talos_error("AUTH_INVALID", 401, "Missing Authorization header")
+            raise_talos_error(
+                "AUTH_INVALID", 401, "Missing Authorization header"
+            )
         assert authorization is not None
         
         if not authorization.startswith("Bearer "):
-            raise_talos_error("AUTH_INVALID", 401, "Invalid Authorization format")
+            raise_talos_error(
+                "AUTH_INVALID", 401, "Invalid Authorization format"
+            )
         
         # 1. Validate Bearer Token
         key = authorization[7:]
@@ -134,7 +165,8 @@ async def get_auth_context(
             "org_id": key_data.org_id
         }
 
-        # surface is from Depends(get_surface) which can return None if not found
+        # surface is from Depends(get_surface) which can return None if not
+        # found
         if surface is None:
             raise_talos_error("NOT_FOUND", 404, "Surface not found")
         assert surface is not None
@@ -147,7 +179,9 @@ async def get_auth_context(
                 "team_id": team_id 
             }
             
-            result = policy_engine.authorize(principal_ctx, required_perm, resource_ctx)
+            result = policy_engine.authorize(
+                principal_ctx, required_perm, resource_ctx
+            )
             
             if result.allowed:
                 continue
@@ -158,21 +192,34 @@ async def get_auth_context(
                 if internal_scope == "*:*" or internal_scope == required_perm:
                     is_legacy_allowed = True
                     break
-                if internal_scope.endswith(".*") and required_perm.startswith(internal_scope[:-2]):
+                if (
+                    internal_scope.endswith(".*")
+                    and required_perm.startswith(internal_scope[:-2])
+                ):
                     is_legacy_allowed = True
                     break
             
             if not is_legacy_allowed:
-                raise_talos_error("RBAC_DENIED", 403, f"Policy denied: {result.reason} (Perm: {required_perm})")
+                raise_talos_error(
+                    "RBAC_DENIED",
+                    403,
+                    f"Policy denied: {result.reason} "
+                    f"(Perm: {required_perm})"
+                )
 
-        principal_id = key_id # Default to key_id if no attestation binding yet? 
-        # Actually principal_id usually refers to the human/system Identity, not the Key.
+        principal_id = key_id  # Default if no attestation binding
+        # Actually principal_id usually refers to the human/system Identity,
+        # not the Key.
         # If not signed, principal is the "Virtual Key holder".
         
         # 3. HTTP Attestation Enforce
         if surface.attestation_required:
             if not x_talos_signature:
-                 raise_talos_error("AUTH_INVALID", 401, "Attestation required for this surface")
+                raise_talos_error(
+                    "AUTH_INVALID",
+                    401,
+                    "Attestation required for this surface"
+                )
             
             try:
                 raw_body = await request.body()
@@ -197,13 +244,15 @@ async def get_auth_context(
                 # Identity Binding
                 principal_obj = principal_store.get_principal(signer_key_id)
                 if principal_obj is None:
-                     raise_talos_error("AUTH_INVALID", 401, "Signer lost")
+                    raise_talos_error("AUTH_INVALID", 401, "Signer lost")
                 assert principal_obj is not None
 
                 if principal_obj.get('team_id') != key_data.team_id:
                     # Log potential security event
                     client_ip = request.client.host if request.client else None
-                    req_id = getattr(request.state, "request_id", "req-unknown")
+                    req_id = getattr(
+                        request.state, "request_id", "req-unknown"
+                    )
                     
                     audit_logger.log_event(
                         surface=surface,
@@ -221,10 +270,18 @@ async def get_auth_context(
                         },
                         outcome="denied",
                         request_id=req_id,
-                        metadata={"error": "Identity Binding Mismatch", "bearer_team": team_id, "signer_team": principal_obj.get('team_id')}
+                        metadata={
+                            "error": "Identity Binding Mismatch",
+                            "bearer_team": team_id,
+                            "signer_team": principal_obj.get('team_id')
+                        }
                     )
                     request.state.authz_decision = "DENY"
-                    raise_talos_error("RBAC_DENIED", 403, "Identity binding mismatch: Bearer Team != Signer Team")
+                    raise_talos_error(
+                        "RBAC_DENIED",
+                        403,
+                        "Identity binding mismatch: Bearer Team != Signer Team"
+                    )
                 
                 principal_id = principal_obj.get('id', 'unknown')
 
@@ -232,7 +289,8 @@ async def get_auth_context(
                 request.state.authz_decision = "DENY"
                 raise_talos_error(e.code, 401, str(e))
         
-        # If success, we don't log success HERE. The Router or Post-Middleware should log success.
+        # If success, we don't log success HERE. The Router or Post-Middleware
+        # should log success.
         # But we return the context.
         ctx = AuthContext(
             key_id=key_data.id,
@@ -254,12 +312,15 @@ async def get_auth_context(
         )
         
         # 4. Construct & Validate Principal for SDK Hardening
-        validation_auth_mode = "signed" if (principal_id != "unknown" and principal_id != key_id) else "bearer"
+        validation_auth_mode = (
+            "signed"
+            if (principal_id != "unknown" and principal_id != key_id)
+            else "bearer"
+        )
         
         # Determine the principal dictionary for validation
         validation_principal = {
             "schema_id": "talos.principal",
-            "schema_version": "v2",
             "schema_version": "v2",
             "id": uuid7(),
             "principal_id": principal_id,
@@ -267,12 +328,17 @@ async def get_auth_context(
             "type": "service_account", 
             "status": "active",
             "auth_mode": validation_auth_mode,
-            "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            "created_at": (
+                datetime.now(timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%S.%f"
+                )[:-3]
+                + "Z"
+            )
         }
 
         if validation_auth_mode == "signed":
-             # key_id is the signer in this context
-             validation_principal["signer_key_id"] = key_id 
+            # key_id is the signer in this context
+            validation_principal["signer_key_id"] = key_id
 
         # Call SDK validation (Hardening)
         try:
@@ -280,15 +346,20 @@ async def get_auth_context(
             validate_principal(validation_principal)
         except IdentityValidationError as e:
             # Map identity validation errors to 400 Bad Request
-            logger.error(f"Principal identity validation failure: {str(e)}")
-            raise_talos_error("AUTH_INVALID", 400, f"Identity validation failed: {str(e)}")
-        except Exception as e:
-            logger.warning(f"Unexpected validation error: {str(e)}")
-            # For robustness in tests, we might proceed if it's just a schema mismatch on non-critical fields
+            logger.error("Principal identity validation failure: %s", str(e))
+            raise_talos_error(
+                "AUTH_INVALID", 400, "Identity validation failed: %s" % str(e)
+            )
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning("Unexpected validation error: %s", str(e))
+            # For robustness in tests, we might proceed if it's just a schema
+            # mismatch on non-critical fields
             if os.getenv("DEV_MODE", "false").lower() == "true":
                 pass
             else:
-                raise_talos_error("AUTH_INVALID", 400, f"Validation failure: {str(e)}")
+                raise_talos_error(
+                    "AUTH_INVALID", 400, f"Validation failure: {str(e)}"
+                )
         
         request.state.principal = validation_principal
         request.state.auth_context = ctx
@@ -296,10 +367,8 @@ async def get_auth_context(
         request.state.surface = surface
         
         return ctx
-        
-        return ctx
 
-    except Exception as e:
+    except Exception as e:  # noqa: B902
         # Catch standardized Talos errors or others
         # Log failure
         # 1. Resolve effective surface for logging
@@ -337,7 +406,8 @@ async def get_auth_context(
         signer_key_id = None
         if principal_id != "unknown" and principal_id != key_id:
             auth_mode = "signed"
-            signer_key_id = principal_id # In this fallback logic, principal_id was signer_key_id if verified
+            # Fallback: principal_id was signer_key_id if verified
+            signer_key_id = principal_id
 
         principal_data = {
             "principal_id": principal_id,
@@ -367,9 +437,11 @@ async def get_auth_context(
                 "message": err_msg
             }
         )
-        # Checkpoint: Mark as emitted so subsequent middleware doesn't double-log
+        # Checkpoint: Mark as emitted so subsequent middleware doesn't
+        # double-log
         request.state.audit_emitted = True
         raise e
+
 
 async def get_auth_context_or_none(
     request: Request,
@@ -384,15 +456,34 @@ async def get_auth_context_or_none(
     if not authorization:
         return None
     try:
-        return await get_auth_context(request, authorization, None, key_store, verifier, principal_store, registry, audit_logger)
+        return await get_auth_context(
+            request,
+            authorization,
+            None,
+            key_store,
+            verifier,
+            principal_store,
+            registry,
+            audit_logger,
+        )
     except HTTPException:
         return None
 
 
 def require_scope(scope: str) -> Any:
     """Dependency that requires a specific scope."""
-    async def checker(auth: AuthContext = Depends(get_auth_context)) -> AuthContext:
+    async def checker(
+        auth: AuthContext = Depends(get_auth_context),
+    ) -> AuthContext:
         if not auth.has_scope(scope):
-            raise HTTPException(status_code=403, detail={"error": {"code": "POLICY_DENIED", "message": f"Missing scope: {scope}"}})
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": {
+                        "code": "POLICY_DENIED",
+                        "message": f"Missing scope: {scope}"
+                    }
+                }
+            )
         return auth
     return checker

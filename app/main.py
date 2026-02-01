@@ -1,48 +1,67 @@
 """Talos AI Gateway - Main Application."""
-from fastapi import FastAPI
-from contextlib import asynccontextmanager
+import asyncio
 import logging
+import os
+import sys
+import traceback
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
 
-logger = logging.getLogger(__name__)
-
+from alembic import command
+from alembic.config import Config
+from app.adapters.redis.client import close_redis_client
+from app.api.a2a import agent_card, routes as a2a_routes
+from app.api.admin import router as admin_router
+from app.api.dashboard import router as dashboard_router
+from app.api.health import router as health_router
 from app.api.public_ai import router as ai_router
 from app.api.public_mcp import router as mcp_router
-from app.api.admin import router as admin_router
-from app.dashboard import router as dashboard_router
-# from app.api.talos_protocol import router as protocol_router
-from app.api.a2a import routes as a2a_routes
-from app.api.a2a import agent_card
-
-import asyncio
+from app.dependencies import (
+    get_policy_engine_async,
+    get_surface_registry,
+)
+from app.domain.mcp.classifier import init_tool_classifier
+from app.jobs.budget_cleanup import budget_cleanup_worker
 from app.jobs.retention import retention_worker
 from app.jobs.revocation import revocation_worker
 from app.jobs.rotation_worker import rotation_worker
-from app.jobs.budget_cleanup import budget_cleanup_worker
 from app.logging_hardening import setup_logging_redaction
+from app.middleware.audit import TalosAuditMiddleware
+from app.middleware.observability import RegionHeaderMiddleware
+from app.middleware.rate_limit import RateLimitMiddleware
+from app.middleware.rbac import RBACMiddleware
+from app.middleware.shutdown_gate import ShutdownGateMiddleware
+from app.observability.tracing import TalosSpanProcessor
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
 # Initialize logging redaction filters early
 setup_logging_redaction()
 
-from typing import AsyncGenerator
+logger = logging.getLogger(__name__)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup
     shutdown_event = asyncio.Event()
-    worker_task = asyncio.create_task(retention_worker(shutdown_event))
-    revoc_task = asyncio.create_task(revocation_worker(shutdown_event))
-    rotation_task = asyncio.create_task(rotation_worker(shutdown_event))
-    budget_cleanup_task = asyncio.create_task(budget_cleanup_worker(shutdown_event))
+    asyncio.create_task(retention_worker(shutdown_event))
+    asyncio.create_task(revocation_worker(shutdown_event))
+    asyncio.create_task(rotation_worker(shutdown_event))
+    asyncio.create_task(budget_cleanup_worker(shutdown_event))
 
     # Phase 12: Migrations
-    import os
     run_mig = os.getenv("RUN_MIGRATIONS", "false").lower()
     print(f"DEBUG: RUN_MIGRATIONS={run_mig}")
     if run_mig == "true":
         print("DEBUG: Starting Migrations...")
         logger.info("Running DB Migrations...")
         try:
-            from alembic.config import Config
-            from alembic import command
             alembic_cfg = Config("alembic.ini")
             # Override URL with Write URL
             url = os.getenv("DATABASE_WRITE_URL")
@@ -57,12 +76,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.error(f"Migration Failed: {e}")
             # If migration fails, we should probably crash
-            import sys
-            sys.exit(1)
             sys.exit(1)
     
     # Phase 7: RBAC Initialization
-    from app.dependencies import get_policy_engine_async, get_surface_registry
     try:
         logger.info("Initializing RBAC Policy Engine...")
         policy_engine = await get_policy_engine_async()
@@ -89,7 +105,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         sys.exit(1)
 
     # Phase 9.2: Tool Classifier Initialization
-    from app.domain.mcp.classifier import init_tool_classifier
     try:
         registry_path = os.getenv("TOOL_REGISTRY_PATH", "../contracts/artifacts")
         # Ensure absolute path
@@ -140,11 +155,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     raise RuntimeError("In PROD, OTEL_EXPORTER_OTLP_ENDPOINT must be present when tracing is enabled")
                     
     except RuntimeError as e:
-        import sys
         print(f"CRITICAL STARTUP ERROR: {e}")
         sys.exit(1)
     except Exception as e:
-        import sys
         print(f"CRITICAL STARTUP ERROR (Unexpected): {e}")
         sys.exit(1)
         
@@ -152,24 +165,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Shutdown
     shutdown_event.set()
     logger.info("Initiating graceful shutdown...")
-    from app.middleware.shutdown_gate import ShutdownGateMiddleware
     ShutdownGateMiddleware.set_shutting_down(True)
     
     # Close Redis connections if any (via dependency cache or explicit close)
-    from app.adapters.redis.client import close_redis_client
     await close_redis_client()
     
-    # Cancel background tasks
-    try:
-        await asyncio.gather(
-            asyncio.wait_for(worker_task, timeout=5.0),
-            asyncio.wait_for(revoc_task, timeout=5.0),
-            asyncio.wait_for(rotation_task, timeout=5.0),
-            return_exceptions=True
-        )
-    except asyncio.TimeoutError:
-        logger.warning("Background tasks shutdown timed out.")
-        
+    # Cancel background tasks (Optional: worker handles shutdown_event)
     logger.info("Shutdown complete.")
 
 app = FastAPI(
@@ -179,20 +180,12 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-from app.middleware.audit import TalosAuditMiddleware
-from app.middleware.rate_limit import RateLimitMiddleware
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-import os
+# OpenTelemetry Setup
 
 # OpenTelemetry Setup
 def setup_opentelemetry(app: FastAPI) -> None:
     # Provider
-    resource = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=talos-gateway")
+    os.getenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=talos-gateway")
     provider = TracerProvider()
     
     # Exporter
@@ -209,7 +202,6 @@ def setup_opentelemetry(app: FastAPI) -> None:
              processor = None
 
     if processor:
-        from app.observability.tracing import TalosSpanProcessor
         # Wrap with Redaction Processor
         redacted_processor = TalosSpanProcessor(processor)
         provider.add_span_processor(redacted_processor)
@@ -235,20 +227,7 @@ def setup_opentelemetry(app: FastAPI) -> None:
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(TalosAuditMiddleware)
 
-from app.middleware.shutdown_gate import ShutdownGateMiddleware
-app.add_middleware(ShutdownGateMiddleware)
-
 # Phase 7: RBAC Middleware (Must run after Auth/Audit but before Routers)
-# It needs policy engine. We can't pass the async engine instance here easily because it's not ready.
-# We will use a lazy proxy or dependency lookups inside middleware.
-# Let's import the specific class
-from app.middleware.rbac import RBACMiddleware
-# We need to pass the engine. But it's initialized in lifespan.
-# We can use a factory or look it up from app.state in the middleware if we pass 'app'.
-# My RBACMiddleware implementation takes 'policy_engine'.
-# Let's wrap it to look up from app.state or dependencies.
-# Or, simpler: Just rely on the global singleton in dependencies (which we initialized in lifespan).
-from app.dependencies import get_policy_engine
 # Warning: get_policy_engine() throws if not initialized.
 # But Middleware is instantiated at import time/startup? No, added to stack.
 # Request handling happens later.
@@ -262,13 +241,10 @@ from app.dependencies import get_policy_engine
 
 app.add_middleware(RBACMiddleware, policy_engine=None) # We will patch this or modify middleware to use app.state
 
-from app.middleware.observability import RegionHeaderMiddleware
 app.add_middleware(RegionHeaderMiddleware)
 
 setup_opentelemetry(app)
 
-from fastapi.responses import JSONResponse
-from fastapi import Request, HTTPException
 
 @app.exception_handler(HTTPException)
 async def a2a_http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
@@ -298,15 +274,10 @@ app.include_router(admin_router.router, prefix="/admin/v1", tags=["Admin"])
 app.include_router(a2a_routes.router, prefix="/a2a/v1", tags=["A2A"])
 app.include_router(agent_card.router, prefix="", tags=["Discovery"])
 
-from app.routers import health
-app.include_router(health.router, tags=["Health"])
-
-from fastapi import Request
-from fastapi.responses import JSONResponse
+app.include_router(health_router.router, tags=["Health"])
 
 @app.exception_handler(Exception)
 async def debug_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    import traceback
     traceback.print_exc()
     return JSONResponse(status_code=500, content={"detail": f"DEBUG: {str(exc)}", "traceback": traceback.format_exc()})
 
