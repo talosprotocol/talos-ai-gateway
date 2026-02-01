@@ -8,12 +8,15 @@ This module provides the production-grade key store that:
 """
 import hashlib
 import hmac
+import json
 import os
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Optional, NamedTuple, Dict, Any, Union
+from typing import Any, Dict, NamedTuple, Optional, Union
 
 from sqlalchemy.orm import Session
+
+from .models import VirtualKey
 
 
 class KeyData(NamedTuple):
@@ -28,14 +31,13 @@ class KeyData(NamedTuple):
     expires_at: Optional[datetime]
     # Phase 15: Budget & Policy
     budget_mode: str
-    overdraft_usd: str # Decimal as string for JSON safety
+    overdraft_usd: str  # Decimal as string for JSON safety
     max_tokens_default: Optional[int]
-    budget: Dict[str, Any] # Budget Metadata
+    budget: Dict[str, Any]  # Budget Metadata
     team_budget_mode: str
     team_overdraft_usd: str
     team_max_tokens_default: Optional[int]
     team_budget: Dict[str, Any]
-
 
 
 class KeyStore(ABC):
@@ -43,13 +45,11 @@ class KeyStore(ABC):
 
     @abstractmethod
     def lookup_by_hash(self, key_hash: str) -> Optional[KeyData]:
-        """Look up key data by hash."""
-        ...
+        """Lookup a key by its hash."""
 
     @abstractmethod
     def hash_key(self, raw_key: str) -> str:
-        """Hash a raw key for lookup."""
-        ...
+        """Hash a key for storage/lookup."""
 
 
 class PostgresKeyStore(KeyStore):
@@ -77,7 +77,11 @@ class PostgresKeyStore(KeyStore):
             cache_ttl_seconds: Cache TTL (default: 30s, max 120s)
         """
         self._db = db
-        self._pepper = (pepper or os.getenv("TALOS_KEY_PEPPER") or "dev-pepper-change-in-prod").encode()
+        self._pepper = (
+            pepper
+            or os.getenv("TALOS_KEY_PEPPER")
+            or "dev-pepper-change-in-prod"
+        ).encode()
         self._pepper_id = pepper_id
         self._redis = redis_client
         # Hard max TTL of 120s
@@ -91,8 +95,13 @@ class PostgresKeyStore(KeyStore):
         # Ensure we don't hash with a default pepper in production
         if not self._pepper or self._pepper == b"dev-pepper-change-in-prod":
             # This check is a safety net; the factory should have caught it.
-            if os.getenv("DEV_MODE", "false").lower() not in ("true", "1", "yes"):
-                raise RuntimeError("Production KeyStore MUST have a unique, secure pepper configured.")
+            if os.getenv("DEV_MODE", "false").lower() not in (
+                "true", "1", "yes"
+            ):
+                raise RuntimeError(
+                    "Production KeyStore MUST have a unique, secure pepper "
+                    "configured."
+                )
 
         h = hmac.new(self._pepper, raw_key.encode(), hashlib.sha256)
         return f"{self._pepper_id}:{h.hexdigest()}"
@@ -109,41 +118,50 @@ class PostgresKeyStore(KeyStore):
                 return None
             if isinstance(cached, KeyData):
                 return cached
-
-        # Database lookup
-        from ..postgres.models import VirtualKey
         
         # Query with full hash format including pepper_id prefix
-        vk = self._db.query(VirtualKey).filter(VirtualKey.key_hash == key_hash).first()
+        vk = (
+            self._db.query(VirtualKey)
+            .filter(VirtualKey.key_hash == key_hash)
+            .first()
+        )
         
         if not vk:
             if self._redis:
                 self._cache_negative(key_hash)
             return None
 
-        # mypy thinks these are Columns because of legacy Declarative style in models.py
+        # mypy thinks these are Columns because of legacy Declarative style.
         # Runtime is fine. We cast to silence mypy or ignore.
         # Prefer ignore for brevity over massive casting block.
         key_data = KeyData(
             # Explicit casts for SQLAlchemy Column types
-            # Note: We use type: ignore because SQLAlchemy Column[T] vs instance type inference 
-            # is tricky for mypy in this context without specific plugin support for the property access pattern
-            id=str(vk.id), # Explicit string conversion safer
+            # Note: We use type: ignore because SQLAlchemy Column[T] vs
+            # instance type inference is tricky for mypy in this context
+            # without specific plugin support for the property access pattern
+            id=str(vk.id),  # Explicit string conversion safer
             team_id=str(vk.team_id),
-            org_id=str(vk.team.org_id) if vk.team and vk.team.org_id else "unknown", # Handle optionality safety
-            scopes=vk.scopes or [], # type: ignore
-            allowed_model_groups=vk.allowed_model_groups or [], # type: ignore
-            allowed_mcp_servers=vk.allowed_mcp_servers or [], # type: ignore
+            # Handle optionality safety
+            org_id=(
+                str(vk.team.org_id)
+                if vk.team and vk.team.org_id
+                else "unknown"
+            ),
+            scopes=vk.scopes or [],  # type: ignore
+            allowed_model_groups=vk.allowed_model_groups or [],  # type: ignore
+            allowed_mcp_servers=vk.allowed_mcp_servers or [],  # type: ignore
             revoked=bool(vk.revoked),
-            expires_at=vk.expires_at, # type: ignore
+            expires_at=vk.expires_at,  # type: ignore
             budget_mode=str(vk.budget_mode),
             overdraft_usd=str(vk.overdraft_usd),
-            max_tokens_default=vk.max_tokens_default, # type: ignore
-            budget=vk.budget or {}, # type: ignore
+            max_tokens_default=vk.max_tokens_default,  # type: ignore
+            budget=vk.budget or {},  # type: ignore
             team_budget_mode=vk.team.budget_mode if vk.team else "off",
             team_overdraft_usd=str(vk.team.overdraft_usd) if vk.team else "0",
-            team_max_tokens_default=vk.team.max_tokens_default if vk.team else None, 
-            team_budget=vk.team.budget if vk.team else {}
+            team_max_tokens_default=(
+                vk.team.max_tokens_default if vk.team else None
+            ),
+            team_budget=vk.team.budget if vk.team else {},
         )
 
         if self._redis:
@@ -156,7 +174,6 @@ class PostgresKeyStore(KeyStore):
         if not self._redis:
             return None
         try:
-            import json
             data = self._redis.get(f"key:{key_hash}")
             if data is None:
                 return None
@@ -164,7 +181,7 @@ class PostgresKeyStore(KeyStore):
                 return False
             d = json.loads(data)
             return KeyData(**d)
-        except Exception:
+        except Exception:  # pylint: disable=broad-exception-caught
             return None
 
     def _cache_set(self, key_hash: str, key_data: KeyData) -> None:
@@ -172,7 +189,6 @@ class PostgresKeyStore(KeyStore):
         if not self._redis:
             return
         try:
-            import json
             data = json.dumps({
                 "id": key_data.id,
                 "team_id": key_data.team_id,
@@ -181,7 +197,11 @@ class PostgresKeyStore(KeyStore):
                 "allowed_model_groups": key_data.allowed_model_groups,
                 "allowed_mcp_servers": key_data.allowed_mcp_servers,
                 "revoked": key_data.revoked,
-                "expires_at": key_data.expires_at.isoformat() if key_data.expires_at else None,
+                "expires_at": (
+                    key_data.expires_at.isoformat()
+                    if key_data.expires_at
+                    else None
+                ),
                 "budget_mode": key_data.budget_mode,
                 "overdraft_usd": key_data.overdraft_usd,
                 "max_tokens_default": key_data.max_tokens_default,
@@ -192,7 +212,7 @@ class PostgresKeyStore(KeyStore):
                 "team_budget": key_data.team_budget
             })
             self._redis.setex(f"key:{key_hash}", self._cache_ttl, data)
-        except Exception:
+        except Exception:  # pylint: disable=broad-exception-caught
             pass
 
     def _cache_negative(self, key_hash: str) -> None:
@@ -201,7 +221,7 @@ class PostgresKeyStore(KeyStore):
             return
         try:
             self._redis.setex(f"key:{key_hash}", 30, "__NEGATIVE__")
-        except Exception:
+        except Exception:  # pylint: disable=broad-exception-caught
             pass
 
     def invalidate_cache(self, key_hash: str) -> None:
@@ -209,11 +229,13 @@ class PostgresKeyStore(KeyStore):
         if self._redis:
             try:
                 self._redis.delete(f"key:{key_hash}")
-            except Exception:
+            except Exception:  # pylint: disable=broad-exception-caught
                 pass
 
 
-def get_key_store(db: Optional[Session] = None, redis_client: Any = None) -> KeyStore:
+def get_key_store(
+    db: Optional[Session] = None, redis_client: Any = None
+) -> KeyStore:
     """Factory function to get appropriate key store.
     
     In production, returns PostgresKeyStore (requires db session).
@@ -222,14 +244,18 @@ def get_key_store(db: Optional[Session] = None, redis_client: Any = None) -> Key
     pepper_id = os.getenv("TALOS_PEPPER_ID", "p1")
     
     if not pepper:
-        raise RuntimeError("CRITICAL: TALOS_KEY_PEPPER environment variable is missing in production mode.")
+        raise RuntimeError(
+            "CRITICAL: TALOS_KEY_PEPPER environment variable is missing in "
+            "production mode."
+        )
     if pepper == "dev-pepper-change-in-prod":
-        raise RuntimeError("CRITICAL: Default pepper detected in production mode. Security breach risk.")
+        raise RuntimeError(
+            "CRITICAL: Default pepper detected in production mode. "
+            "Security breach risk."
+        )
     
     if db is None:
         raise RuntimeError("Database session required for production KeyStore")
-
-
     return PostgresKeyStore(
         db=db, 
         pepper=pepper, 

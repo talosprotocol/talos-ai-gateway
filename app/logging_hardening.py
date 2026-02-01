@@ -19,17 +19,17 @@ SECRET_PATTERNS = [
 
 class SecretRedactionFilter(logging.Filter):
     """Filter that redacts secret-like patterns from log records."""
-    
+
     def filter(self, record: logging.LogRecord) -> bool:
         if not isinstance(record.msg, str):
             return True
-            
+
         msg = record.msg
         for pattern, replacement in SECRET_PATTERNS:
             msg = pattern.sub(replacement, msg)
-        
+
         record.msg = msg
-        
+
         # Also redact arguments if they are strings
         if record.args:
             new_args = []
@@ -39,23 +39,23 @@ class SecretRedactionFilter(logging.Filter):
                         arg = pattern.sub(replacement, arg)
                 new_args.append(arg)
             record.args = tuple(new_args)
-            
+
         return True
 
 def setup_logging_redaction() -> None:
     """Apply the SecretRedactionFilter to all existing loggers."""
     redact_filter = SecretRedactionFilter()
-    
+
     # Apply to root logger and all descendants
     root_logger = logging.getLogger()
-    
+
     # Remove existing filters if any (to avoid duplicates)
     for f in root_logger.filters[:]:
         if isinstance(f, SecretRedactionFilter):
             root_logger.removeFilter(f)
-            
+
     root_logger.addFilter(redact_filter)
-    
+
     # Specifically ensure it's on common library loggers if they bypass root
     for name in logging.root.manager.loggerDict:
         logger = logging.getLogger(name)
