@@ -14,8 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install python dependencies
 COPY services/ai-gateway/pyproject.toml .
 # Monorepo: Copy local SDK
-COPY talos-sdk-copy/ talos-sdk-copy/
-RUN pip install ./talos-sdk-copy
+COPY sdks/python /sdks/python
+RUN pip install /sdks/python
 RUN pip install --no-cache-dir .
 
 # ==========================================
