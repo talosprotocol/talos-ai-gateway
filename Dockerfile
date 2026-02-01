@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install python dependencies
 # Install python dependencies
 COPY services/ai-gateway/pyproject.toml .
+RUN sed -i 's|talos-sdk-py @ .*|talos-sdk-py",|' pyproject.toml
 # Monorepo: Copy local SDK
 COPY sdks/python /sdks/python
 RUN pip install /sdks/python
