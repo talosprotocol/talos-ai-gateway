@@ -1,5 +1,8 @@
+"""Talos Error Handling Utils."""
+from typing import Any, Dict, Optional
+
 from fastapi import HTTPException
-from typing import Optional, Dict, Any
+
 
 def raise_talos_error(
     code: str,

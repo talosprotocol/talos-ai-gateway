@@ -25,6 +25,8 @@ class PostgresTaskStore(TaskStore):
         status: str, 
         expected_version: int,
         result: Optional[Dict] = None, 
+        artifacts: Optional[Dict] = None,
+        state_metadata: Optional[Dict] = None,
         error: Optional[Dict] = None
     ) -> int:
         updates = {
@@ -34,6 +36,10 @@ class PostgresTaskStore(TaskStore):
         }
         if result is not None:
             updates["result"] = result
+        if artifacts is not None:
+            updates["artifacts"] = artifacts
+        if state_metadata is not None:
+            updates["state_metadata"] = state_metadata
         if error is not None:
             updates["error"] = error
             

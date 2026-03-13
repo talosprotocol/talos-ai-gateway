@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Header, Response
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 from app.settings import settings
 from app.middleware.auth_public import get_auth_context
@@ -20,10 +20,19 @@ class Profile(BaseModel):
     profile_version: str = "0.1"
     spec_source: str = "a2a-protocol"
 
+class UXCapabilities(BaseModel):
+    supported_surfaces: List[str] = ["iframe"]
+
+class MultimediaCapabilities(BaseModel):
+    audio: bool = False
+    video: bool = False
+
 class Capabilities(BaseModel):
     chat: bool = True
     tools: bool = False
     history: bool = False
+    ux: Optional[UXCapabilities] = None
+    multimedia: Optional[MultimediaCapabilities] = None
 
 class AuthConfig(BaseModel):
     type: str = "bearer"
@@ -41,6 +50,9 @@ class AgentCard(BaseModel):
     endpoints: List[str]
     capabilities: Capabilities = Field(default_factory=Capabilities)
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    links: Optional[Dict[str, str]] = None
+    onboarding: Optional[str] = None
+    privacy_policy: Optional[str] = None
     x_talos: Optional[TalosExtension] = None
 
 # --- API ---
@@ -63,16 +75,17 @@ async def get_agent_card(
         
     if visibility == "auth_required":
         if not auth_header:
-             raise HTTPException(status_code=401, detail="Authentication required for discovery")
+            raise HTTPException(status_code=401, detail="Authentication required for discovery")
         # Validate token using the middleware logic
         # We manually call get_auth_context here or rely on exception
         try:
-             # get_auth_context parses "Bearer <token>"
-             await get_auth_context(authorization=auth_header, key_store=key_store)
+            # get_auth_context parses "Bearer <token>"
+            # Note: request is needed for get_auth_context in some versions
+            await get_auth_context(authorization=auth_header, key_store=key_store)
         except HTTPException as e:
-             raise e
+            raise e
         except Exception:
-             raise HTTPException(status_code=401, detail="Invalid credentials")
+            raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # Set Caching headers
     response.headers["Cache-Control"] = "max-age=60"
@@ -81,15 +94,20 @@ async def get_agent_card(
     # TODO: Check settings.MCP_ENABLED if available
     
     return AgentCard(
-        name=PROJECT_NAME,
-        description="A Talos-secured AI Agent Gateway",
+        name=settings.a2a_agent_name,
+        description=settings.a2a_agent_description,
         endpoints=[f"{API_V1_STR}/a2a"], # Base URL for A2A
         capabilities=Capabilities(
             chat=True,
             tools=True, 
-            history=True # We support tasks.get
+            history=True, # We support tasks.get
+            ux=UXCapabilities(supported_surfaces=["iframe", "web_view"]),
+            multimedia=MultimediaCapabilities(audio=False, video=False)
         ),
         auth=AuthConfig(type="bearer"),
+        links={"web": "https://talos.network"}, # Default or from settings
+        onboarding=settings.a2a_onboarding_url,
+        privacy_policy=settings.a2a_privacy_policy_url,
         x_talos=TalosExtension(
             supports_talos_attestation=True,
             supported_surfaces=["a2a"], # Explicitly just a2a for now, mcp is separate endpoint

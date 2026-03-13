@@ -17,6 +17,7 @@ SECRET_PATTERNS = [
     (re.compile(r'(tag=[0-9a-f]{32})'), 'tag=[REDACTED]'),
 ]
 
+
 class SecretRedactionFilter(logging.Filter):
     """Filter that redacts secret-like patterns from log records."""
 
@@ -42,6 +43,7 @@ class SecretRedactionFilter(logging.Filter):
 
         return True
 
+
 def setup_logging_redaction() -> None:
     """Apply the SecretRedactionFilter to all existing loggers."""
     redact_filter = SecretRedactionFilter()
@@ -57,6 +59,7 @@ def setup_logging_redaction() -> None:
     root_logger.addFilter(redact_filter)
 
     # Specifically ensure it's on common library loggers if they bypass root
+    # pylint: disable=no-member
     for name in logging.root.manager.loggerDict:
         logger = logging.getLogger(name)
         logger.addFilter(redact_filter)
