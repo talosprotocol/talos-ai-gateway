@@ -391,6 +391,8 @@ class A2ATask(Base):
     # Results
     result = Column(JSON, nullable=True)  # The 'task' object
     error = Column(JSON, nullable=True)  # Error details
+    artifacts = Column(JSON, nullable=True)  # A2A Task Artifacts
+    state_metadata = Column(JSON, nullable=True)  # Detailed state machine transitions
     
     created_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), index=True

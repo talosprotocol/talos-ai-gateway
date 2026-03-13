@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # A2A
     # A2A
     a2a_agent_card_visibility: str = "auth_required"
+    a2a_agent_name: str = "Talos AI Gateway"
+    a2a_agent_description: str = "A Talos-secured AI Agent Gateway"
+    a2a_privacy_policy_url: Optional[str] = None
+    a2a_onboarding_url: Optional[str] = None
     dev_mode: bool = False
     
     # A2A Task Retention
