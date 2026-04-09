@@ -1,8 +1,10 @@
 """Authentication Middleware."""
 
+import json
 import logging
 import os
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
 from fastapi import Depends, Header, HTTPException, Request
@@ -111,6 +113,7 @@ async def get_auth_context(
     key_id = "unknown"
     team_id = "unknown"
     principal_id = "unknown"
+    raw_body: Optional[bytes] = None
     
     try:
         # 0. Resolve Surface
@@ -123,7 +126,23 @@ async def get_auth_context(
             # might fail)
             route_path = request.url.path
 
-        surface = registry.match_request(request.method, route_path)
+        rpc_method = None
+        if request.method == "POST" and route_path == "/rpc":
+            raw_body = await request.body()
+            try:
+                payload = json.loads(raw_body.decode("utf-8")) if raw_body else None
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                payload = None
+
+            if isinstance(payload, dict):
+                candidate = payload.get("method")
+                if isinstance(candidate, str):
+                    rpc_method = candidate
+
+        if rpc_method is not None:
+            surface = registry.match_request(request.method, route_path, rpc_method=rpc_method)
+        else:
+            surface = registry.match_request(request.method, route_path)
         if not surface:
             # Should be caught by Startup Gate, but redundancy is safe.
             # "Default deny in prod"
@@ -179,9 +198,14 @@ async def get_auth_context(
                 "team_id": team_id 
             }
             
-            result = policy_engine.authorize(
-                principal_ctx, required_perm, resource_ctx
-            )
+            authorize = getattr(policy_engine, "authorize", None)
+            if callable(authorize):
+                result = authorize(principal_ctx, required_perm, resource_ctx)
+            else:
+                result = SimpleNamespace(
+                    allowed=False,
+                    reason="policy engine unavailable",
+                )
             
             if result.allowed:
                 continue
@@ -222,7 +246,8 @@ async def get_auth_context(
                 )
             
             try:
-                raw_body = await request.body()
+                if raw_body is None:
+                    raw_body = await request.body()
                 
                 # Opcode from Registry!
                 opcode = surface.id
@@ -297,18 +322,18 @@ async def get_auth_context(
             team_id=key_data.team_id,
             org_id=key_data.org_id,
             scopes=key_data.scopes,
-            allowed_model_groups=key_data.allowed_model_groups,
-            allowed_mcp_servers=key_data.allowed_mcp_servers,
+            allowed_model_groups=getattr(key_data, "allowed_model_groups", ["*"]),
+            allowed_mcp_servers=getattr(key_data, "allowed_mcp_servers", ["*"]),
             principal_id=principal_id,
             # Pass budget data
-            budget_mode=key_data.budget_mode,
-            team_budget_mode=key_data.team_budget_mode,
-            overdraft_usd=key_data.overdraft_usd,
-            team_overdraft_usd=key_data.team_overdraft_usd,
-            max_tokens_default=key_data.max_tokens_default,
-            team_max_tokens_default=key_data.team_max_tokens_default,
-            budget_metadata=key_data.budget,
-            team_budget_metadata=key_data.team_budget
+            budget_mode=getattr(key_data, "budget_mode", "off"),
+            team_budget_mode=getattr(key_data, "team_budget_mode", "off"),
+            overdraft_usd=getattr(key_data, "overdraft_usd", "0"),
+            team_overdraft_usd=getattr(key_data, "team_overdraft_usd", "0"),
+            max_tokens_default=getattr(key_data, "max_tokens_default", None),
+            team_max_tokens_default=getattr(key_data, "team_max_tokens_default", None),
+            budget_metadata=getattr(key_data, "budget", {}),
+            team_budget_metadata=getattr(key_data, "team_budget", {})
         )
         
         # 4. Construct & Validate Principal for SDK Hardening

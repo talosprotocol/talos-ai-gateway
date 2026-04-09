@@ -30,35 +30,38 @@ class RbacContext:
 
 async def get_rbac_context(
     authorization: Optional[str] = Header(None),
-    x_talos_principal: Optional[str] = Header(None),
     db: Session = Depends(get_db)
 ) -> RbacContext:
-    """Extract RBAC context from JWT or legacy header."""
+    """Extract RBAC context from JWT. No fallbacks allowed."""
     principal_id = None
-    dev_mode = os.getenv("MODE", "dev").lower() == "dev" or os.getenv("DEV_MODE", "false").lower() == "true"
     
-    # 1. JWT Validation
-    if authorization and authorization.startswith("Bearer "):
-        token = authorization[7:]
-        try:
-            validator = get_admin_validator()
-            claims = validator.validate_token(token)
-            principal_id = claims.get("sub")
-        except Exception:
-            if not dev_mode:
-                raise
+    # 1. JWT Validation (Mandatory)
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401, 
+            detail={"error": {"code": "AUTH_MISSING", "message": "Missing or invalid Authorization header"}}
+        )
+
+    token = authorization[7:]
+    try:
+        validator = get_admin_validator()
+        claims = validator.validate_token(token)
+        principal_id = claims.get("sub")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=401, 
+            detail={"error": {"code": "AUTH_INVALID", "message": f"Token validation failed: {str(e)}"}}
+        )
     
-    # 2. Legacy Fallback (DEV_MODE only)
-    if not principal_id and dev_mode:
-        principal_id = x_talos_principal or "admin" # Default to admin in dev
-        
     if not principal_id:
         raise HTTPException(
             status_code=401, 
-            detail={"error": {"code": "AUTH_INVALID", "message": "Missing or invalid authentication"}}
+            detail={"error": {"code": "AUTH_INVALID", "message": "Principal (sub) not found in token"}}
         )
 
-    # 3. RBAC Resolution from DB (Bypass in DEV_MODE if DB unavailable)
+    # 2. RBAC Resolution from DB (Mandatory)
     effective_permissions: Set[str] = set()
     binding_data = []
 
@@ -74,22 +77,18 @@ async def get_rbac_context(
                 "scope_org_id": b.scope_org_id,
                 "scope_team_id": b.scope_team_id
             })
-    except Exception:
-        if not dev_mode:
-            raise
-        # In DEV_MODE, if DB fails, grant admin permissions
-        effective_permissions = {"*"}
-        binding_data = [{"role_id": "admin", "scope_type": "global"}]
-    
-    # 4. Final check for permissions
-    if not effective_permissions and not dev_mode:
+    except Exception as e:
         raise HTTPException(
-            status_code=403, 
-            detail={"error": {"code": "RBAC_DENIED", "message": f"Principal {principal_id} has no permissions"}}
+            status_code=500, 
+            detail={"error": {"code": "RBAC_ERROR", "message": f"Failed to resolve RBAC: {str(e)}"}}
         )
     
-    if not effective_permissions and dev_mode:
-        effective_permissions = {"*"}
+    # 3. Final check for permissions
+    if not effective_permissions:
+        raise HTTPException(
+            status_code=403, 
+            detail={"error": {"code": "RBAC_DENIED", "message": f"Principal {principal_id} has no permissions assigned"}}
+        )
 
     return RbacContext(
         principal_id=principal_id,

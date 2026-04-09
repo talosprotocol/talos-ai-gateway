@@ -1,13 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# talos-gateway start script
+# talos-ai-gateway start script
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SERVICE_NAME="talos-gateway"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+SERVICE_NAME="talos-ai-gateway"
 PID_FILE="/tmp/${SERVICE_NAME}.pid"
 LOG_FILE="/tmp/${SERVICE_NAME}.log"
-PORT="${TALOS_GATEWAY_PORT:-8080}"
+PORT="${TALOS_AI_GATEWAY_PORT:-8001}"
+HOST="${TALOS_BIND_HOST:-127.0.0.1}"
+
+source_env_file() {
+    local file="$1"
+    if [ -f "$file" ]; then
+        set -a
+        . "$file"
+        set +a
+    fi
+}
+
+source_env_file "$ROOT_DIR/.env"
+source_env_file "$ROOT_DIR/.env.local"
+source_env_file "$REPO_DIR/.env"
+source_env_file "$REPO_DIR/.env.local"
 
 cd "$REPO_DIR"
 
@@ -37,10 +53,12 @@ if [ "$MODE" = "prod" ]; then
     fi
 fi
 
-TALOS_ENV="${TALOS_ENV:-production}" \
+TALOS_ENV="${TALOS_ENV:-development}" \
 TALOS_RUN_ID="${TALOS_RUN_ID:-default}" \
 MODE="$MODE" \
-uvicorn main:app --port "$PORT" --host 0.0.0.0 > "$LOG_FILE" 2>&1 &
+DEV_MODE="${DEV_MODE:-true}" \
+USE_JSON_STORES="${USE_JSON_STORES:-true}" \
+nohup uvicorn app.main:app --port "$PORT" --host "$HOST" > "$LOG_FILE" 2>&1 &
 
 
 PID=$!

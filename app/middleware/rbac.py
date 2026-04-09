@@ -1,12 +1,12 @@
-from fastapi import Request, Response
+from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 import logging
 import re
 import os
-from typing import Optional, Dict
+from typing import Optional
 from ..domain.rbac.policy_engine import PolicyEngine
-from ..domain.rbac.models import Scope, ScopeType, SurfaceRoute
+from ..domain.rbac.models import Scope, SurfaceRoute
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,7 @@ class RBACMiddleware(BaseHTTPMiddleware):
             )
             
         route, path_params = match
+        request.state.surface = route
         
         # 3. Public Route Check
         if route.public:

@@ -13,13 +13,6 @@ ADMIN_KEY = os.getenv("ADMIN_TOKEN", "dev-admin-key") # Assuming shared token fo
 def get_headers():
     return {"Authorization": f"Bearer {ADMIN_KEY}"}
 
-def b64u_encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).decode('ascii').rstrip('=')
-
-def b64u_decode(s: str) -> bytes:
-    padding = '=' * (4 - len(s) % 4) if len(s) % 4 != 0 else ''
-    return base64.urlsafe_b64decode(s + padding)
-
 def test_aad_binding():
     print("Testing AAD Binding...")
     # 1. Create a secret
@@ -93,6 +86,18 @@ def test_rotation_flow():
         time.sleep(2)
     
     assert status == "completed"
+    print("✓ Rotation flow complete.")
+
+if __name__ == "__main__":
+    try:
+        test_aad_binding()
+        test_multi_kek_status()
+        test_rotation_flow()
+        print("\nALL VERIFICATIONS PASSED")
+    except Exception as e:
+        print(f"\nVERIFICATION FAILED: {e}")
+        exit(1)
+tatus == "completed"
     print("✓ Rotation flow complete.")
 
 if __name__ == "__main__":

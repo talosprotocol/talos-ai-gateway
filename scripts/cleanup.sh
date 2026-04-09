@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# talos-gateway cleanup script
+# talos-ai-gateway cleanup script
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-SERVICE_NAME="talos-gateway"
+SERVICE_NAME="talos-ai-gateway"
 PID_FILE="/tmp/${SERVICE_NAME}.pid"
 LOG_FILE="/tmp/${SERVICE_NAME}.log"
 

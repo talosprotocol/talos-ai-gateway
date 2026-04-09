@@ -102,8 +102,9 @@ class ToolGuard:
                 # principal_id excluded from digest per spec
             }
             # JCS (RFC 8785) - Sort keys, no spaces
-            canonical_req = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
-            request_digest = hashlib.sha256(canonical_req.encode("utf-8")).hexdigest()
+            from app.domain.a2a.canonical import canonical_json_bytes
+            canonical_req = canonical_json_bytes(envelope)
+            request_digest = hashlib.sha256(canonical_req).hexdigest()
         except Exception as e:
             logger.error(f"Failed to compute request digest: {e}")
             outcome = "deny"

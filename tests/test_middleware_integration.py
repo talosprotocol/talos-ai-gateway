@@ -34,15 +34,18 @@ async def test_auth_flow_success(mock_deps):
     
     # 2. Key Store (Bearer)
     key_data = Mock()
-    key_data.id = "key-123"
-    key_data.team_id = "team-abc"
-    key_data.org_id = "org-xyz"
+    key_data.id = "01946765-c7e0-798c-8c65-22d7a64b91f5"
+    key_data.team_id = "01946765-c7e0-798c-8c65-22d7a64b91f6"
+    key_data.org_id = "01946765-c7e0-798c-8c65-22d7a64b91f7"
     key_data.scopes = ["llm.invoke"] # Has required scope
     key_data.revoked = False
     mock_deps["key_store"].lookup_by_hash.return_value = key_data
     
     # 3. Principal Store (Binding)
-    principal = {"id": "principal-999", "team_id": "team-abc"} # Matches team
+    principal = {
+        "id": "01946765-c7e0-798c-8c65-22d7a64b91f8",
+        "team_id": "01946765-c7e0-798c-8c65-22d7a64b91f6",
+    } # Matches team
     mock_deps["principal_store"].get_principal.return_value = principal
     
     # 4. Verifier
@@ -65,8 +68,8 @@ async def test_auth_flow_success(mock_deps):
     )
     
     # Assertions
-    assert ctx.principal_id == "principal-999"
-    assert ctx.team_id == "team-abc"
+    assert ctx.principal_id == "01946765-c7e0-798c-8c65-22d7a64b91f8"
+    assert ctx.team_id == "01946765-c7e0-798c-8c65-22d7a64b91f6"
     mock_deps["registry"].match_request.assert_called_with(method, path)
     # Ensure verifier called with correct opcode from surface
     mock_deps["verifier"].verify_request.assert_called()

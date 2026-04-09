@@ -15,7 +15,7 @@ Phase 12 Route Classification:
         - GET /config:export - consistency required
         - GET /me - auth context, security-critical
 """
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
@@ -23,15 +23,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 import uuid
 import json
+import logging
 from decimal import Decimal
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy.orm import Session
 from app.dependencies import (
     get_upstream_store, get_model_group_store, get_secret_store, 
     get_mcp_store, get_audit_store, get_routing_policy_store, get_usage_store,
     get_read_audit_store, get_read_usage_store, get_read_mcp_store,
-    get_rotation_store, get_kek_provider, get_write_db, get_read_db
+    get_rotation_store, get_kek_provider, get_write_db, get_read_db,
+    get_budget_service,
 )
+from app.domain.secrets.rotation import RotationService
 from app.middleware.auth_admin import get_rbac_context, require_permission, RbacContext
 from app.domain.interfaces import (
     UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, 
@@ -609,11 +614,64 @@ async def get_kek_status(
     )
 
 
+async def run_rotation_job(
+    op_id: str,
+    rotation_store: RotationOperationStore,
+    secret_store: SecretStore,
+    kek_provider: KekProvider
+):
+    """Background task to process secret rotation in batches."""
+    logger.info(f"Starting background rotation job {op_id}")
+    service = RotationService(secret_store, kek_provider)
+    cursor = None
+    scanned_total = 0
+    rotated_total = 0
+    failed_total = 0
+
+    try:
+        while True:
+            rotated, last_name, scanned, failed = service.rotate_batch(batch_size=50, cursor=cursor)
+            
+            scanned_total += scanned
+            rotated_total += rotated
+            failed_total += failed
+            cursor = last_name
+
+            # Update progress in DB
+            rotation_store.update_operation(op_id, {
+                "cursor": cursor,
+                "stats": {
+                    "scanned": scanned_total,
+                    "rotated": rotated_total,
+                    "failed": failed_total
+                }
+            })
+
+            if scanned < 50:
+                # Finished all batches
+                break
+        
+        rotation_store.update_operation(op_id, {
+            "status": "completed",
+            "completed_at": datetime.now(timezone.utc)
+        })
+        logger.info(f"Rotation job {op_id} completed successfully. Scanned={scanned_total}, Rotated={rotated_total}")
+
+    except Exception as e:
+        logger.error(f"Rotation job {op_id} failed: {e}")
+        rotation_store.update_operation(op_id, {
+            "status": "failed",
+            "last_error": str(e),
+            "completed_at": datetime.now(timezone.utc)
+        })
+
 @router.post("/secrets/rotate-all", status_code=202)
 async def rotate_all_secrets(
     request: Request,
+    background_tasks: BackgroundTasks,
     principal: RbacContext = Depends(require_permission("keys.write")),
     rotation_store: RotationOperationStore = Depends(get_rotation_store),
+    secret_store: SecretStore = Depends(get_secret_store),
     kek_provider: KekProvider = Depends(get_kek_provider)
 ) -> Dict[str, Any]:
     """Trigger background rotation of all secrets."""
@@ -639,10 +697,19 @@ async def rotate_all_secrets(
     
     rotation_store.create_operation(op_data)
     
+    # Queue background task
+    background_tasks.add_task(
+        run_rotation_job, 
+        op_id=op_id, 
+        rotation_store=rotation_store,
+        secret_store=secret_store,
+        kek_provider=kek_provider
+    )
+    
     return {
         "op_id": op_id,
         "status": "running",
-        "message": "Rotation started",
+        "message": "Rotation started in background",
         "status_url": str(request.url_for('get_rotation_status', op_id=op_id))
     }
 
@@ -928,8 +995,6 @@ async def get_test_scope(
 # Removed incomplete/duplicate get_budget_usage (was dead code)
 
 # Refactored implementation with dedicated dependency
-from app.dependencies import get_read_db, get_budget_service
-from sqlalchemy.orm import Session
 from app.adapters.postgres.models import UsageRollupDaily
 
 @router.get("/budgets/usage/stats")
@@ -969,4 +1034,3 @@ async def list_budget_usage(
             for i in items
         ]
     }
-

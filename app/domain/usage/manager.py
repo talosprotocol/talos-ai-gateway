@@ -88,6 +88,7 @@ class UsageManager:
             # 3. Settle Budget
             # This is also idempotent inside settle()
             await self.budget_service.settle(
+                db=self.db,
                 request_id=request_id,
                 team_id=team_id,
                 key_id=key_id,

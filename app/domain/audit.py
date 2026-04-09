@@ -15,16 +15,23 @@ from app.utils.id import uuid7
 
 class AuditLogger:
     def __init__(self, sink: Optional[AuditSink] = None):
+        # Security hardening for production
+        is_prod = os.getenv("ENV", "development").lower() == "production" or os.getenv("MODE", "dev").lower() == "prod"
+        
+        if not sink and is_prod:
+            raise RuntimeError("Audit sink must be explicitly provided in production")
+            
         self.sink: AuditSink = sink or StdOutSink()
         self.ip_hmac_key: str = os.environ.get("AUDIT_IP_HMAC_KEY") or ""
         self.ip_hmac_key_id: str = os.environ.get("AUDIT_IP_HMAC_KEY_ID", "dev-key-v1")
         self.trusted_proxies: List[str] = []
         
-        # Security hardening for production
-        is_prod = os.getenv("ENV", "development").lower() == "production"
-        if not self.ip_hmac_key:
-            if is_prod:
+        if is_prod:
+            if not self.ip_hmac_key:
                 raise RuntimeError("AUDIT_IP_HMAC_KEY must be set in production")
+            if len(self.ip_hmac_key) < 32:
+                raise RuntimeError("AUDIT_IP_HMAC_KEY must be at least 32 characters in production for security")
+        elif not self.ip_hmac_key:
             self.ip_hmac_key = "dev-ip-key-secret-32-chars-long-!!!" # Standardized dev fallback
             logging.warning("Using insecure default AUDIT_IP_HMAC_KEY")
 

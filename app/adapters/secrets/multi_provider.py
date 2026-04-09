@@ -62,6 +62,9 @@ class MultiKekProvider(KekProvider):
 
     def _validate_startup(self) -> None:
         """Ensure the provider is in a valid state for operation."""
+        if os.getenv("DEV_MODE", "false").lower() == "true":
+            return
+
         if not self._current_kek_id:
             raise RuntimeError("CRITICAL: TALOS_CURRENT_KEK_ID must be set in production.")
 
@@ -127,6 +130,10 @@ class MultiKekProvider(KekProvider):
             # Mask internal error to avoid leaking details, but log for debugging
             logger.debug(f"Decryption failed for KEK {envelope.kek_id}: {e}")
             raise ValueError("DECRYPT_FAILED: Authentication tag mismatch or key mismatch.")
+
+    def is_stale(self, kek_id: str) -> bool:
+        """Check if an envelope's KEK is stale (not the current primary KEK)."""
+        return kek_id != self._current_kek_id
 
     @property
     def current_kek_id(self) -> str:

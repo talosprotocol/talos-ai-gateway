@@ -1,5 +1,6 @@
 """Public AI API Router - OpenAI Compatible with Real Upstream Calls."""
 from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from app.utils.id import uuid7
@@ -18,9 +19,11 @@ from app.domain.routing import RoutingService
 from app.domain.interfaces import ModelGroupStore, AuditStore, RateLimitStore
 from app.domain.budgets.service import BudgetService, BudgetExceededError
 from app.domain.usage.manager import UsageManager
+from app.domain.streaming import stream_with_settle
 from app.adapters.redis.client import rate_limit_key
 from app.adapters.upstreams_ai.client import (
     invoke_openai_compatible, 
+    stream_openai_compatible,
     get_api_key,
     UpstreamError,
     UpstreamRateLimitError,

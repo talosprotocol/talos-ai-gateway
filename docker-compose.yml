@@ -27,7 +27,7 @@ services:
       - "8000:8000"
     volumes:
       - .:/app
-      - ./gateway_surface.json:/app/gateway_surface.json
+      - ../../contracts/inventory:/app/contracts/inventory:ro
     environment:
       DATABASE_URL: postgresql://talos:talos@postgres:5432/talos
       DATABASE_WRITE_URL: postgresql://talos:talos@postgres:5432/talos
@@ -36,7 +36,7 @@ services:
       DEV_MODE: "true"
       TALOS_KEY_PEPPER: "dev-pepper-change-in-prod"
       RUN_MIGRATIONS: "true"
-      SURFACE_INVENTORY_PATH: /app/gateway_surface.json
+      SURFACE_INVENTORY_PATH: /app/contracts/inventory/gateway_surface.json
     depends_on:
       postgres:
         condition: service_healthy

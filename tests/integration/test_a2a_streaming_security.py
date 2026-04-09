@@ -1,106 +1,157 @@
+from datetime import datetime, timezone
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
-from app.main import app
-from app.middleware.auth_public import AuthContext
-from app.adapters.postgres.task_store import PostgresTaskStore
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-from app.adapters.postgres.models import Base
-from app.settings import settings
+
+from app.adapters.memory_store.stores import MemoryTaskStore, _TASK_STATE
 from app.api.a2a.jsonrpc import JsonRpcException
+from app.dependencies import (
+    get_audit_store,
+    get_mcp_client,
+    get_rate_limit_store,
+    get_routing_service,
+    get_task_store,
+    get_usage_store,
+)
+from app.domain.a2a.streaming import stream_task_events
+from app.main import app
+from app.middleware.auth_public import AuthContext, get_auth_context
+from app.settings import settings
 
-# Setup In-Memory SQLite
-SQLALCHEMY_DATABASE_URL = "sqlite://"
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-@pytest.fixture
-def db_session():
-    Base.metadata.create_all(bind=engine)
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-        Base.metadata.drop_all(bind=engine)
 
 client = TestClient(app)
+AUTH_HEADERS = {"Authorization": "Bearer sk-test-key"}
 
-# -----------------------------------------------------------------------------
-# Part 1: Route Security Tests (Integration)
-# Verifies: Auth Required, Scope Required, Dev Mode Token
-# -----------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def reset_state():
+    original_mode = settings.a2a_protocol_mode
+    app.dependency_overrides = {}
+    _TASK_STATE.clear()
+    yield
+    settings.a2a_protocol_mode = original_mode
+    app.dependency_overrides = {}
+    _TASK_STATE.clear()
+
+
+@pytest.fixture
+def memory_task_store():
+    store = MemoryTaskStore()
+    app.dependency_overrides[get_task_store] = lambda: store
+    app.dependency_overrides[get_audit_store] = lambda: MagicMock()
+    app.dependency_overrides[get_rate_limit_store] = lambda: MagicMock()
+    app.dependency_overrides[get_routing_service] = lambda: MagicMock()
+    app.dependency_overrides[get_usage_store] = lambda: MagicMock()
+    app.dependency_overrides[get_mcp_client] = lambda: MagicMock()
+    return store
+
+
+def _make_auth(scopes: list[str]) -> AuthContext:
+    return AuthContext(
+        key_id="key-123",
+        team_id="team-1",
+        org_id="org-1",
+        scopes=scopes,
+        allowed_model_groups=["*"],
+        allowed_mcp_servers=["*"],
+    )
+
+
+def _running_task(task_id: str, *, team_id: str) -> dict:
+    now = datetime.now(timezone.utc)
+    return {
+        "id": task_id,
+        "team_id": team_id,
+        "key_id": "key-123",
+        "org_id": "org-1",
+        "request_id": f"req-{task_id}",
+        "origin_surface": "a2a_v1",
+        "method": "tasks.send",
+        "status": "running",
+        "version": 1,
+        "request_meta": {"context_id": f"ctx-{task_id}", "origin_surface": "a2a_v1"},
+        "input_redacted": None,
+        "result": None,
+        "error": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def test_subscribe_to_task_requires_auth(memory_task_store):
+    settings.a2a_protocol_mode = "v1"
+
+    response = client.post(
+        "/rpc",
+        json={
+            "jsonrpc": "2.0",
+            "id": "req-no-auth",
+            "method": "SubscribeToTask",
+            "params": {"id": "task-1"},
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Missing Authorization header"
+
+
+def test_subscribe_to_task_rejects_invalid_auth_format(memory_task_store):
+    settings.a2a_protocol_mode = "v1"
+
+    response = client.post(
+        "/rpc",
+        json={
+            "jsonrpc": "2.0",
+            "id": "req-bad-auth",
+            "method": "SubscribeToTask",
+            "params": {"id": "task-1"},
+        },
+        headers={"Authorization": "Token nope"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid Authorization format"
+
+
+def test_subscribe_to_task_requires_subscribe_scope(memory_task_store):
+    settings.a2a_protocol_mode = "v1"
+    _TASK_STATE["task-subscribe"] = _running_task("task-subscribe", team_id="team-1")
+    app.dependency_overrides[get_auth_context] = lambda: _make_auth(["a2a.get"])
+
+    response = client.post(
+        "/rpc",
+        json={
+            "jsonrpc": "2.0",
+            "id": "req-subscribe",
+            "method": "SubscribeToTask",
+            "params": {"id": "task-subscribe"},
+        },
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200, response.text
+    error = response.json()["error"]
+    assert error["message"] == "Permission denied"
+    assert error["data"]["talos_code"] == "RBAC_DENIED"
+    assert error["data"]["operation"] == "SubscribeToTask"
+
 
 @pytest.mark.asyncio
-async def test_sse_route_security():
-    # Mock stream_task_events to avoid execution
-    with patch("app.api.a2a.routes.stream_task_events") as m_stream:
-        # 1. No Auth -> 401
-        resp = client.get("/a2a/v1/tasks/task-1/events")
-        assert resp.status_code == 401
+async def test_stream_generator_cross_team_logic():
+    task_store = MemoryTaskStore()
+    task_store.create_task(_running_task("task-team-2", team_id="team-2"))
 
-        # 2. Query Token in Prod -> 401
-        settings.dev_mode = False
-        resp = client.get("/a2a/v1/tasks/task-1/events?token=sk-test-key-1")
-        assert resp.status_code == 401
-        
-        # 3. Scope Missing -> 403
-        # Mock auth to return context without a2a.stream
-        async def mock_auth_no_scope():
-             return AuthContext(
-                 key_id="k1", team_id="t1", org_id="o1",
-                 scopes=["a2a.invoke"], # Missing stream
-                 allowed_model_groups=["*"], allowed_mcp_servers=["*"]
-             )
-        from app.api.a2a.routes import get_integrated_auth
-        app.dependency_overrides[get_integrated_auth] = mock_auth_no_scope
-        
-        resp = client.get("/a2a/v1/tasks/task-1/events") 
-        assert resp.status_code == 403
-        data = resp.json()
-        assert data["error"]["talos_code"] == "RBAC_DENIED"
-        assert "request_id" in data["error"]
-        app.dependency_overrides = {}
+    generator = stream_task_events(
+        task_id="task-team-2",
+        team_id="team-1",
+        task_store=task_store,
+        redis_client=MagicMock(),
+        request_id="req-cross-team",
+    )
 
-# -----------------------------------------------------------------------------
-# Part 2: Generator Logic Tests (Unit)
-# Verifies: Cross-Team Isolation (Not Found)
-# -----------------------------------------------------------------------------
+    with pytest.raises(JsonRpcException) as exc:
+        await anext(generator)
 
-@pytest.mark.asyncio
-async def test_stream_generator_cross_team_logic(db_session):
-    from app.domain.a2a.streaming import stream_task_events
-    import asyncio
-    
-    # Setup Store
-    task_store = PostgresTaskStore(db_session)
-    
-    # Create Task for Team 2
-    task_store.create_task({
-        "id": "task-2", "team_id": "team-2", "key_id": "k2",
-        "status": "queued", "version": 1, "method": "tasks.send"
-    })
-    
-    # Patch run_in_threadpool because stream_task_events uses it
-    async def fake_run(func, *args, **kwargs):
-        if asyncio.iscoroutinefunction(func): return await func(*args, **kwargs)
-        return func(*args, **kwargs)
-    
-    with patch("fastapi.concurrency.run_in_threadpool", side_effect=fake_run):
-        # Attempt to access as Team 1
-        gen = stream_task_events(
-            task_id="task-2", 
-            team_id="team-1", 
-            task_store=task_store, 
-            redis_client=MagicMock(),
-            request_id="req-1"
-        )
-        
-        # Expect JsonRpcException (Task Not Found) immediately
-        with pytest.raises(JsonRpcException) as exc:
-            await gen.__anext__()
-            
-        assert exc.value.code == -32000
-        assert "Task not found" in exc.value.message
+    assert exc.value.code == -32000
+    assert "Task not found" in exc.value.message

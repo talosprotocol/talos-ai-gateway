@@ -10,7 +10,7 @@ sys.path.append(os.getcwd())
 from app.main import app
 
 # Mock Auth Middleware to inject identity
-class MockAuthMiddleware(BaseHTTPMiddleware):
+class SimulatedAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         user_id = request.headers.get("X-Mock-User", "anonymous")
         request.state.user_id = user_id

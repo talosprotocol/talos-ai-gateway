@@ -11,14 +11,13 @@ from alembic import command
 from alembic.config import Config
 from app.adapters.redis.client import close_redis_client
 from app.api.a2a import agent_card, routes as a2a_routes
+from app.api.a2a_v1 import router as a2a_v1_router
 from app.api.admin import router as admin_router
-from app.api.dashboard import router as dashboard_router
-from app.api.health import router as health_router
 from app.api.public_ai import router as ai_router
 from app.api.public_mcp import router as mcp_router
+from app.dashboard import router as dashboard_router
 from app.dependencies import (
     get_policy_engine_async,
-    get_surface_registry,
 )
 from app.domain.mcp.classifier import init_tool_classifier
 from app.jobs.budget_cleanup import budget_cleanup_worker
@@ -29,9 +28,9 @@ from app.logging_hardening import setup_logging_redaction
 from app.middleware.audit import TalosAuditMiddleware
 from app.middleware.observability import RegionHeaderMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.middleware.rbac import RBACMiddleware
 from app.middleware.shutdown_gate import ShutdownGateMiddleware
 from app.observability.tracing import TalosSpanProcessor
+from app.routers import health as health_router
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from opentelemetry import trace
@@ -46,14 +45,53 @@ setup_logging_redaction()
 
 logger = logging.getLogger(__name__)
 
+
+def _env_flag(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).lower() == "true"
+
+
+def _background_worker_names() -> list[str]:
+    names = ["retention"]
+    use_json_stores = _env_flag("USE_JSON_STORES")
+
+    if not use_json_stores:
+        names.append("rotation")
+
+    rate_limit_backend = os.getenv("RATE_LIMIT_BACKEND", "").lower()
+    redis_enabled = False
+    if not use_json_stores:
+        if rate_limit_backend:
+            redis_enabled = rate_limit_backend == "redis"
+        else:
+            redis_enabled = bool(os.getenv("REDIS_URL"))
+
+    if redis_enabled:
+        names.extend(["revocation", "budget_cleanup"])
+
+    return names
+
+
+def _start_background_workers(shutdown_event: asyncio.Event) -> list[asyncio.Task]:
+    task_factories = {
+        "retention": retention_worker,
+        "revocation": revocation_worker,
+        "rotation": rotation_worker,
+        "budget_cleanup": budget_cleanup_worker,
+    }
+    enabled = _background_worker_names()
+    tasks = []
+    for name, factory in task_factories.items():
+        if name in enabled:
+            tasks.append(asyncio.create_task(factory(shutdown_event)))
+        else:
+            logger.info("Skipping background worker %s for current runtime mode", name)
+    return tasks
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup
     shutdown_event = asyncio.Event()
-    asyncio.create_task(retention_worker(shutdown_event))
-    asyncio.create_task(revocation_worker(shutdown_event))
-    asyncio.create_task(rotation_worker(shutdown_event))
-    asyncio.create_task(budget_cleanup_worker(shutdown_event))
+    worker_tasks = _start_background_workers(shutdown_event)
 
     # Phase 12: Migrations
     run_mig = os.getenv("RUN_MIGRATIONS", "false").lower()
@@ -78,30 +116,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             # If migration fails, we should probably crash
             sys.exit(1)
     
-    # Phase 7: RBAC Initialization
+    # Phase 7: policy initialization for dependency-based auth paths
     try:
-        logger.info("Initializing RBAC Policy Engine...")
-        policy_engine = await get_policy_engine_async()
-        
-        logger.info("Initializing RBAC Surface Registry...")
-        registry_service = get_surface_registry()
-        
-        # Pre-load registry into middleware accessible scope if needed
-        # But Middleware will access it from app state or pass it in?
-        # Creating middleware instance manually and attaching to app state is tricky with FastAPI.
-        # Usually we pass dependencies to Middleware __init__.
-        # We need to make sure the Middleware created at module level can access these.
-        # Or we can update the middleware instance if accessible.
-        
-        # Better: Store in app.state
-        app.state.policy_engine = policy_engine
-        app.state.surface_registry = registry_service.get_routes()
-        
-        # Also verifying completeness now
-        # registry.verify_app_routes(app) # TODO: Re-enable for RBACRegistry
-        
+        logger.info("Initializing authorization policy engine...")
+        await get_policy_engine_async()
     except Exception as e:
-        logger.error(f"RBAC Initialization Failed: {e}")
+        logger.error(f"Authorization initialization failed: {e}")
         sys.exit(1)
 
     # Phase 9.2: Tool Classifier Initialization
@@ -119,14 +139,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         if os.getenv("MODE") == "prod":
             sys.exit(1)
 
-    # Surface Completeness Gate
-    # from app.dependencies import get_surface_registry
     try:
-        # registry = get_surface_registry()
-        # registry.verify_app_routes(app)
-        
         # Phase 11.4 Startup Checks (Normative)
-        import os
         mode = os.getenv("MODE", "dev").lower()
         if mode == "prod":
             # 1. Rate Limiting Checks
@@ -171,6 +185,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await close_redis_client()
     
     # Cancel background tasks (Optional: worker handles shutdown_event)
+    for task in worker_tasks:
+        if not task.done():
+            task.cancel()
     logger.info("Shutdown complete.")
 
 app = FastAPI(
@@ -226,21 +243,6 @@ def setup_opentelemetry(app: FastAPI) -> None:
 
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(TalosAuditMiddleware)
-
-# Phase 7: RBAC Middleware (Must run after Auth/Audit but before Routers)
-# Warning: get_policy_engine() throws if not initialized.
-# But Middleware is instantiated at import time/startup? No, added to stack.
-# Request handling happens later.
-# We can modify RBACMiddleware to take a 'get_policy_engine_fn'.
-
-# Let's actually instantiate it with the dependency getter which acts as a lazy locator?
-# This is a bit hacky.
-# Better: Make RBACMiddleware accept just 'app', and look up `app.state.policy_engine` in `dispatch`.
-# I will update RBACMiddleware in a moment. For now, let's comment on how we add it.
-# We'll rely on app.state injection.
-
-app.add_middleware(RBACMiddleware, policy_engine=None) # We will patch this or modify middleware to use app.state
-
 app.add_middleware(RegionHeaderMiddleware)
 
 setup_opentelemetry(app)
@@ -272,6 +274,7 @@ app.include_router(ai_router.router, prefix="/v1", tags=["LLM"])
 app.include_router(mcp_router.router, prefix="/v1/mcp", tags=["MCP"])
 app.include_router(admin_router.router, prefix="/admin/v1", tags=["Admin"])
 app.include_router(a2a_routes.router, prefix="/a2a/v1", tags=["A2A"])
+app.include_router(a2a_v1_router.router, prefix="", tags=["A2A"])
 app.include_router(agent_card.router, prefix="", tags=["Discovery"])
 
 app.include_router(health_router.router, tags=["Health"])
@@ -280,4 +283,3 @@ app.include_router(health_router.router, tags=["Health"])
 async def debug_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     traceback.print_exc()
     return JSONResponse(status_code=500, content={"detail": f"DEBUG: {str(exc)}", "traceback": traceback.format_exc()})
-

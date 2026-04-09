@@ -28,16 +28,29 @@ def mock_auth_context():
 @pytest.fixture
 def mock_settings_visibility():
     orig = settings.a2a_agent_card_visibility
+    orig_mode = settings.a2a_protocol_mode
     yield
     settings.a2a_agent_card_visibility = orig
+    settings.a2a_protocol_mode = orig_mode
 
 def test_agent_card_public(mock_settings_visibility):
+    settings.a2a_protocol_mode = "dual"
+    settings.a2a_agent_card_visibility = "public"
+    response = client.get("/.well-known/agent-card.json")
+    assert response.status_code == 200
+    data = response.json()
+    assert "supportedInterfaces" in data
+    assert data["supportedInterfaces"][0]["url"] == "http://testserver/rpc"
+    assert "Cache-Control" in response.headers
+
+
+def test_agent_card_public_compat_mode_keeps_legacy_shape(mock_settings_visibility):
+    settings.a2a_protocol_mode = "compat"
     settings.a2a_agent_card_visibility = "public"
     response = client.get("/.well-known/agent-card.json")
     assert response.status_code == 200
     data = response.json()
     assert data["profile"]["profile_id"] == "a2a-compat"
-    assert "Cache-Control" in response.headers
 
 def test_agent_card_auth_required_fail(mock_settings_visibility):
     settings.a2a_agent_card_visibility = "auth_required"

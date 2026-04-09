@@ -1,5 +1,5 @@
 import os
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import PostgresDsn
 from typing import Optional, cast
 
@@ -49,10 +49,11 @@ class Settings(BaseSettings):
         "/health/ready"
     ]
 
-    class Config:
-        case_sensitive = True
-        env_file = ".env"
-        extra = "ignore"
+    model_config = SettingsConfigDict(
+        case_sensitive=True,
+        env_file=".env",
+        extra="ignore",
+    )
 
 # Logic for Read URL Default
 settings = Settings()

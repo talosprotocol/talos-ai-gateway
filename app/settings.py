@@ -1,6 +1,6 @@
 """Settings and configuration."""
 import os
-from typing import Optional
+from typing import Literal, Optional
 from pydantic_settings import BaseSettings
 
 # Load .env file if it exists
@@ -28,9 +28,12 @@ class Settings(BaseSettings):
     mcp_schema_cache_ttl_seconds: int = 600
     mcp_tool_list_cache_ttl_seconds: int = 60
 
+    # Regional
+    talos_region: str = os.getenv("TALOS_REGION", "us")
+    
     # A2A
-    # A2A
-    a2a_agent_card_visibility: str = "auth_required"
+    a2a_protocol_mode: Literal["compat", "dual", "v1"] = "v1"
+    a2a_agent_card_visibility: str = "public"
     a2a_agent_name: str = "Talos AI Gateway"
     a2a_agent_description: str = "A Talos-secured AI Agent Gateway"
     a2a_privacy_policy_url: Optional[str] = None
@@ -45,7 +48,7 @@ class Settings(BaseSettings):
     a2a_sse_idle_timeout_seconds: int = 60 # 1 Minute
     
     # TGA
-    supervisor_public_key: Optional[str] = os.getenv("TGA_SUPERVISOR_PUBLIC_KEY")
+    TGA_SUPERVISOR_PUBLIC_KEY: Optional[str] = os.getenv("TGA_SUPERVISOR_PUBLIC_KEY")
     
     model_config = {
         "env_file": ".env",

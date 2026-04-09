@@ -1,7 +1,8 @@
 import pytest
-import time
 from unittest.mock import patch, MagicMock, AsyncMock
+import app.dependencies as dependencies
 from app.core.rate_limiter import RateLimiter, MemoryRateLimitStorage, RedisRateLimitStorage
+from app.adapters.memory_store.stores import MemoryRateLimitStore
 
 @pytest.mark.asyncio
 async def test_memory_rate_limiter():
@@ -59,3 +60,18 @@ async def test_redis_rate_limiter_lua():
     allowed, headers = await limiter.check("redis_key", "5/60")
     assert allowed is False
     assert headers["X-RateLimit-Remaining"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_dependency_rate_limiter_respects_memory_backend_in_dev(monkeypatch):
+    monkeypatch.setenv("MODE", "dev")
+    monkeypatch.setenv("RATE_LIMIT_BACKEND", "memory")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    dependencies._rate_limiter_instance = None
+
+    limiter = await dependencies.get_rate_limiter()
+
+    assert isinstance(limiter.storage, MemoryRateLimitStorage)
+    assert isinstance(dependencies.get_rate_limit_store(), MemoryRateLimitStore)
+
+    dependencies._rate_limiter_instance = None

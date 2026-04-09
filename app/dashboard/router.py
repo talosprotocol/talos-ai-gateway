@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
 from app.dependencies import get_upstream_store, get_model_group_store
 from app.domain.interfaces import UpstreamStore, ModelGroupStore
+from app.middleware.auth_admin import require_permission, RbacContext
 
 router = APIRouter()
 
@@ -11,7 +12,8 @@ router = APIRouter()
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(
     u_store: UpstreamStore = Depends(get_upstream_store),
-    mg_store: ModelGroupStore = Depends(get_model_group_store)
+    mg_store: ModelGroupStore = Depends(get_model_group_store),
+    principal: RbacContext = Depends(require_permission("llm.read"))
 ):
     """Serve the production dashboard."""
     upstreams = u_store.list_upstreams()

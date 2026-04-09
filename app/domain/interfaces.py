@@ -2,7 +2,7 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict, Any, TypedDict, Protocol
 from datetime import datetime
-from dataclasses import dataclass
+from pydantic import BaseModel
 
 class PrincipalStore(Protocol):
     def get_principal(self, principal_id: str) -> Optional[Dict[str, Any]]:
@@ -83,8 +83,6 @@ class AuditStore(ABC):
     @abstractmethod
     def get_dashboard_stats(self, window_hours: int = 24) -> Dict[str, Any]: pass
 
-from pydantic import BaseModel, Field
-
 class RateLimitResult(BaseModel):
     allowed: bool
     remaining: int
@@ -122,6 +120,7 @@ class A2ATaskRecord(TypedDict):
     key_id: str
     org_id: Optional[str]
     request_id: str
+    origin_surface: Optional[str]
     method: str
     status: str
     version: int
@@ -139,6 +138,45 @@ class TaskStore(ABC):
     def update_task_status(self, task_id: str, status: str, expected_version: int, result: Optional[Dict[str, Any]] = None, error: Optional[Dict[str, Any]] = None) -> int: pass
     @abstractmethod
     def get_task(self, task_id: str, team_id: str) -> Optional[A2ATaskRecord]: pass
+    @abstractmethod
+    def list_tasks(
+        self,
+        team_id: str,
+        *,
+        context_id: Optional[str] = None,
+        status: Optional[str] = None,
+        page_size: int = 50,
+        cursor_updated_at: Optional[datetime] = None,
+        cursor_task_id: Optional[str] = None,
+        status_timestamp_after: Optional[datetime] = None,
+    ) -> tuple[List[A2ATaskRecord], Optional[tuple[datetime, str]], int]: pass
+    @abstractmethod
+    def create_task_push_notification_config(
+        self,
+        task_id: str,
+        team_id: str,
+        config: Dict[str, Any],
+    ) -> Dict[str, Any]: pass
+    @abstractmethod
+    def get_task_push_notification_config(
+        self,
+        task_id: str,
+        team_id: str,
+        config_id: str,
+    ) -> Optional[Dict[str, Any]]: pass
+    @abstractmethod
+    def list_task_push_notification_configs(
+        self,
+        task_id: str,
+        team_id: str,
+    ) -> List[Dict[str, Any]]: pass
+    @abstractmethod
+    def delete_task_push_notification_config(
+        self,
+        task_id: str,
+        team_id: str,
+        config_id: str,
+    ) -> bool: pass
     @abstractmethod
     def delete_expired_tasks(self, cutoff_date: datetime) -> List[str]: pass
 

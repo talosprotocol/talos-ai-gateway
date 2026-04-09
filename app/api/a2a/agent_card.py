@@ -1,11 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, Header, Response
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+from typing import Any, Dict, List, Optional
 
+from fastapi import APIRouter, HTTPException, Header, Request, Response
+from pydantic import BaseModel, Field
+
+from app.api.a2a_v1.agent_card import build_agent_card as build_v1_agent_card
 from app.settings import settings
-from app.middleware.auth_public import get_auth_context
-from app.dependencies import get_key_store
-from app.adapters.postgres.key_store import KeyStore
 
 # Constants
 API_V1_STR = "/v1"
@@ -55,15 +54,34 @@ class AgentCard(BaseModel):
     privacy_policy: Optional[str] = None
     x_talos: Optional[TalosExtension] = None
 
+
+def build_compat_agent_card() -> Dict[str, Any]:
+    return AgentCard(
+        name=settings.a2a_agent_name,
+        description=settings.a2a_agent_description,
+        endpoints=[f"{API_V1_STR}/a2a"],
+        capabilities=Capabilities(
+            chat=True,
+            tools=True,
+            history=True,
+        ),
+        auth=AuthConfig(type="bearer"),
+        x_talos=TalosExtension(
+            supports_talos_attestation=True,
+            supported_surfaces=["a2a"],
+        ),
+    ).model_dump(exclude_none=True)
+
+
 # --- API ---
 
-@router.get("/.well-known/agent-card.json", response_model=AgentCard, response_model_exclude_none=True)
-@router.get("/.well-known/agent.json", response_model=AgentCard, response_model_exclude_none=True)
+@router.get("/.well-known/agent-card.json")
+@router.get("/.well-known/agent.json")
 async def get_agent_card(
+    request: Request,
     response: Response,
     auth_header: Optional[str] = Header(None, alias="Authorization"),
-    key_store: KeyStore = Depends(get_key_store)
-):
+) -> Dict[str, Any]:
     """
     Returns the Agent Card for A2A discovery.
     Visibility controlled by A2A_AGENT_CARD_VISIBILITY setting.
@@ -75,42 +93,17 @@ async def get_agent_card(
         
     if visibility == "auth_required":
         if not auth_header:
-            raise HTTPException(status_code=401, detail="Authentication required for discovery")
-        # Validate token using the middleware logic
-        # We manually call get_auth_context here or rely on exception
-        try:
-            # get_auth_context parses "Bearer <token>"
-            # Note: request is needed for get_auth_context in some versions
-            await get_auth_context(authorization=auth_header, key_store=key_store)
-        except HTTPException as e:
-            raise e
-        except Exception:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
+             raise HTTPException(status_code=401, detail="Authentication required for discovery")
+        if not auth_header.startswith("Bearer "):
+             raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # Set Caching headers
     response.headers["Cache-Control"] = "max-age=60"
     
-    # Determine capabilities
-    # TODO: Check settings.MCP_ENABLED if available
-    
-    return AgentCard(
-        name=settings.a2a_agent_name,
-        description=settings.a2a_agent_description,
-        endpoints=[f"{API_V1_STR}/a2a"], # Base URL for A2A
-        capabilities=Capabilities(
-            chat=True,
-            tools=True, 
-            history=True, # We support tasks.get
-            ux=UXCapabilities(supported_surfaces=["iframe", "web_view"]),
-            multimedia=MultimediaCapabilities(audio=False, video=False)
-        ),
-        auth=AuthConfig(type="bearer"),
-        links={"web": "https://talos.network"}, # Default or from settings
-        onboarding=settings.a2a_onboarding_url,
-        privacy_policy=settings.a2a_privacy_policy_url,
-        x_talos=TalosExtension(
-            supports_talos_attestation=True,
-            supported_surfaces=["a2a"], # Explicitly just a2a for now, mcp is separate endpoint
-            # public_key=settings.GATEWAY_PUBLIC_KEY 
+    if settings.a2a_protocol_mode in {"dual", "v1"}:
+        return build_v1_agent_card(
+            request,
+            include_compat_extension=False,
         )
-    )
+
+    return build_compat_agent_card()

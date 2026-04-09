@@ -227,6 +227,7 @@ class SecretJsonStore(SecretStore):
         return {"unknown": len(self._cache)}
 
     def get_secrets_batch(self, batch_size: int, cursor: Optional[str] = None) -> List[Dict[str, Any]]:
+        # Sort names for consistent cursor traversal
         names = sorted(self._cache.keys())
         start_idx = 0
         if cursor:

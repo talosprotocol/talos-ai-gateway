@@ -1,4 +1,5 @@
 """Routing Service."""
+import os
 import random
 import logging
 from typing import Optional, Dict, Any
@@ -17,6 +18,29 @@ class RoutingService:
         self.mg_store = model_group_store
         self.p_store = policy_store
         self.health = health_state
+
+    def default_model_group_id(self) -> Optional[str]:
+        preferred_ids = [
+            os.getenv("A2A_DEFAULT_MODEL_GROUP"),
+            os.getenv("DEFAULT_MODEL_GROUP"),
+        ]
+        for preferred_id in preferred_ids:
+            if not preferred_id:
+                continue
+            group = self.mg_store.get_model_group(preferred_id)
+            if group and group.get("enabled", True) and group.get("deployments"):
+                return preferred_id
+
+        for group in self.mg_store.list_model_groups():
+            group_id = group.get("id")
+            if not group_id:
+                continue
+            if not group.get("enabled", True):
+                continue
+            if not group.get("deployments"):
+                continue
+            return str(group_id)
+        return None
 
     def select_upstream(self, model_group_id: str, request_id: str) -> Optional[Dict[str, Any]]:
         group = self.mg_store.get_model_group(model_group_id)

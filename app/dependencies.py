@@ -367,10 +367,21 @@ def get_routing_service(
     return RoutingService(u_store, mg_store, rp_store, get_health_state())
 
 _rate_limiter_instance: Optional[RateLimiter] = None
+def _rate_limit_backend() -> str:
+    mode = os.getenv("MODE", "dev").lower()
+    backend = os.getenv("RATE_LIMIT_BACKEND")
+    if backend:
+        return backend.lower()
+    if mode == "prod" and os.getenv("REDIS_URL"):
+        return "redis"
+    return "memory"
+
+
 async def get_rate_limiter() -> RateLimiter:
     global _rate_limiter_instance
     if _rate_limiter_instance is None:
-        if os.getenv("REDIS_URL"):
+        backend = _rate_limit_backend()
+        if backend == "redis":
             # Import here to avoid circular
             from app.adapters.redis.client import get_redis_client
             redis_client = await get_redis_client()
@@ -383,7 +394,8 @@ async def get_rate_limiter() -> RateLimiter:
 def get_rate_limit_store() -> RateLimitStore:
     from app.adapters.memory_store.stores import MemoryRateLimitStore
     from app.adapters.redis.stores import RedisRateLimitStore
-    if os.getenv("REDIS_URL"): return RedisRateLimitStore()
+    if _rate_limit_backend() == "redis":
+        return RedisRateLimitStore()
     return MemoryRateLimitStore()
 
 from app.adapters.mcp.client import McpClient
@@ -450,20 +462,67 @@ async def get_attestation_verifier(p_store: PrincipalStore = Depends(get_princip
     replay = RedisReplayDetector(redis_client)
     return AttestationVerifier(p_store, replay)
 
+from pathlib import Path
+
 from app.domain.registry import SurfaceRegistry
-# Phase 7: Use new RBAC Registry
 from app.domain.rbac.registry import RBACSurfaceRegistry
+
+_surface_registry_instance = None
 _rbac_registry_instance = None
 
-def get_surface_registry() -> RBACSurfaceRegistry:
+
+def _service_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _find_upwards(start: Path, relative_path: str) -> Path | None:
+    current = start.resolve()
+    for base in (current, *current.parents):
+        candidate = base / relative_path
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _discover_contracts_surface_inventory() -> Path | None:
+    return _find_upwards(_service_root(), "contracts/inventory/gateway_surface.json")
+
+
+def _resolve_auth_surface_inventory_path() -> str:
+    configured = os.getenv("SURFACE_INVENTORY_PATH")
+    if configured:
+        return os.path.abspath(configured) if not os.path.isabs(configured) else configured
+
+    contracts_inventory = _discover_contracts_surface_inventory()
+    if contracts_inventory is not None:
+        return str(contracts_inventory)
+
+    raise RuntimeError("contracts/inventory/gateway_surface.json could not be found for auth surface inventory")
+
+
+def _resolve_rbac_surface_registry_path() -> str:
+    configured = os.getenv("RBAC_SURFACE_REGISTRY_PATH")
+    if configured:
+        return os.path.abspath(configured) if not os.path.isabs(configured) else configured
+
+    contracts_inventory = _discover_contracts_surface_inventory()
+    if contracts_inventory is not None:
+        return str(contracts_inventory)
+
+    raise RuntimeError("contracts/inventory/gateway_surface.json could not be found for RBAC surface registry")
+
+
+def get_surface_registry() -> SurfaceRegistry:
+    global _surface_registry_instance
+    if _surface_registry_instance is None:
+        _surface_registry_instance = SurfaceRegistry(_resolve_auth_surface_inventory_path())
+    return _surface_registry_instance
+
+
+def get_rbac_surface_registry() -> RBACSurfaceRegistry:
     global _rbac_registry_instance
     if _rbac_registry_instance is None:
-        path = os.getenv("SURFACE_INVENTORY_PATH", "gateway_surface.json")
-        # Ensure we look in root if not absolute
-        if not os.path.isabs(path):
-             # Assuming running from services/ai-gateway/
-             path = os.path.abspath(path)
-        _rbac_registry_instance = RBACSurfaceRegistry(path)
+        _rbac_registry_instance = RBACSurfaceRegistry(_resolve_rbac_surface_registry_path())
     return _rbac_registry_instance
 
 from app.domain.audit import AuditLogger
@@ -472,8 +531,16 @@ _audit_logger_instance = None
 def get_audit_logger() -> AuditLogger:
     global _audit_logger_instance
     if _audit_logger_instance is None:
+        is_prod = os.getenv("ENV", "development").lower() == "production" or os.getenv("MODE", "dev").lower() == "prod"
         sink_url = os.getenv("AUDIT_SINK_URL")
-        sink: AuditSink = HttpSink(sink_url, os.getenv("AUDIT_SINK_API_KEY") or "dev") if sink_url else StdOutSink()
+        
+        if is_prod:
+            if not sink_url:
+                raise RuntimeError("AUDIT_SINK_URL must be set in production")
+            sink: AuditSink = HttpSink(sink_url, os.getenv("AUDIT_SINK_API_KEY") or "dev")
+        else:
+            sink = HttpSink(sink_url, os.getenv("AUDIT_SINK_API_KEY") or "dev") if sink_url else StdOutSink()
+            
         _audit_logger_instance = AuditLogger(sink)
     return _audit_logger_instance
 
@@ -553,8 +620,10 @@ def get_policy_engine() -> PolicyEngine:
     return _policy_engine_instance
 
 def get_capability_validator() -> CapabilityValidator:
-    key = os.getenv("SUPERVISOR_PUBLIC_KEY")
-    if not key: return CapabilityValidator(supervisor_public_key="dev-placeholder")
+    """Returns a CapabilityValidator instance using TGA_SUPERVISOR_PUBLIC_KEY."""
+    key = settings.TGA_SUPERVISOR_PUBLIC_KEY
+    if not key:
+        return CapabilityValidator(supervisor_public_key="dev-placeholder")
     return CapabilityValidator(supervisor_public_key=key)
 
 # --- Phase 15: Budget & Usage ---
@@ -585,4 +654,3 @@ def get_tool_guard() -> ToolGuard:
             path = os.path.abspath(path)
         _tool_guard_instance = ToolGuard(path)
     return _tool_guard_instance
-

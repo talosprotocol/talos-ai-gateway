@@ -51,6 +51,7 @@ class RotationService:
                 plaintext = self.secret_store.get_secret_value(name)
                 if plaintext:
                     # Use CAS (Compare-and-Swap) to ensure we don't overwrite concurrent updates
+                    # expected_kek_id ensures we only rotate if it hasn't changed since we read it
                     success = self.secret_store.set_secret(name, plaintext, expected_kek_id=old_kek_id)
                     if success:
                         rotated_count += 1

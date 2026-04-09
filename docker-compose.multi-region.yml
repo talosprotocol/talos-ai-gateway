@@ -65,7 +65,7 @@ services:
       context: ../../
       dockerfile: services/ai-gateway/Dockerfile
     environment:
-      SURFACE_INVENTORY_PATH: /app/gateway_surface.json
+      SURFACE_INVENTORY_PATH: /app/contracts/inventory/gateway_surface.json
       TALOS_KEY_PEPPER: "dev-pepper-change-in-prod"
       DATABASE_WRITE_URL: postgresql://talos:talos@postgres-primary:5432/talos
       DATABASE_READ_URL: postgresql://talos:talos@postgres-primary:5432/talos
@@ -93,7 +93,7 @@ services:
       context: ../../
       dockerfile: services/ai-gateway/Dockerfile
     environment:
-      SURFACE_INVENTORY_PATH: /app/gateway_surface.json
+      SURFACE_INVENTORY_PATH: /app/contracts/inventory/gateway_surface.json
       TALOS_KEY_PEPPER: "dev-pepper-change-in-prod"
       DATABASE_WRITE_URL: postgresql://talos:talos@postgres-primary:5432/talos
       DATABASE_READ_URL: postgresql://talos:talos@postgres-replica:5432/talos

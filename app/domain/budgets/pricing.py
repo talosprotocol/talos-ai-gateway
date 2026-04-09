@@ -2,7 +2,7 @@
 from decimal import Decimal, ROUND_HALF_EVEN
 from typing import Dict, Optional, Tuple, Any
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -18,12 +18,13 @@ class PricingRegistry:
     def __init__(self, config: Dict[str, Any] = None):
         self._pricing_map = config or {}
         self._version = self._compute_version()
-        self._loaded_at = datetime.utcnow()
+        self._loaded_at = datetime.now(timezone.utc)
         
     def _compute_version(self) -> str:
         """Simple version hash of the current pricing map."""
-        content = json.dumps(self._pricing_map, sort_keys=True)
-        return hashlib.sha256(content.encode()).hexdigest()[:8]
+        from app.domain.a2a.canonical import canonical_json_bytes
+        content = canonical_json_bytes(self._pricing_map)
+        return hashlib.sha256(content).hexdigest()[:8]
 
     @property
     def version(self) -> str:
