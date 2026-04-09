@@ -7,7 +7,7 @@ from app.settings import settings as a2a_settings
 
 def test_capability_validator_uses_tga_prefixed_key():
     """Test that the validator uses the TGA_SUPERVISOR_PUBLIC_KEY from settings."""
-    test_key = "[REDACTED_BY_POLICY]"
+    test_key = "dummy-public-key-for-test"
     
     # Mock settings to have the test key
     with patch.object(core_settings, "TGA_SUPERVISOR_PUBLIC_KEY", test_key):
