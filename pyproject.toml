@@ -23,8 +23,8 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi>=0.43b0",
     "opentelemetry-instrumentation-sqlalchemy>=0.43b0",
     "opentelemetry-exporter-otlp>=1.22.0",
-    "aiohttp>=3.9.0",
-    "requests>=2.31.0",
+    "aiohttp>=3.10.2",
+    "requests>=2.32.2",
     "uuid6>=0.5.0",
     "talos-sdk-py @ git+https://github.com/talosprotocol/talos-sdk-py.git",
 ]
