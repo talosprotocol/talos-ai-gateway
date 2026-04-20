@@ -1,28 +1,46 @@
 """Verify Dashboard Stats Implementation."""
-import sys
 import os
-from fastapi.testclient import TestClient
+import requests
 
-# Ensure app in path
-sys.path.append(os.getcwd())
-os.environ["DEV_MODE"] = "true"
+BASE_URL = os.getenv("TALOS_GATEWAY_URL", "http://localhost:8000").rstrip("/")
+ADMIN_URL = f"{BASE_URL}/admin/v1"
+AUTH_ADMIN_SECRET = os.getenv("AUTH_ADMIN_SECRET", "dev-admin-secret")
+AUTH_ADMIN_PRINCIPAL = os.getenv("AUTH_ADMIN_PRINCIPAL", "dev-admin")
+DATA_PLANE_TOKEN = os.getenv("TALOS_API_TOKEN", "test-key-hard")
 
-from app.main import app
+
+def session_headers(permissions, *, data_plane=False):
+    payload = {
+        "principal": AUTH_ADMIN_PRINCIPAL,
+        "permissions": permissions,
+        "ttl_seconds": 3600,
+    }
+    if data_plane:
+        payload["data_plane_token"] = DATA_PLANE_TOKEN
+
+    resp = requests.post(
+        f"{ADMIN_URL}/auth/token",
+        headers={
+            "Content-Type": "application/json",
+            "X-Talos-Admin-Secret": AUTH_ADMIN_SECRET,
+        },
+        json=payload,
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return {"Authorization": f"Bearer {resp.json()['token']}"}
 
 def test_stats():
-    os.environ["DEV_MODE"] = "true"
-    client = TestClient(app)
-    
     # 1. Trigger Usage
     print("\n[TEST] Triggering usage via Public API...")
-    # Mock public key auth
-    resp = client.post(
-        "/v1/chat/completions",
-        headers={"Authorization": "Bearer sk-test-key-1"},
+    resp = requests.post(
+        f"{BASE_URL}/v1/chat/completions",
+        headers=session_headers(["llm.invoke"], data_plane=True),
         json={
             "model": "gpt-4-turbo",
             "messages": [{"role": "user", "content": "Hello"}]
-        }
+        },
+        timeout=30,
     )
     if resp.status_code == 200:
         print("[PASS] Chat completion successful.")
@@ -31,9 +49,10 @@ def test_stats():
 
     # 2. Get Stats
     print("\n[TEST] Fetching telemetry stats...")
-    resp = client.get(
-        "/admin/v1/telemetry/stats",
-        headers={"X-Talos-Principal": "admin@talos.io"} # Using legacy header in DEV_MODE
+    resp = requests.get(
+        f"{ADMIN_URL}/telemetry/stats",
+        headers=session_headers(["audit.read"]),
+        timeout=10,
     )
     if resp.status_code == 200:
         stats = resp.json()

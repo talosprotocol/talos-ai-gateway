@@ -4,12 +4,14 @@ import json
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
 
 from app.adapters.mcp.client import McpClient
 from app.api.a2a.routes import get_jsonrpc_auth_context
 from app.api.a2a_v1.agent_card import build_agent_card
 from app.api.a2a_v1.service import A2AV1Service
 from app.dependencies import (
+    get_audit_logger,
     get_audit_store,
     get_capability_validator,
     get_mcp_client,
@@ -18,6 +20,7 @@ from app.dependencies import (
     get_task_store,
     get_usage_store,
 )
+from app.domain.audit import AuditLogger
 from app.domain.interfaces import AuditStore, RateLimitStore, TaskStore, UsageStore
 from app.domain.routing import RoutingService
 from app.settings import settings
@@ -38,14 +41,15 @@ def _ensure_root_rpc_compat_enabled() -> None:
 
 async def _handle_rpc_request(
     request: Request,
-    routing_service: RoutingService = Depends(get_routing_service),
-    audit_store: AuditStore = Depends(get_audit_store),
-    rl_store: RateLimitStore = Depends(get_rate_limit_store),
-    usage_store: UsageStore = Depends(get_usage_store),
-    task_store: TaskStore = Depends(get_task_store),
-    mcp_client: McpClient = Depends(get_mcp_client),
-    capability_validator: Any = Depends(get_capability_validator),
-) -> Dict[str, Any]:
+    routing_service: RoutingService,
+    audit_store: AuditStore,
+    rl_store: RateLimitStore,
+    usage_store: UsageStore,
+    task_store: TaskStore,
+    mcp_client: McpClient,
+    capability_validator: Any,
+    audit_logger: AuditLogger,
+) -> Any:
     auth = await get_jsonrpc_auth_context(
         request=request,
         authorization=request.headers.get("Authorization"),
@@ -77,8 +81,14 @@ async def _handle_rpc_request(
         mcp_client=mcp_client,
         capability_validator=capability_validator,
         request=request,
+        audit_logger=audit_logger,
     )
-    return await service.handle_rpc(payload)
+    res = await service.handle_rpc(payload)
+
+    if isinstance(res, Response):
+        return res
+
+    return res
 
 
 @router.post("/rpc", name="a2a_v1_rpc")
@@ -91,6 +101,7 @@ async def rpc_entrypoint(
     task_store: TaskStore = Depends(get_task_store),
     mcp_client: McpClient = Depends(get_mcp_client),
     capability_validator: Any = Depends(get_capability_validator),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
 ) -> Dict[str, Any]:
     """Expose the A2A v1 RPC endpoint behind a protocol-mode gate."""
     _ensure_v1_enabled()
@@ -103,6 +114,7 @@ async def rpc_entrypoint(
         task_store=task_store,
         mcp_client=mcp_client,
         capability_validator=capability_validator,
+        audit_logger=audit_logger,
     )
 
 
@@ -116,6 +128,7 @@ async def root_rpc_compat_entrypoint(
     task_store: TaskStore = Depends(get_task_store),
     mcp_client: McpClient = Depends(get_mcp_client),
     capability_validator: Any = Depends(get_capability_validator),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
 ) -> Dict[str, Any]:
     """Expose a root-path JSON-RPC alias for upstream v0.3-era interop in dual mode."""
     _ensure_v1_enabled()
@@ -129,6 +142,7 @@ async def root_rpc_compat_entrypoint(
         task_store=task_store,
         mcp_client=mcp_client,
         capability_validator=capability_validator,
+        audit_logger=audit_logger,
     )
 
 

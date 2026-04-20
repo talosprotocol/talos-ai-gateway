@@ -115,17 +115,20 @@ class A2ADispatcher:
         usage_store: UsageStore,
         task_store: TaskStore,
         mcp_client: McpClient,
-        capability_validator: Optional[Any] = None
-    ):
+        capability_validator: Optional[Any] = None,
+        audit_logger: Optional[Any] = None, # app.domain.audit.AuditLogger
+    ) -> None:
         self.auth = auth
         self.routing = routing_service
         self.audit_store = audit_store
         self.rl_store = rl_store
         self.usage_store = usage_store
         self.task_store = task_store
+        self.audit_logger = audit_logger
         self.mcp_mapper = McpMapper(mcp_client, audit_store, capability_validator)
         self._redis_promise = None
         self.redis: Optional[Redis] = None
+
 
     async def _get_redis(self) -> Optional[Redis]:
         if self.redis is None:
@@ -134,7 +137,12 @@ class A2ADispatcher:
             self.redis = await self._redis_promise
         return self.redis
         
-    async def dispatch(self, payload: Dict[str, Any], capability: Optional[str] = None) -> Dict[str, Any]:
+    async def dispatch(
+        self, 
+        payload: Dict[str, Any], 
+        capability: Optional[str] = None,
+        idempotency_key: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Main entry point for JSON-RPC dispatch.
         """
@@ -142,6 +150,18 @@ class A2ADispatcher:
         method = payload.get("method")
         normalized_payload = payload
         
+        # Distributed Systems Reasoning: Idempotency Check
+        if idempotency_key:
+            redis = await self._get_redis()
+            if redis:
+                cache_key = f"a2a:idem:{self.auth.team_id}:{idempotency_key}"
+                try:
+                    cached = await redis.get(cache_key)
+                    if cached:
+                        return json.loads(cached)
+                except Exception:
+                    pass
+
         try:
             # 1. Validate Envelope
             validator.validate_request_envelope(payload)
@@ -181,6 +201,16 @@ class A2ADispatcher:
             # Strict validation for tasks.get results
             if method == "tasks.get":
                 validator.validate_method_response(method, response_payload)
+            
+            # Distributed Systems Reasoning: Save to Idempotency Cache
+            if idempotency_key:
+                redis = await self._get_redis()
+                if redis:
+                    cache_key = f"a2a:idem:{self.auth.team_id}:{idempotency_key}"
+                    try:
+                        await redis.setex(cache_key, 86400, json.dumps(response_payload)) # 24h TTL
+                    except Exception:
+                        pass
                 
             return response_payload
 
@@ -264,7 +294,7 @@ class A2ADispatcher:
 
     async def handle_send(self, params: Dict[str, Any], request_id: Any, capability: Optional[str] = None) -> Dict[str, Any]:
         # Scope Check for A2A
-        if not _has_any_scope(self.auth.scopes, "a2a.invoke", "a2a.send"):
+        if not _has_any_scope(self.auth.scopes, "a2a.send"):
              raise JsonRpcException(-32000, "Permission denied", data={"talos_code": "RBAC_DENIED", "details": "Missing A2A send scope"})
         
         task_id = str(params.get("task_id") or uuid7())
@@ -515,24 +545,54 @@ class A2ADispatcher:
         raise JsonRpcException(-32000, "Cancellation not supported", data={"talos_code": "NOT_CANCELABLE"})
 
     def _audit(self, action: str, outcome: str, resource_id: Optional[str] = None, details: Optional[Dict[str, Any]] = None, error_code: Optional[str] = None) -> None:
+        audit_details = details or {}
+        audit_details.update({
+            "team_id": self.auth.team_id,
+            "context": "a2a"
+        })
+        if resource_id:
+            audit_details["resource_id"] = resource_id
+        if error_code:
+            audit_details["error_code"] = error_code
+
         event = {
             "event_id": uuid7(),
             "timestamp": datetime.now(timezone.utc),
-            "team_id": self.auth.team_id,
             "principal_id": self.auth.key_id,
-            "context": "a2a",
             "action": action,
-            "request_id": resource_id,
             "resource_type": "a2a_task",
             "resource_id": resource_id,
             "status": outcome,
             "schema_id": "talos.audit.a2a.v1",
             "schema_version": 1,
-            "details": details or {}
+            "details": audit_details
         }
-        if error_code:
-            event["details"]["error_code"] = error_code
         self.audit_store.append_event(event)
+
+        # Forward to central audit service if configured
+        if self.audit_logger:
+            from app.domain.registry import SurfaceItem
+            # Map a2a internal event to a surface-like structure for the central logger
+            surface_id = action if action.startswith("a2a.") else f"a2a.{action}"
+            mock_surface = SurfaceItem(
+                id=surface_id,
+                type="internal",
+                path_template=f"/a2a/v1/rpc#{action}",
+                audit_meta_allowlist=list(audit_details.keys())
+            )
+            self.audit_logger.log_event(
+                surface=mock_surface,
+                principal={
+                    "auth_mode": "bearer",
+                    "principal_id": self.auth.principal_id or self.auth.key_id,
+                    "team_id": self.auth.team_id
+                },
+                http_info={"method": "INTERNAL", "status_code": 200},
+                outcome=outcome,
+                request_id=resource_id or str(uuid7()),
+                metadata=audit_details,
+                resource={"resource_type": "a2a_task", "resource_id": resource_id}
+            )
 
     def _record_usage(self, target: str, status: str, latency: int, result: Optional[Dict[str, Any]] = None) -> None:
         usage = {

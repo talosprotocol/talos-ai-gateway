@@ -649,7 +649,7 @@ class TgaLog(Base):
         String, nullable=True
     )
     artifact_payload: Mapped[Optional[dict[str, Any]]] = mapped_column(
-        postgresql.JSONB, nullable=True
+        JSON().with_variant(postgresql.JSONB(), "postgresql"), nullable=True
     )
     schema_id: Mapped[str] = mapped_column(String, nullable=False)
     schema_version: Mapped[str] = mapped_column(String, nullable=False)

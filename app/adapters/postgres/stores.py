@@ -8,11 +8,12 @@ from app.utils.id import uuid7
 import json
 from app.domain.interfaces import (
     UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, 
-    RoutingPolicyStore, PrincipalStore, RotationOperationStore
+    RoutingPolicyStore, PrincipalStore, RotationOperationStore, RbacStore
 )
 from app.adapters.postgres.models import (
     LlmUpstream, ModelGroup, Secret, McpServer, McpPolicy, AuditEvent, 
-    Deployment, Principal, RoutingPolicy, UsageEvent, RotationOperation
+    Deployment, Principal, RoutingPolicy, UsageEvent, RotationOperation,
+    Role, RoleBinding
 )
 
 logger = logging.getLogger(__name__)
@@ -432,3 +433,103 @@ class PostgresRotationStore(RotationOperationStore):
     def get_active_operation(self) -> Optional[Dict[str, Any]]:
         obj = self.db.query(RotationOperation).filter(RotationOperation.status == "running").first()
         return to_dict(obj)
+
+class PostgresRbacStore(RbacStore):
+    def __init__(self, db: Session):
+        self.db = db
+
+    def list_roles(self) -> List[Dict[str, Any]]:
+        objs = self.db.query(Role).all()
+        return [to_dict(o) for o in objs]
+
+    def get_role(self, role_id: str) -> Optional[Dict[str, Any]]:
+        obj = self.db.query(Role).filter(Role.id == role_id).first()
+        return to_dict(obj)
+
+    def upsert_role(self, role: Dict[str, Any]) -> None:
+        obj = self.db.query(Role).filter(Role.id == role['id']).first()
+        if obj:
+            for k, v in role.items():
+                if hasattr(obj, k):
+                    setattr(obj, k, v)
+        else:
+            obj = Role(**role)
+            self.db.add(obj)
+        self.db.commit()
+
+    def delete_role(self, role_id: str) -> None:
+        self.db.query(Role).filter(Role.id == role_id).delete()
+        self.db.commit()
+
+    def list_bindings(self) -> List[Dict[str, Any]]:
+        # Group by principal_id
+        objs = self.db.query(RoleBinding).all()
+        by_principal: Dict[str, Dict[str, Any]] = {}
+        for o in objs:
+            pid = o.principal_id
+            if pid not in by_principal:
+                by_principal[pid] = {"principal_id": pid, "bindings": []}
+            
+            # Map DB to Domain Model BindingEntry expectation
+            entry = to_dict(o)
+            # rename id to binding_id for domain compat
+            entry['binding_id'] = entry.pop('id')
+            # Extract scope attributes if they were merged or handle separately
+            # DB has scope_type, scope_org_id, scope_team_id
+            scope = {"scope_type": entry.pop('scope_type'), "attributes": {}}
+            if entry.get('scope_org_id'): scope['attributes']['org_id'] = entry.pop('scope_org_id')
+            if entry.get('scope_team_id'): scope['attributes']['team_id'] = entry.pop('scope_team_id')
+            entry['scope'] = scope
+            
+            by_principal[pid]["bindings"].append(entry)
+            
+        return list(by_principal.values())
+
+    def get_binding(self, principal_id: str) -> Optional[Dict[str, Any]]:
+        objs = self.db.query(RoleBinding).filter(RoleBinding.principal_id == principal_id).all()
+        if not objs:
+            return None
+        
+        bindings = []
+        for o in objs:
+            entry = to_dict(o)
+            entry['binding_id'] = entry.pop('id')
+            scope = {"scope_type": entry.pop('scope_type'), "attributes": {}}
+            if entry.get('scope_org_id'): scope['attributes']['org_id'] = entry.pop('scope_org_id')
+            if entry.get('scope_team_id'): scope['attributes']['team_id'] = entry.pop('scope_team_id')
+            entry['scope'] = scope
+            bindings.append(entry)
+            
+        return {
+            "principal_id": principal_id,
+            "bindings": bindings
+        }
+
+    def upsert_binding(self, binding: Dict[str, Any]) -> None:
+        pid = binding['principal_id']
+        entries = binding.get('bindings', [])
+        
+        # Simple full-replace strategy
+        self.db.query(RoleBinding).filter(RoleBinding.principal_id == pid).delete()
+        
+        for entry in entries:
+            # Map Domain -> DB
+            db_entry = {
+                "id": entry.get('binding_id') or str(uuid7()),
+                "principal_id": pid,
+                "role_id": entry['role_id']
+            }
+            scope = entry.get('scope', {})
+            db_entry["scope_type"] = scope.get('scope_type', 'global')
+            attrs = scope.get('attributes', {})
+            if 'org_id' in attrs: db_entry['scope_org_id'] = attrs['org_id']
+            if 'team_id' in attrs: db_entry['scope_team_id'] = attrs['team_id']
+            
+            obj = RoleBinding(**db_entry)
+            self.db.add(obj)
+            
+        self.db.commit()
+
+    def delete_binding(self, principal_id: str) -> None:
+        self.db.query(RoleBinding).filter(RoleBinding.principal_id == principal_id).delete()
+        self.db.commit()

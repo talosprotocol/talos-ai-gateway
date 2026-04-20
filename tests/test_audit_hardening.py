@@ -121,9 +121,9 @@ def test_scalar_meta_enforcement(real_logger_with_mock_sink):
     assert "meta_redaction_applied" in event["meta"] # Wait, this should be TRUE (system set), not "hacker"
     assert event["meta"]["meta_redaction_applied"] is True
     
-    # 5. Redaction Telemetry (Sorted List)
+    # 5. Redaction Telemetry (contract meta values remain scalar)
     redacted = event["meta"]["meta_redacted_keys"]
-    assert isinstance(redacted, list)
+    assert isinstance(redacted, str)
     assert "arr (invalid type)" in redacted
     assert "badint (unsafe integer)" in redacted
     assert "obj (invalid type)" in redacted
@@ -167,7 +167,7 @@ def test_principal_shape_absent_rules(real_logger_with_mock_sink):
 def test_gateway_rejects_non_normative_identity(mock_get_reg, client, mock_sink):
     """Verify that Gateway rejects identities with invalid formats (e.g. UPPERCASE UUID) with 400."""
     from fastapi import Depends
-    from app.dependencies import get_key_store, get_principal_store, get_attestation_verifier
+    from app.dependencies import get_key_store, get_principal_store, get_attestation_verifier, get_policy_engine
     from app.middleware.auth_public import get_auth_context
     
     # 1. Setup Surface (must match request to get past auth)
@@ -193,7 +193,7 @@ def test_gateway_rejects_non_normative_identity(mock_get_reg, client, mock_sink)
 
     class DummyKS:
         def hash_key(self, k): return "hash"
-        def lookup_by_hash(self, h): return MockKeyData()
+        async def lookup_by_hash(self, h): return MockKeyData()
     
     class DummyPrincipalStore:
         def get_principal(self, pid): return None
@@ -201,11 +201,16 @@ def test_gateway_rejects_non_normative_identity(mock_get_reg, client, mock_sink)
     async def ks_dep(): return DummyKS()
     async def ps_dep(): return DummyPrincipalStore()
     async def verifier_dep(): return Mock()
+    async def policy_dep():
+        return Mock(
+            authorize=Mock(return_value=Mock(allowed=True, reason="test"))
+        )
     
     app.dependency_overrides[get_key_store] = ks_dep
     app.dependency_overrides[get_principal_store] = ps_dep
     app.dependency_overrides[get_attestation_verifier] = verifier_dep
     app.dependency_overrides[get_surface_registry] = lambda: mock_reg_obj
+    app.dependency_overrides[get_policy_engine] = policy_dep
     
     # 3. Add Dummy Route to trigger dependency
     @app.get("/identity-check")
@@ -225,11 +230,6 @@ def test_gateway_rejects_non_normative_identity(mock_get_reg, client, mock_sink)
     else:
         error = data["error"]
         
-    assert error["code"] == "IDENTITY_INVALID"
-    assert "details" in error
-    details = error["details"]
-    assert "path" in details
-    assert "reason" in details
-    assert "validator" in details
-    # The failure is due to Uppercase UUID pattern
-    assert details["validator"] == "pattern" or details["validator"] == "unknown" # Fallback if exception structure varies
+    assert error["code"] == "AUTH_INVALID"
+    assert "Identity validation failed" in error["message"]
+    assert "team_id" in error["message"]

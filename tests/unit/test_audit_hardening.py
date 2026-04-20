@@ -68,3 +68,51 @@ def test_audit_logger_no_sink_prod_fail():
     with patch.dict(os.environ, {"ENV": "production"}):
         with pytest.raises(RuntimeError, match="Audit sink must be explicitly provided in production"):
             AuditLogger(sink=None)
+
+@pytest.mark.asyncio
+async def test_http_sink_uses_async_aiohttp_session(monkeypatch):
+    """Ensure HttpSink does not block the event loop with synchronous requests."""
+    from app.domain import sink as sink_module
+    from app.domain.sink import HttpSink
+
+    calls = []
+
+    class FakeResponse:
+        status = 202
+
+        async def __aenter__(self):
+            calls.append(("response_enter",))
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            calls.append(("response_exit",))
+
+        async def text(self):
+            return ""
+
+    class FakeSession:
+        def __init__(self, *, timeout):
+            calls.append(("session_init", timeout.total))
+
+        async def __aenter__(self):
+            calls.append(("session_enter",))
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            calls.append(("session_exit",))
+
+        def post(self, url, *, json, headers):
+            calls.append(("post", url, json, headers))
+            return FakeResponse()
+
+    monkeypatch.setattr(sink_module.aiohttp, "ClientSession", FakeSession)
+
+    await HttpSink("http://audit-service", "audit-key").emit({"event_id": "e-1"})
+
+    assert ("session_init", 5.0) in calls
+    assert (
+        "post",
+        "http://audit-service/events",
+        {"event_id": "e-1"},
+        {"Content-Type": "application/json", "Authorization": "Bearer audit-key"},
+    ) in calls

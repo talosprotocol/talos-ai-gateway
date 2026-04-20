@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from fastapi import HTTPException
 from app.middleware.auth_public import get_auth_context
@@ -7,16 +8,22 @@ from app.domain.registry import SurfaceItem
 @pytest.fixture
 def mock_deps():
     return {
-        "key_store": Mock(),
+        "key_store": Mock(lookup_by_hash=AsyncMock()),
         "verifier": AsyncMock(),
         "principal_store": Mock(),
         "registry": Mock(),
-        "audit_logger": Mock()
+        "audit_logger": Mock(),
+        "policy_engine": Mock(
+            authorize=Mock(
+                return_value=SimpleNamespace(allowed=False, reason="not bound")
+            )
+        ),
     }
 
 @pytest.mark.asyncio
-async def test_auth_flow_success(mock_deps):
+async def test_auth_flow_success(mock_deps, monkeypatch):
     """Test full happy path: Registry -> Bearer -> Scope -> Attestation -> Binding."""
+    monkeypatch.delenv("DEV_MODE", raising=False)
     # Setup Logic
     path = "/v1/chat/completions"
     method = "POST"
@@ -49,7 +56,8 @@ async def test_auth_flow_success(mock_deps):
     mock_deps["principal_store"].get_principal.return_value = principal
     
     # 4. Verifier
-    mock_deps["verifier"].verify_request.return_value = "key-signer-111"
+    signer_key_id = "01946765-c7e0-798c-8c65-22d7a64b91f9"
+    mock_deps["verifier"].verify_request.return_value = signer_key_id
 
     # Request
     request = Mock()
@@ -74,6 +82,7 @@ async def test_auth_flow_success(mock_deps):
     # Ensure verifier called with correct opcode from surface
     mock_deps["verifier"].verify_request.assert_called()
     assert mock_deps["verifier"].verify_request.call_args[0][4] == "llm.chat.completions"
+    assert ctx.signer_key_id == signer_key_id
 
 @pytest.mark.asyncio
 async def test_auth_flow_missing_scope(mock_deps):
@@ -102,8 +111,9 @@ async def test_auth_flow_missing_scope(mock_deps):
     assert err["code"] == "RBAC_DENIED"
 
 @pytest.mark.asyncio
-async def test_auth_flow_attestation_missing(mock_deps):
+async def test_auth_flow_attestation_missing(mock_deps, monkeypatch):
     """Test Attestation Required but missing header."""
+    monkeypatch.delenv("DEV_MODE", raising=False)
     surface = SurfaceItem(
         id="secure.op", type="http", required_scopes=["scope"], 
         attestation_required=True, audit_action="a", data_classification="public"
@@ -111,6 +121,9 @@ async def test_auth_flow_attestation_missing(mock_deps):
     mock_deps["registry"].match_request.return_value = surface
     
     key_data = Mock()
+    key_data.id = "01946765-c7e0-798c-8c65-22d7a64b91f5"
+    key_data.team_id = "01946765-c7e0-798c-8c65-22d7a64b91f6"
+    key_data.org_id = "01946765-c7e0-798c-8c65-22d7a64b91f7"
     key_data.revoked = False
     key_data.scopes = ["scope"]
     mock_deps["key_store"].lookup_by_hash.return_value = key_data
@@ -134,8 +147,9 @@ async def test_auth_flow_attestation_missing(mock_deps):
     assert "Attestation required" in err["message"]
 
 @pytest.mark.asyncio
-async def test_auth_flow_identity_binding_fail(mock_deps):
+async def test_auth_flow_identity_binding_fail(mock_deps, monkeypatch):
     """Test Team ID Mismatch."""
+    monkeypatch.delenv("DEV_MODE", raising=False)
     surface = SurfaceItem(
         id="op", type="http", required_scopes=["scope"], 
         attestation_required=True, audit_action="a", data_classification="public"
@@ -143,16 +157,20 @@ async def test_auth_flow_identity_binding_fail(mock_deps):
     mock_deps["registry"].match_request.return_value = surface
     
     key_data = Mock()
-    key_data.id = "key-A"
-    key_data.team_id = "Team-A"
+    key_data.id = "01946765-c7e0-798c-8c65-22d7a64b91f5"
+    key_data.team_id = "01946765-c7e0-798c-8c65-22d7a64b91f6"
+    key_data.org_id = "01946765-c7e0-798c-8c65-22d7a64b91f7"
     key_data.scopes = ["scope"]
     key_data.revoked = False
     mock_deps["key_store"].lookup_by_hash.return_value = key_data
     
     # Principal is from Team-B -> Mismatch!
-    principal = {"id": "p-1", "team_id": "Team-B"}
+    principal = {
+        "id": "p-1",
+        "team_id": "01946765-c7e0-798c-8c65-22d7a64b91f8",
+    }
     mock_deps["principal_store"].get_principal.return_value = principal
-    mock_deps["verifier"].verify_request.return_value = "signer-key"
+    mock_deps["verifier"].verify_request.return_value = "01946765-c7e0-798c-8c65-22d7a64b91f9"
 
     request = Mock()
     request.route.path = "/"

@@ -1,9 +1,9 @@
 import os
-import base64
 import logging
 import re
 from typing import Dict, List, Optional
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from talos_contracts import base64url_decode, base64url_encode
 from app.domain.secrets.ports import KekProvider
 from app.domain.secrets.models import EncryptedEnvelope
 
@@ -144,11 +144,7 @@ class MultiKekProvider(KekProvider):
         return sorted(list(self._keys.keys()))
 
     def _b64u_encode(self, data: bytes) -> str:
-        return base64.urlsafe_b64encode(data).decode('ascii').rstrip('=')
+        return base64url_encode(data)
 
     def _b64u_decode(self, s: str) -> bytes:
-        # Add padding back if necessary
-        missing_padding = len(s) % 4
-        if missing_padding:
-            s += '=' * (4 - missing_padding)
-        return base64.urlsafe_b64decode(s)
+        return base64url_decode(s)

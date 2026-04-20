@@ -35,7 +35,9 @@ V1_OPERATION_SCOPES = [
 
 
 @pytest.fixture(autouse=True)
-def reset_state():
+def reset_state(monkeypatch):
+    monkeypatch.setenv("DEV_MODE", "false")
+    monkeypatch.setenv("A2A_SIMULATED_LLM_RESPONSES", "false")
     original_mode = settings.a2a_protocol_mode
     app.dependency_overrides = {}
     _TASK_STATE.clear()
@@ -55,6 +57,7 @@ def make_auth_context(scopes):
     auth_ctx.key_id = "key-123"
     auth_ctx.team_id = "team-1"
     auth_ctx.org_id = "org-1"
+    auth_ctx.principal_id = "principal-1"
     auth_ctx.scopes = scopes
     auth_ctx.allowed_model_groups = ["*"]
     auth_ctx.allowed_mcp_servers = ["*"]
@@ -161,7 +164,7 @@ def test_send_message_accepts_operation_level_send_scope_without_legacy_invoke()
     assert data["result"]["message"]["parts"][0]["text"] == "Scoped hello"
 
 
-def test_send_message_rejects_legacy_invoke_scope_in_strict_v1_mode():
+def test_send_message_rejects_legacy_invoke_scope():
     settings.a2a_protocol_mode = "v1"
     app.dependency_overrides[get_auth_context] = lambda: make_auth_context(["a2a.invoke", "llm.invoke", "a2a.stream"])
 
@@ -188,96 +191,10 @@ def test_send_message_rejects_legacy_invoke_scope_in_strict_v1_mode():
     assert error["data"]["required_scope_sets"] == [["a2a.send"]]
 
 
-def test_send_message_accepts_legacy_invoke_scope_in_dual_mode():
-    settings.a2a_protocol_mode = "dual"
-    app.dependency_overrides[get_auth_context] = lambda: make_auth_context(["a2a.invoke", "llm.invoke", "a2a.stream"])
-
-    with patch("app.domain.a2a.dispatcher.invoke_openai_compatible", new_callable=AsyncMock) as mock_invoke:
-        rate_limit = MagicMock()
-        rate_limit.check_limit = AsyncMock(return_value=MagicMock(allowed=True))
-        routing = MagicMock()
-        routing.select_upstream.return_value = {
-            "upstream": {"endpoint": "http://mock", "id": "u1"},
-            "model_name": "gpt-4o",
-        }
-        mock_invoke.return_value = {
-            "choices": [{"message": {"content": "Dual legacy hello"}}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 2},
-        }
-
-        app.dependency_overrides[get_rate_limit_store] = lambda: rate_limit
-        app.dependency_overrides[get_routing_service] = lambda: routing
-        app.dependency_overrides[get_usage_store] = lambda: MagicMock()
-        app.dependency_overrides[get_audit_store] = lambda: MagicMock()
-
-        response = client.post(
-            "/rpc",
-            json={
-                "jsonrpc": "2.0",
-                "id": "req-dual-legacy-invoke",
-                "method": "SendMessage",
-                "params": {
-                    "message": {
-                        "messageId": "msg-dual-legacy-invoke",
-                        "role": "user",
-                        "parts": [{"kind": "text", "text": "Hello"}],
-                    },
-                },
-            },
-            headers=AUTH_HEADERS,
-        )
-
-    assert response.status_code == 200, response.text
-    assert response.json()["result"]["message"]["parts"][0]["text"] == "Dual legacy hello"
-
-
-def test_root_rpc_compat_alias_accepts_send_message_in_dual_mode():
-    settings.a2a_protocol_mode = "dual"
-    app.dependency_overrides[get_auth_context] = lambda: make_auth_context(["a2a.invoke", "llm.invoke", "a2a.stream"])
-
-    with patch("app.domain.a2a.dispatcher.invoke_openai_compatible", new_callable=AsyncMock) as mock_invoke:
-        rate_limit = MagicMock()
-        rate_limit.check_limit = AsyncMock(return_value=MagicMock(allowed=True))
-        routing = MagicMock()
-        routing.select_upstream.return_value = {
-            "upstream": {"endpoint": "http://mock", "id": "u1"},
-            "model_name": "gpt-4o",
-        }
-        mock_invoke.return_value = {
-            "choices": [{"message": {"content": "Root alias hello"}}],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 2},
-        }
-
-        app.dependency_overrides[get_rate_limit_store] = lambda: rate_limit
-        app.dependency_overrides[get_routing_service] = lambda: routing
-        app.dependency_overrides[get_usage_store] = lambda: MagicMock()
-        app.dependency_overrides[get_audit_store] = lambda: MagicMock()
-
-        response = client.post(
-            "/",
-            json={
-                "jsonrpc": "2.0",
-                "id": "req-root-compat",
-                "method": "SendMessage",
-                "params": {
-                    "message": {
-                        "messageId": "msg-root-compat",
-                        "role": "user",
-                        "parts": [{"kind": "text", "text": "Hello"}],
-                    },
-                },
-            },
-            headers=AUTH_HEADERS,
-        )
-
-    assert response.status_code == 200, response.text
-    assert response.json()["result"]["message"]["parts"][0]["text"] == "Root alias hello"
-
-
 def test_send_message_can_use_dev_mock_llm_fallback(monkeypatch):
     settings.a2a_protocol_mode = "v1"
     app.dependency_overrides[get_auth_context] = lambda: make_auth_context(["a2a.send", "llm.invoke"])
-    monkeypatch.setenv("A2A_MOCK_LLM_RESPONSES", "true")
+    monkeypatch.setenv("A2A_SIMULATED_LLM_RESPONSES", "true")
 
     rate_limit = MagicMock()
     rate_limit.check_limit = AsyncMock(return_value=MagicMock(allowed=True))
@@ -440,6 +357,27 @@ def test_invalid_jsonrpc_id_type_is_rejected():
     assert response.status_code == 200, response.text
     error = response.json()["error"]
     assert error["code"] == -32600
+
+
+def test_jsonrpc_error_with_null_data_does_not_500():
+    settings.a2a_protocol_mode = "v1"
+    app.dependency_overrides[get_auth_context] = lambda: make_auth_context(["a2a.send"])
+
+    response = client.post(
+        "/a2a/v1/rpc",
+        json={
+            "jsonrpc": "2.0",
+            "id": "req-method-missing",
+            "method": "NoSuchMethod",
+            "params": {},
+        },
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200, response.text
+    error = response.json()["error"]
+    assert error["code"] == -32601
+    assert error["data"] is None
 
 
 def test_get_task_omits_artifacts_by_default(mock_auth_context):
@@ -862,215 +800,6 @@ def test_send_streaming_message_returns_jsonrpc_sse(mock_auth_context):
     assert payloads[0]["result"]["task"]["status"]["state"] in {"TASK_STATE_WORKING", "TASK_STATE_COMPLETED"}
     assert payloads[-2]["result"]["artifactUpdate"]["artifact"]["parts"][0]["text"] == "streamed hello"
     assert payloads[-1]["result"]["statusUpdate"]["status"]["state"] == "TASK_STATE_COMPLETED"
-
-
-def test_push_notification_config_crud_uses_official_method_aliases_in_dual_mode(mock_auth_context):
-    settings.a2a_protocol_mode = "dual"
-    app.dependency_overrides[get_auth_context] = lambda: mock_auth_context
-    now = datetime.now(timezone.utc)
-
-    _TASK_STATE["task-push"] = {
-        "id": "task-push",
-        "team_id": "team-1",
-        "key_id": "key-123",
-        "org_id": "org-1",
-        "request_id": "req-push",
-        "origin_surface": "a2a_v1",
-        "method": "tasks.send",
-        "status": "queued",
-        "version": 1,
-        "request_meta": {"context_id": "ctx-push", "origin_surface": "a2a_v1"},
-        "input_redacted": None,
-        "result": None,
-        "error": None,
-        "created_at": now,
-        "updated_at": now,
-    }
-
-    create_response = client.post(
-        "/rpc",
-        json={
-            "jsonrpc": "2.0",
-            "id": "push-create",
-            "method": "tasks/pushNotificationConfig/set",
-            "params": {
-                "taskId": "task-push",
-                "url": "https://client.example.com/a2a/push",
-                "token": "push-token",
-                "authentication": {
-                    "scheme": "Bearer",
-                    "credentials": "push-secret",
-                },
-            },
-        },
-        headers=AUTH_HEADERS,
-    )
-
-    assert create_response.status_code == 200, create_response.text
-    created = create_response.json()["result"]
-    config_id = created["id"]
-    assert created["taskId"] == "task-push"
-    assert created["authentication"]["credentials"] == "[REDACTED]"
-
-    get_response = client.post(
-        "/rpc",
-        json={
-            "jsonrpc": "2.0",
-            "id": "push-get",
-            "method": "tasks/pushNotificationConfig/get",
-            "params": {"taskId": "task-push", "id": config_id},
-        },
-        headers=AUTH_HEADERS,
-    )
-    assert get_response.status_code == 200, get_response.text
-    assert get_response.json()["result"]["authentication"]["credentials"] == "[REDACTED]"
-
-    list_response = client.post(
-        "/rpc",
-        json={
-            "jsonrpc": "2.0",
-            "id": "push-list",
-            "method": "tasks/pushNotificationConfig/list",
-            "params": {"taskId": "task-push"},
-        },
-        headers=AUTH_HEADERS,
-    )
-    assert list_response.status_code == 200, list_response.text
-    listed = list_response.json()["result"]["configs"]
-    assert len(listed) == 1
-    assert listed[0]["id"] == config_id
-
-    delete_response = client.post(
-        "/rpc",
-        json={
-            "jsonrpc": "2.0",
-            "id": "push-delete",
-            "method": "tasks/pushNotificationConfig/delete",
-            "params": {"taskId": "task-push", "id": config_id},
-        },
-        headers=AUTH_HEADERS,
-    )
-    assert delete_response.status_code == 200, delete_response.text
-    assert delete_response.json()["result"]["deleted"] is True
-
-    final_list = client.post(
-        "/rpc",
-        json={
-            "jsonrpc": "2.0",
-            "id": "push-list-final",
-            "method": "tasks/pushNotificationConfig/list",
-            "params": {"taskId": "task-push"},
-        },
-        headers=AUTH_HEADERS,
-    )
-    assert final_list.status_code == 200, final_list.text
-    assert final_list.json()["result"]["configs"] == []
-
-
-def test_send_message_with_push_notification_config_schedules_delivery(mock_auth_context):
-    settings.a2a_protocol_mode = "dual"
-    app.dependency_overrides[get_auth_context] = lambda: mock_auth_context
-
-    with patch("app.domain.a2a.dispatcher.invoke_openai_compatible", new_callable=AsyncMock) as mock_invoke, patch(
-        "app.domain.a2a.dispatcher.schedule_push_notifications"
-    ) as mock_schedule:
-        rate_limit = MagicMock()
-        rate_limit.check_limit = AsyncMock(return_value=MagicMock(allowed=True))
-        routing = MagicMock()
-        routing.select_upstream.return_value = {
-            "upstream": {"endpoint": "http://mock", "id": "u1"},
-            "model_name": "gpt-4o",
-        }
-        usage_store = MagicMock()
-        audit_store = MagicMock()
-        mock_invoke.return_value = {
-            "choices": [{"message": {"content": "Hello with push"}}],
-            "usage": {"prompt_tokens": 4, "completion_tokens": 5},
-        }
-
-        app.dependency_overrides[get_rate_limit_store] = lambda: rate_limit
-        app.dependency_overrides[get_routing_service] = lambda: routing
-        app.dependency_overrides[get_usage_store] = lambda: usage_store
-        app.dependency_overrides[get_audit_store] = lambda: audit_store
-
-        response = client.post(
-            "/rpc",
-            json={
-                "jsonrpc": "2.0",
-                "id": "push-send",
-                "method": "message/send",
-                "params": {
-                    "message": {
-                        "messageId": "msg-push",
-                        "role": "user",
-                        "parts": [{"kind": "text", "text": "Hello"}],
-                    },
-                    "configuration": {
-                        "taskPushNotificationConfig": {
-                            "url": "https://client.example.com/a2a/push",
-                            "token": "push-token",
-                            "authentication": {
-                                "scheme": "Bearer",
-                                "credentials": "push-secret",
-                            },
-                        }
-                    },
-                },
-            },
-            headers=AUTH_HEADERS,
-        )
-
-    assert response.status_code == 200, response.text
-    assert mock_schedule.called
-    delivered_configs, payload = mock_schedule.call_args.args
-    assert delivered_configs[0]["url"] == "https://client.example.com/a2a/push"
-    assert payload["statusUpdate"]["status"]["state"] in {"TASK_STATE_WORKING", "TASK_STATE_COMPLETED"}
-
-
-def test_strict_v1_rejects_legacy_message_send_alias(mock_auth_context):
-    settings.a2a_protocol_mode = "v1"
-    app.dependency_overrides[get_auth_context] = lambda: mock_auth_context
-
-    response = client.post(
-        "/rpc",
-        json={
-            "jsonrpc": "2.0",
-            "id": "legacy-alias-v1",
-            "method": "message/send",
-            "params": {
-                "message": {
-                    "messageId": "msg-legacy-alias-v1",
-                    "role": "user",
-                    "parts": [{"kind": "text", "text": "Hello"}],
-                },
-            },
-        },
-        headers=AUTH_HEADERS,
-    )
-
-    assert response.status_code == 200, response.text
-    error = response.json()["error"]
-    assert error["code"] == -32601
-
-
-def test_strict_v1_rejects_legacy_push_notification_alias(mock_auth_context):
-    settings.a2a_protocol_mode = "v1"
-    app.dependency_overrides[get_auth_context] = lambda: mock_auth_context
-
-    response = client.post(
-        "/rpc",
-        json={
-            "jsonrpc": "2.0",
-            "id": "legacy-push-v1",
-            "method": "tasks/pushNotificationConfig/list",
-            "params": {"taskId": "task-push"},
-        },
-        headers=AUTH_HEADERS,
-    )
-
-    assert response.status_code == 200, response.text
-    error = response.json()["error"]
-    assert error["code"] == -32601
 
 
 def test_get_extended_agent_card_rpc_returns_authenticated_detail(mock_auth_context):

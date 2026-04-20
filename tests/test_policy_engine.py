@@ -9,6 +9,7 @@ from pathlib import Path
 from app.domain.rbac.models import (
     Role,
     Binding,
+    BindingEntry,
     BindingDocument,
     Scope,
     ScopeType,
@@ -31,8 +32,8 @@ class TestScopeMatching:
     def test_global_matches_any_scope(self, engine):
         """Global binding matches any scope."""
         result = engine._match_scope(
-            binding_scope=Scope(ScopeType.GLOBAL, {}),
-            request_scope=Scope(ScopeType.REPO, {"repo": "talosprotocol/talos"})
+            binding_scope=Scope(scope_type=ScopeType.GLOBAL, attributes={}),
+            required=Scope(scope_type=ScopeType.REPO, attributes={"repo": "talosprotocol/talos"})
         )
         assert result.matched is True
         assert result.specificity == 0
@@ -40,8 +41,8 @@ class TestScopeMatching:
     def test_exact_repo_match(self, engine):
         """Exact repo match yields +2 specificity."""
         result = engine._match_scope(
-            binding_scope=Scope(ScopeType.REPO, {"repo": "talosprotocol/talos"}),
-            request_scope=Scope(ScopeType.REPO, {"repo": "talosprotocol/talos"})
+            binding_scope=Scope(scope_type=ScopeType.REPO, attributes={"repo": "talosprotocol/talos"}),
+            required=Scope(scope_type=ScopeType.REPO, attributes={"repo": "talosprotocol/talos"})
         )
         assert result.matched is True
         assert result.specificity == 2
@@ -49,8 +50,8 @@ class TestScopeMatching:
     def test_wildcard_match(self, engine):
         """Wildcard yields +1 specificity."""
         result = engine._match_scope(
-            binding_scope=Scope(ScopeType.REPO, {"repo": "*"}),
-            request_scope=Scope(ScopeType.REPO, {"repo": "talosprotocol/contracts"})
+            binding_scope=Scope(scope_type=ScopeType.REPO, attributes={"repo": "*"}),
+            required=Scope(scope_type=ScopeType.REPO, attributes={"repo": "talosprotocol/contracts"})
         )
         assert result.matched is True
         assert result.specificity == 1
@@ -58,8 +59,8 @@ class TestScopeMatching:
     def test_scope_type_mismatch(self, engine):
         """Different scope types don't match."""
         result = engine._match_scope(
-            binding_scope=Scope(ScopeType.REPO, {"repo": "talosprotocol/talos"}),
-            request_scope=Scope(ScopeType.SECRET, {"secret_id": "api-key"})
+            binding_scope=Scope(scope_type=ScopeType.REPO, attributes={"repo": "talosprotocol/talos"}),
+            required=Scope(scope_type=ScopeType.SECRET, attributes={"secret_id": "api-key"})
         )
         assert result.matched is False
         assert result.reason == "scope_type_mismatch"
@@ -67,8 +68,8 @@ class TestScopeMatching:
     def test_missing_attribute(self, engine):
         """Missing required attribute fails."""
         result = engine._match_scope(
-            binding_scope=Scope(ScopeType.REPO, {"repo": "talosprotocol/talos"}),
-            request_scope=Scope(ScopeType.REPO, {})
+            binding_scope=Scope(scope_type=ScopeType.REPO, attributes={"repo": "talosprotocol/talos"}),
+            required=Scope(scope_type=ScopeType.REPO, attributes={})
         )
         assert result.matched is False
         assert result.reason == "missing_attribute"
@@ -76,8 +77,8 @@ class TestScopeMatching:
     def test_attribute_mismatch(self, engine):
         """Mismatched attribute value fails."""
         result = engine._match_scope(
-            binding_scope=Scope(ScopeType.REPO, {"repo": "talosprotocol/talos"}),
-            request_scope=Scope(ScopeType.REPO, {"repo": "talosprotocol/contracts"})
+            binding_scope=Scope(scope_type=ScopeType.REPO, attributes={"repo": "talosprotocol/talos"}),
+            required=Scope(scope_type=ScopeType.REPO, attributes={"repo": "talosprotocol/contracts"})
         )
         assert result.matched is False
         assert result.reason == "attribute_mismatch"
@@ -90,22 +91,30 @@ class TestPolicyEngineResolve:
     def setup_engine(self):
         """Create engine with test data."""
         roles = {
-            "role_admin": Role("role_admin", ["secrets.read", "secrets.write"]),
-            "role_viewer": Role("role_viewer", ["secrets.read"]),
+            "role_admin": Role(
+                role_id="role_admin",
+                name="Admin Role",
+                permissions=["secrets.read", "secrets.write"]
+            ),
+            "role_viewer": Role(
+                role_id="role_viewer",
+                name="Viewer Role",
+                permissions=["secrets.read"]
+            ),
         }
         
         binding_doc = BindingDocument(
             principal_id="user_123",
             bindings=[
-                Binding(
+                BindingEntry(
                     binding_id="bind_global",
                     role_id="role_viewer",
-                    scope=Scope(ScopeType.GLOBAL, {})
+                    scope=Scope(scope_type=ScopeType.GLOBAL, attributes={})
                 ),
-                Binding(
+                BindingEntry(
                     binding_id="bind_repo",
                     role_id="role_admin",
-                    scope=Scope(ScopeType.REPO, {"repo": "talosprotocol/talos"})
+                    scope=Scope(scope_type=ScopeType.REPO, attributes={"repo": "talosprotocol/talos"})
                 ),
             ]
         )
@@ -121,10 +130,10 @@ class TestPolicyEngineResolve:
         decision = await setup_engine.resolve(
             principal_id="user_123",
             permission="secrets.read",
-            request_scope=Scope(ScopeType.SECRET, {"secret_id": "any"})
+            request_scope=Scope(scope_type=ScopeType.SECRET, attributes={"secret_id": "any"})
         )
         assert decision.allowed is True
-        assert decision.reason_code == AuthzReasonCode.PERMISSION_ALLOWED
+        assert decision.reason_code == AuthzReasonCode.ALLOWED
 
     @pytest.mark.asyncio
     async def test_higher_specificity_wins(self, setup_engine):
@@ -132,7 +141,7 @@ class TestPolicyEngineResolve:
         decision = await setup_engine.resolve(
             principal_id="user_123",
             permission="secrets.read",
-            request_scope=Scope(ScopeType.REPO, {"repo": "talosprotocol/talos"})
+            request_scope=Scope(scope_type=ScopeType.REPO, attributes={"repo": "talosprotocol/talos"})
         )
         assert decision.allowed is True
         assert decision.effective_binding_id == "bind_repo"  # More specific
@@ -143,7 +152,7 @@ class TestPolicyEngineResolve:
         decision = await setup_engine.resolve(
             principal_id="unknown_user",
             permission="secrets.read",
-            request_scope=Scope(ScopeType.GLOBAL, {})
+            request_scope=Scope(scope_type=ScopeType.GLOBAL, attributes={})
         )
         assert decision.allowed is False
         assert decision.reason_code == AuthzReasonCode.BINDING_NOT_FOUND
@@ -154,10 +163,10 @@ class TestPolicyEngineResolve:
         decision = await setup_engine.resolve(
             principal_id="user_123",
             permission="secrets.delete",
-            request_scope=Scope(ScopeType.GLOBAL, {})
+            request_scope=Scope(scope_type=ScopeType.GLOBAL, attributes={})
         )
         assert decision.allowed is False
-        assert decision.reason_code == AuthzReasonCode.PERMISSION_DENIED
+        assert decision.reason_code == AuthzReasonCode.DENIED
 
     @pytest.mark.asyncio
     async def test_audit_dict_format(self, setup_engine):
@@ -165,7 +174,7 @@ class TestPolicyEngineResolve:
         decision = await setup_engine.resolve(
             principal_id="user_123",
             permission="secrets.read",
-            request_scope=Scope(ScopeType.GLOBAL, {})
+            request_scope=Scope(scope_type=ScopeType.GLOBAL, attributes={})
         )
         audit = decision.to_audit_dict()
         

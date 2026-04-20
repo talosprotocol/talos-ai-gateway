@@ -245,13 +245,54 @@ app.add_middleware(RateLimitMiddleware)
 app.add_middleware(TalosAuditMiddleware)
 app.add_middleware(RegionHeaderMiddleware)
 
-setup_opentelemetry(app)
+# setup_opentelemetry(app)
 
 
 @app.exception_handler(HTTPException)
 async def a2a_http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-    # Specialized error handling for A2A routes to ensure top-level 'error' key
+    # Specialized error handling for A2A routes
     if request.url.path.startswith("/a2a/"):
+        # For A2A v1 RPC, we should ideally return JSON-RPC error bodies
+        if "/v1/rpc" in request.url.path or request.url.path.endswith("/v1/"):
+            # Try to extract JSON-RPC ID from request body if possible
+            request_id = None
+            try:
+                body = await request.json()
+                if isinstance(body, dict):
+                    request_id = body.get("id")
+            except Exception:
+                pass
+
+            # Map Talos error to JSON-RPC error
+            rpc_error = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {
+                    "code": -32000, # Reserved for implementation-defined server-errors
+                    "message": "Unauthorized" if exc.status_code in (401, 403) else "Internal Error",
+                }
+            }
+            
+            if isinstance(exc.detail, dict) and "error" in exc.detail:
+                inner = exc.detail["error"]
+                rpc_error["error"]["data"] = {
+                    "talos_code": inner.get("code"),
+                    "details": inner.get("message") or inner.get("details")
+                }
+                if inner.get("code") == "RBAC_DENIED":
+                    rpc_error["error"]["message"] = "Permission denied"
+                elif inner.get("code") == "AUTH_INVALID":
+                    rpc_error["error"]["message"] = "Unauthorized"
+            else:
+                rpc_error["error"]["data"] = {"details": str(exc.detail)}
+
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=rpc_error,
+                headers=exc.headers
+            )
+
+        # Legacy/Other A2A routes
         if isinstance(exc.detail, dict) and "error" in exc.detail:
             return JSONResponse(
                 status_code=exc.status_code,
@@ -273,8 +314,9 @@ app.include_router(dashboard_router.router, prefix="", tags=["Dashboard"])
 app.include_router(ai_router.router, prefix="/v1", tags=["LLM"])
 app.include_router(mcp_router.router, prefix="/v1/mcp", tags=["MCP"])
 app.include_router(admin_router.router, prefix="/admin/v1", tags=["Admin"])
-app.include_router(a2a_routes.router, prefix="/a2a/v1", tags=["A2A"])
 app.include_router(a2a_v1_router.router, prefix="", tags=["A2A"])
+app.include_router(a2a_routes.router, prefix="/a2a/v1", tags=["A2A"])
+app.include_router(a2a_v1_router.router, prefix="/a2a/v1", tags=["A2A"])
 app.include_router(agent_card.router, prefix="", tags=["Discovery"])
 
 app.include_router(health_router.router, tags=["Health"])

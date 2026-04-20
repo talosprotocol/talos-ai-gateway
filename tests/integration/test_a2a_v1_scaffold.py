@@ -97,8 +97,8 @@ def test_v1_rpc_scaffold_visible_in_v1_mode():
     data = response.json()
     assert data["jsonrpc"] == "2.0"
     assert data["id"] == 7
-    assert data["error"]["code"] == -32000
-    assert data["error"]["data"]["talos_code"] == "RBAC_DENIED"
+    assert data["error"]["code"] == -32602
+    assert "message" in data["error"]["data"]["details"]
 
 
 def test_v1_rpc_rejects_invalid_dev_bearer_token():

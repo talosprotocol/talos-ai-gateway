@@ -56,7 +56,7 @@ def test_sanitize_request_meta():
 @pytest.mark.asyncio
 async def test_handle_send_uses_configured_default_model_group_for_wildcard_access():
     auth = MagicMock()
-    auth.scopes = ["a2a.invoke", "llm.invoke"]
+    auth.scopes = ["a2a.send", "llm.invoke"]
     auth.allowed_model_groups = ["*"]
     auth.team_id = "team-1"
     auth.key_id = "key-1"
@@ -117,7 +117,7 @@ async def test_handle_send_uses_configured_default_model_group_for_wildcard_acce
 @pytest.mark.asyncio
 async def test_handle_send_maps_upstream_rate_limit_to_specific_talos_code():
     auth = MagicMock()
-    auth.scopes = ["a2a.invoke", "llm.invoke"]
+    auth.scopes = ["a2a.send", "llm.invoke"]
     auth.allowed_model_groups = ["*"]
     auth.team_id = "team-1"
     auth.key_id = "key-1"
@@ -159,7 +159,7 @@ async def test_handle_send_maps_upstream_rate_limit_to_specific_talos_code():
                 retry_after_seconds=2.5,
             )
         ),
-    ), patch("app.domain.a2a.dispatcher._mock_llm_enabled", return_value=False), patch("app.domain.a2a.dispatcher._dev_mode_enabled", return_value=False):
+    ), patch("app.domain.a2a.dispatcher._simulated_llm_enabled", return_value=False), patch("app.domain.a2a.dispatcher._dev_mode_enabled", return_value=False):
         with pytest.raises(JsonRpcException) as exc:
             await dispatcher.handle_send(
                 {
@@ -183,7 +183,7 @@ async def test_handle_send_maps_upstream_rate_limit_to_specific_talos_code():
 @pytest.mark.asyncio
 async def test_handle_send_maps_upstream_transport_failures_to_specific_talos_code():
     auth = MagicMock()
-    auth.scopes = ["a2a.invoke", "llm.invoke"]
+    auth.scopes = ["a2a.send", "llm.invoke"]
     auth.allowed_model_groups = ["*"]
     auth.team_id = "team-1"
     auth.key_id = "key-1"
@@ -223,7 +223,7 @@ async def test_handle_send_maps_upstream_transport_failures_to_specific_talos_co
                 request_id="req-upstream-timeout",
             )
         ),
-    ), patch("app.domain.a2a.dispatcher._mock_llm_enabled", return_value=False), patch("app.domain.a2a.dispatcher._dev_mode_enabled", return_value=False):
+    ), patch("app.domain.a2a.dispatcher._simulated_llm_enabled", return_value=False), patch("app.domain.a2a.dispatcher._dev_mode_enabled", return_value=False):
         with pytest.raises(JsonRpcException) as exc:
             await dispatcher.handle_send(
                 {

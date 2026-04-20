@@ -58,32 +58,9 @@ ALLOWED_V1_METHODS = {
     "GetTaskPushNotificationConfig",
     "ListTaskPushNotificationConfigs",
     "DeleteTaskPushNotificationConfig",
-    "message/send",
-    "message/stream",
-    "tasks/get",
-    "tasks/cancel",
-    "tasks/list",
-    "tasks/resubscribe",
-    "tasks/pushNotificationConfig/set",
-    "tasks/pushNotificationConfig/get",
-    "tasks/pushNotificationConfig/list",
-    "tasks/pushNotificationConfig/delete",
     "agent/getAuthenticatedExtendedCard",
 }
-METHOD_ALIASES = {
-    "agent/getAuthenticatedExtendedCard": "GetExtendedAgentCard",
-    "message/send": "SendMessage",
-    "message/stream": "SendStreamingMessage",
-    "tasks/get": "GetTask",
-    "tasks/cancel": "CancelTask",
-    "tasks/list": "ListTasks",
-    "tasks/resubscribe": "SubscribeToTask",
-    "tasks/pushNotificationConfig/set": "CreateTaskPushNotificationConfig",
-    "tasks/pushNotificationConfig/get": "GetTaskPushNotificationConfig",
-    "tasks/pushNotificationConfig/list": "ListTaskPushNotificationConfigs",
-    "tasks/pushNotificationConfig/delete": "DeleteTaskPushNotificationConfig",
-}
-STRICT_V1_METHODS = ALLOWED_V1_METHODS - set(METHOD_ALIASES)
+STRICT_V1_METHODS = ALLOWED_V1_METHODS
 FINAL_STATES = {"completed", "failed", "canceled", "rejected"}
 STATUS_MAP = {
     "queued": "TASK_STATE_SUBMITTED",
@@ -109,41 +86,31 @@ ROLE_MAP = {
 }
 DISCOVERY_SCOPE_SETS = (
     ("a2a.discovery.read",),
-    ("a2a.invoke",),
 )
 SEND_SCOPE_SETS = (
     ("a2a.send",),
-    ("a2a.invoke",),
 )
 SEND_STREAM_SCOPE_SETS = (
     ("a2a.send", "a2a.subscribe"),
-    ("a2a.invoke", "a2a.stream"),
 )
 GET_SCOPE_SETS = (
     ("a2a.get",),
-    ("a2a.invoke",),
 )
 CANCEL_SCOPE_SETS = (
     ("a2a.cancel",),
-    ("a2a.invoke",),
 )
 LIST_SCOPE_SETS = (
     ("a2a.list",),
-    ("a2a.invoke",),
 )
 SUBSCRIBE_SCOPE_SETS = (
     ("a2a.subscribe",),
-    ("a2a.stream",),
 )
 PUSH_CONFIG_READ_SCOPE_SETS = (
     ("a2a.push_config.read",),
-    ("a2a.invoke",),
 )
 PUSH_CONFIG_WRITE_SCOPE_SETS = (
     ("a2a.push_config.write",),
-    ("a2a.invoke",),
 )
-LEGACY_V1_SCOPE_FALLBACKS = {"a2a.invoke", "a2a.stream"}
 
 
 class A2AV1Service:
@@ -160,6 +127,7 @@ class A2AV1Service:
         mcp_client: McpClient,
         capability_validator: Optional[Any] = None,
         request: Optional[Request] = None,
+        audit_logger: Optional[Any] = None, # app.domain.audit.AuditLogger
     ) -> None:
         self.auth = auth
         self.task_store = task_store
@@ -173,6 +141,7 @@ class A2AV1Service:
             task_store=task_store,
             mcp_client=mcp_client,
             capability_validator=capability_validator,
+            audit_logger=audit_logger,
         )
 
     async def handle_rpc(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -181,15 +150,14 @@ class A2AV1Service:
         try:
             self._validate_envelope(payload)
 
-            raw_method = cast(str, payload["method"])
-            method = METHOD_ALIASES.get(raw_method, raw_method)
+            method = cast(str, payload["method"])
             params = payload.get("params", {})
             if params is None:
                 params = {}
             if not isinstance(params, dict):
                 raise JsonRpcException(-32602, "Invalid params", data={"details": "params must be an object"})
 
-            if method == "GetExtendedAgentCard":
+            if method == "GetExtendedAgentCard" or method == "agent/getAuthenticatedExtendedCard":
                 result = self._handle_get_extended_agent_card()
             elif method == "SendMessage":
                 result = await self._handle_send_message(cast(Dict[str, Any], params), request_id)
@@ -248,8 +216,7 @@ class A2AV1Service:
         method = payload.get("method")
         if not isinstance(method, str):
             raise JsonRpcException(-32600, "Invalid Request", data={"details": "method must be a string"})
-        allowed_methods = STRICT_V1_METHODS if settings.a2a_protocol_mode == "v1" else ALLOWED_V1_METHODS
-        if method not in allowed_methods:
+        if method not in ALLOWED_V1_METHODS:
             raise JsonRpcException(-32601, "Method not found")
 
     def _handle_get_extended_agent_card(self) -> Dict[str, Any]:
@@ -258,12 +225,13 @@ class A2AV1Service:
             raise JsonRpcException(-32603, "Internal error", data={"details": "Request context unavailable"})
         return build_agent_card(
             self.request,
-            include_compat_extension=settings.a2a_protocol_mode == "dual",
+            include_compat_extension=False,
             include_extended_details=True,
         )
 
     async def _handle_send_message(self, params: Dict[str, Any], request_id: Any) -> Dict[str, Any]:
         self._require_scope_sets("SendMessage", SEND_SCOPE_SETS)
+
         task_id, history_length, return_immediately, compat_params = self._prepare_send_request(params)
 
         if return_immediately:
@@ -550,13 +518,7 @@ class A2AV1Service:
         self,
         scope_sets: Sequence[tuple[str, ...]],
     ) -> Sequence[tuple[str, ...]]:
-        if settings.a2a_protocol_mode != "v1":
-            return scope_sets
-        return tuple(
-            scope_set
-            for scope_set in scope_sets
-            if not any(scope in LEGACY_V1_SCOPE_FALLBACKS for scope in scope_set)
-        )
+        return scope_sets
 
     def _satisfies_scope_sets(
         self,

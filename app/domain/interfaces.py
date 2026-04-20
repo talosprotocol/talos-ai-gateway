@@ -189,3 +189,22 @@ class RotationOperationStore(ABC):
     def update_operation(self, op_id: str, updates: Dict[str, Any]) -> None: pass
     @abstractmethod
     def get_active_operation(self) -> Optional[Dict[str, Any]]: pass
+
+class RbacStore(ABC):
+    @abstractmethod
+    def list_roles(self) -> List[Dict[str, Any]]: pass
+    @abstractmethod
+    def get_role(self, role_id: str) -> Optional[Dict[str, Any]]: pass
+    @abstractmethod
+    def upsert_role(self, role: Dict[str, Any]) -> None: pass
+    @abstractmethod
+    def delete_role(self, role_id: str) -> None: pass
+
+    @abstractmethod
+    def list_bindings(self) -> List[Dict[str, Any]]: pass
+    @abstractmethod
+    def get_binding(self, principal_id: str) -> Optional[Dict[str, Any]]: pass
+    @abstractmethod
+    def upsert_binding(self, binding: Dict[str, Any]) -> None: pass
+    @abstractmethod
+    def delete_binding(self, principal_id: str) -> None: pass

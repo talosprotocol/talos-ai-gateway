@@ -44,7 +44,7 @@ class KeyStore(ABC):
     """Abstract interface for key storage and lookup."""
 
     @abstractmethod
-    def lookup_by_hash(self, key_hash: str) -> Optional[KeyData]:
+    async def lookup_by_hash(self, key_hash: str) -> Optional[KeyData]:
         """Lookup a key by its hash."""
 
     @abstractmethod
@@ -106,14 +106,14 @@ class PostgresKeyStore(KeyStore):
         h = hmac.new(self._pepper, raw_key.encode(), hashlib.sha256)
         return f"{self._pepper_id}:{h.hexdigest()}"
 
-    def lookup_by_hash(self, key_hash: str) -> Optional[KeyData]:
+    async def lookup_by_hash(self, key_hash: str) -> Optional[KeyData]:
         """Look up key data by hash.
         
         First checks Redis cache, then falls back to database.
         """
         # Try cache first
         if self._redis:
-            cached = self._try_cache_get(key_hash)
+            cached = await self._try_cache_get(key_hash)
             if cached is False:
                 return None
             if isinstance(cached, KeyData):
@@ -128,9 +128,9 @@ class PostgresKeyStore(KeyStore):
         
         if not vk:
             if self._redis:
-                self._cache_negative(key_hash)
+                await self._cache_negative(key_hash)
             return None
-
+        
         # mypy thinks these are Columns because of legacy Declarative style.
         # Runtime is fine. We cast to silence mypy or ignore.
         # Prefer ignore for brevity over massive casting block.
@@ -165,26 +165,26 @@ class PostgresKeyStore(KeyStore):
         )
 
         if self._redis:
-            self._cache_set(key_hash, key_data)
+            await self._cache_set(key_hash, key_data)
 
         return key_data
 
-    def _try_cache_get(self, key_hash: str) -> Optional[Union[KeyData, bool]]:
+    async def _try_cache_get(self, key_hash: str) -> Optional[Union[KeyData, bool]]:
         """Try to get from cache. Returns None if not in cache."""
         if not self._redis:
             return None
         try:
-            data = self._redis.get(f"key:{key_hash}")
+            data = await self._redis.get(f"key:{key_hash}")
             if data is None:
                 return None
-            if data == b"__NEGATIVE__":
+            if data == b"__NEGATIVE__" or data == "__NEGATIVE__":
                 return False
             d = json.loads(data)
             return KeyData(**d)
         except Exception:  # pylint: disable=broad-exception-caught
             return None
 
-    def _cache_set(self, key_hash: str, key_data: KeyData) -> None:
+    async def _cache_set(self, key_hash: str, key_data: KeyData) -> None:
         """Cache key data."""
         if not self._redis:
             return
@@ -211,16 +211,16 @@ class PostgresKeyStore(KeyStore):
                 "team_max_tokens_default": key_data.team_max_tokens_default,
                 "team_budget": key_data.team_budget
             })
-            self._redis.setex(f"key:{key_hash}", self._cache_ttl, data)
+            await self._redis.setex(f"key:{key_hash}", self._cache_ttl, data)
         except Exception:  # pylint: disable=broad-exception-caught
             pass
 
-    def _cache_negative(self, key_hash: str) -> None:
+    async def _cache_negative(self, key_hash: str) -> None:
         """Cache negative result for short duration."""
         if not self._redis:
             return
         try:
-            self._redis.setex(f"key:{key_hash}", 30, "__NEGATIVE__")
+            await self._redis.setex(f"key:{key_hash}", 30, "__NEGATIVE__")
         except Exception:  # pylint: disable=broad-exception-caught
             pass
 

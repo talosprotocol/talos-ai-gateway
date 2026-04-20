@@ -26,11 +26,59 @@ from app.middleware.attestation_http import (
     AttestationError,
     AttestationVerifier,
 )
+from app.domain.auth import get_admin_validator
+from app.middleware.auth_admin import (
+    REGISTERED_PUBLIC_SCOPES,
+    validate_registered_session_permissions,
+    validate_session_permissions,
+)
 from app.policy import PolicyEngine
 from app.utils.id import uuid7
 from talos_sdk import IdentityValidationError, validate_principal
 
 logger = logging.getLogger(__name__)
+
+
+def _is_probable_jwt(token: str) -> bool:
+    return token.count(".") == 2
+
+
+def _session_auth_context_from_claims(claims: Dict[str, Any]) -> "AuthContext":
+    permissions = claims.get("rbac_permissions")
+    if not isinstance(permissions, list) or not all(isinstance(p, str) for p in permissions):
+        raise_talos_error("AUTH_INVALID", 401, "rbac_permissions must be a list of strings")
+    validate_registered_session_permissions(permissions)
+
+    data_plane = claims.get("data_plane")
+    if not isinstance(data_plane, dict):
+        raise_talos_error("AUTH_INVALID", 401, "Session JWT missing data_plane context")
+
+    scopes = validate_session_permissions(
+        [p for p in permissions if p in REGISTERED_PUBLIC_SCOPES],
+        set(data_plane.get("scopes") or []),
+        registered_permissions=REGISTERED_PUBLIC_SCOPES,
+    )
+    if not scopes:
+        raise_talos_error("AUTH_INVALID", 401, "Session JWT has no public API scopes")
+
+    return AuthContext(
+        key_id=str(data_plane.get("key_id") or "session-jwt"),
+        team_id=str(data_plane.get("team_id") or "unknown"),
+        org_id=str(data_plane.get("org_id") or "unknown"),
+        scopes=sorted(scopes),
+        allowed_model_groups=data_plane.get("allowed_model_groups") or [],
+        allowed_mcp_servers=data_plane.get("allowed_mcp_servers") or [],
+        principal_id=str(claims.get("sub") or "unknown"),
+        signer_key_id=None,
+        budget_mode=str(data_plane.get("budget_mode") or "off"),
+        team_budget_mode=str(data_plane.get("team_budget_mode") or "off"),
+        overdraft_usd=str(data_plane.get("overdraft_usd") or "0"),
+        team_overdraft_usd=str(data_plane.get("team_overdraft_usd") or "0"),
+        max_tokens_default=data_plane.get("max_tokens_default"),
+        team_max_tokens_default=data_plane.get("team_max_tokens_default"),
+        budget_metadata=data_plane.get("budget") or {},
+        team_budget_metadata=data_plane.get("team_budget") or {},
+    )
 
 
 class AuthContext:
@@ -44,6 +92,7 @@ class AuthContext:
         allowed_model_groups: list[str],
         allowed_mcp_servers: list[str],
         principal_id: Optional[str] = None,
+        signer_key_id: Optional[str] = None,
         # Phase 15: Budget Context
         budget_mode: str = "off",
         team_budget_mode: str = "off",
@@ -61,6 +110,7 @@ class AuthContext:
         self.allowed_model_groups = allowed_model_groups
         self.allowed_mcp_servers = allowed_mcp_servers
         self.principal_id = principal_id
+        self.signer_key_id = signer_key_id
 
         # Budget
         self.budget_mode = budget_mode
@@ -113,6 +163,7 @@ async def get_auth_context(
     key_id = "unknown"
     team_id = "unknown"
     principal_id = "unknown"
+    verified_signer_key_id: Optional[str] = None
     raw_body: Optional[bytes] = None
     
     try:
@@ -127,7 +178,8 @@ async def get_auth_context(
             route_path = request.url.path
 
         rpc_method = None
-        if request.method == "POST" and route_path == "/rpc":
+        surface_path = "/rpc" if route_path in {"/rpc", "/a2a/v1/rpc"} else route_path
+        if request.method == "POST" and surface_path == "/rpc":
             raw_body = await request.body()
             try:
                 payload = json.loads(raw_body.decode("utf-8")) if raw_body else None
@@ -140,9 +192,11 @@ async def get_auth_context(
                     rpc_method = candidate
 
         if rpc_method is not None:
-            surface = registry.match_request(request.method, route_path, rpc_method=rpc_method)
+            surface = registry.match_request(
+                request.method, surface_path, rpc_method=rpc_method
+            )
         else:
-            surface = registry.match_request(request.method, route_path)
+            surface = registry.match_request(request.method, surface_path)
         if not surface:
             # Should be caught by Startup Gate, but redundancy is safe.
             # "Default deny in prod"
@@ -163,9 +217,71 @@ async def get_auth_context(
         
         # 1. Validate Bearer Token
         key = authorization[7:]
+        if _is_probable_jwt(key):
+            claims = get_admin_validator().validate_token(key)
+            ctx = _session_auth_context_from_claims(claims)
+            key_id = ctx.key_id
+            team_id = ctx.team_id
+            principal_id = ctx.principal_id or "unknown"
+
+            if surface is None:
+                raise_talos_error("NOT_FOUND", 404, "Surface not found")
+            assert surface is not None
+
+            for required_perm in surface.required_scopes:
+                if not ctx.has_scope(required_perm):
+                    raise_talos_error(
+                        "RBAC_DENIED",
+                        403,
+                        f"Session token missing scope: {required_perm}",
+                    )
+
+            if surface.attestation_required and os.getenv("DEV_MODE", "false").lower() != "true":
+                raise_talos_error(
+                    "AUTH_INVALID",
+                    401,
+                    "Attestation required for this surface",
+                )
+
+            validation_principal = {
+                "schema_id": "talos.principal",
+                "schema_version": "v2",
+                "id": uuid7(),
+                "principal_id": principal_id,
+                "team_id": team_id,
+                "type": "service_account",
+                "status": "active",
+                "auth_mode": "bearer",
+                "created_at": (
+                    datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%S.%f"
+                    )[:-3]
+                    + "Z"
+                )
+            }
+            try:
+                validate_principal(validation_principal)
+            except IdentityValidationError as e:
+                logger.error("Principal identity validation failure: %s", str(e))
+                raise_talos_error(
+                    "AUTH_INVALID", 400, "Identity validation failed: %s" % str(e)
+                )
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.warning("Unexpected validation error: %s", str(e))
+                if os.getenv("DEV_MODE", "false").lower() != "true":
+                    raise_talos_error(
+                        "AUTH_INVALID", 400, f"Validation failure: {str(e)}"
+                    )
+
+            request.state.principal = validation_principal
+            request.state.auth_context = ctx
+            request.state.auth = ctx
+            request.state.surface = surface
+            return ctx
+
         key_hash = key_store.hash_key(key)
         
-        key_data = key_store.lookup_by_hash(key_hash)
+        key_data = await key_store.lookup_by_hash(key_hash)
         if key_data is None:
             raise_talos_error("AUTH_INVALID", 401, "Invalid key")
         assert key_data is not None
@@ -237,7 +353,7 @@ async def get_auth_context(
         # If not signed, principal is the "Virtual Key holder".
         
         # 3. HTTP Attestation Enforce
-        if surface.attestation_required:
+        if surface.attestation_required and os.getenv("DEV_MODE", "false").lower() != "true":
             if not x_talos_signature:
                 raise_talos_error(
                     "AUTH_INVALID",
@@ -258,7 +374,7 @@ async def get_auth_context(
                 qs = scope.get('query_string', b'').decode('ascii')
                 path_query = raw_path + (f"?{qs}" if qs else "")
                 
-                signer_key_id = await verifier.verify_request(
+                verified_signer_key_id = await verifier.verify_request(
                     dict(request.headers),
                     raw_body,
                     request.method,
@@ -267,7 +383,7 @@ async def get_auth_context(
                 )
                 
                 # Identity Binding
-                principal_obj = principal_store.get_principal(signer_key_id)
+                principal_obj = principal_store.get_principal(verified_signer_key_id)
                 if principal_obj is None:
                     raise_talos_error("AUTH_INVALID", 401, "Signer lost")
                 assert principal_obj is not None
@@ -285,7 +401,7 @@ async def get_auth_context(
                             "principal_id": principal_obj.get('id', 'unknown'),
                             "team_id": principal_obj.get('team_id', 'unknown'),
                             "auth_mode": "signed",
-                            "signer_key_id": signer_key_id
+                            "signer_key_id": verified_signer_key_id
                         },
                         http_info={
                             "method": request.method,
@@ -325,6 +441,7 @@ async def get_auth_context(
             allowed_model_groups=getattr(key_data, "allowed_model_groups", ["*"]),
             allowed_mcp_servers=getattr(key_data, "allowed_mcp_servers", ["*"]),
             principal_id=principal_id,
+            signer_key_id=verified_signer_key_id,
             # Pass budget data
             budget_mode=getattr(key_data, "budget_mode", "off"),
             team_budget_mode=getattr(key_data, "team_budget_mode", "off"),
@@ -362,8 +479,7 @@ async def get_auth_context(
         }
 
         if validation_auth_mode == "signed":
-            # key_id is the signer in this context
-            validation_principal["signer_key_id"] = key_id
+            validation_principal["signer_key_id"] = verified_signer_key_id
 
         # Call SDK validation (Hardening)
         try:
@@ -429,10 +545,9 @@ async def get_auth_context(
         # Determine if attested/signed
         auth_mode = "bearer"
         signer_key_id = None
-        if principal_id != "unknown" and principal_id != key_id:
+        if verified_signer_key_id:
             auth_mode = "signed"
-            # Fallback: principal_id was signer_key_id if verified
-            signer_key_id = principal_id
+            signer_key_id = verified_signer_key_id
 
         principal_data = {
             "principal_id": principal_id,
@@ -475,7 +590,8 @@ async def get_auth_context_or_none(
     verifier: AttestationVerifier = Depends(get_attestation_verifier),
     principal_store: PrincipalStore = Depends(get_principal_store),
     registry: SurfaceRegistry = Depends(get_surface_registry),
-    audit_logger: AuditLogger = Depends(get_audit_logger)
+    audit_logger: AuditLogger = Depends(get_audit_logger),
+    policy_engine: PolicyEngine = Depends(get_policy_engine)
 ) -> Optional[AuthContext]:
     """Optional version."""
     if not authorization:
@@ -490,6 +606,7 @@ async def get_auth_context_or_none(
             principal_store,
             registry,
             audit_logger,
+            policy_engine,
         )
     except HTTPException:
         return None

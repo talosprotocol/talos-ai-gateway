@@ -261,12 +261,13 @@ from app.domain.interfaces import (
 )
 from app.domain.secrets.ports import SecretStore as SecretStorePort
 from app.adapters.json_store.stores import (
-    UpstreamJsonStore, ModelGroupJsonStore, SecretJsonStore, McpJsonStore, AuditJsonStore, RoutingPolicyJsonStore
+    UpstreamJsonStore, ModelGroupJsonStore, SecretJsonStore, McpJsonStore, AuditJsonStore, RoutingPolicyJsonStore, JsonRbacStore
 )
 from app.adapters.postgres.stores import (
     PostgresUpstreamStore, PostgresModelGroupStore, PostgresMcpStore, 
-    PostgresAuditStore, PostgresRoutingPolicyStore, PostgresRotationStore
+    PostgresAuditStore, PostgresRoutingPolicyStore, PostgresRotationStore, PostgresRbacStore
 )
+from app.domain.interfaces import RbacStore
 
 # Determine Storage Backend
 # Phase 15: Default to Postgres for core services to support Budgeting/Multi-Region.
@@ -456,6 +457,10 @@ def get_principal_store(db: Session = Depends(get_write_db)) -> PrincipalStore:
     if USE_JSON_STORES: return JsonPrincipalStore()
     return PostgresPrincipalStore(db)
 
+def get_rbac_store(db: Session = Depends(get_write_db)) -> RbacStore:
+    if USE_JSON_STORES: return JsonRbacStore()
+    return PostgresRbacStore(db)
+
 from app.middleware.attestation_http import AttestationVerifier, RedisReplayDetector
 async def get_attestation_verifier(p_store: PrincipalStore = Depends(get_principal_store)) -> AttestationVerifier:
     redis_client = await get_redis_client()
@@ -475,7 +480,7 @@ def _service_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _find_upwards(start: Path, relative_path: str) -> Path | None:
+def _find_upwards(start: Path, relative_path: str) -> Optional[Path]:
     current = start.resolve()
     for base in (current, *current.parents):
         candidate = base / relative_path
@@ -484,7 +489,7 @@ def _find_upwards(start: Path, relative_path: str) -> Path | None:
     return None
 
 
-def _discover_contracts_surface_inventory() -> Path | None:
+def _discover_contracts_surface_inventory() -> Optional[Path]:
     return _find_upwards(_service_root(), "contracts/inventory/gateway_surface.json")
 
 
@@ -549,61 +554,51 @@ from app.domain.rbac.policy_engine import PolicyEngine
 from app.domain.rbac.models import Role
 _policy_engine_instance = None
 
-async def get_policy_engine_async() -> PolicyEngine:
+async def get_policy_engine_async(rbac_store: RbacStore = Depends(get_rbac_store)) -> PolicyEngine:
     global _policy_engine_instance
     if _policy_engine_instance is None:
          engine = PolicyEngine()
          
-         # Load Roles (Mock/Config)
-         import json
-         roles_path = os.getenv("ROLES_CONFIG_PATH", "config/roles.json")
-         roles_list = []
-         
-         if os.path.exists(roles_path):
-             try:
-                 with open(roles_path) as f:
-                     data = json.load(f)
-                     # Adapt dict-based Config to Role Models
-                     # Expecting list or dict. Phase 7 spec says schemas/rbac/role.schema.json
-                     # Let's assume the config definition matches the schema.
-                     # But for now, let's just create some default roles if missing or handle properly
-                     # If data is dict of id->role
-                     if isinstance(data, dict):
-                         for r in data.values():
-                             roles_list.append(Role(**r))
-                     elif isinstance(data, list):
-                         for r in data:
-                             roles_list.append(Role(**r))
-             except Exception as e:
-                 logger.error(f"Failed to load roles from {roles_path}: {e}")
+         # Load Roles from Persistence
+         roles_data = rbac_store.list_roles()
+         roles_list = [Role(**r) for r in roles_data]
          
          if not roles_list:
-             # Default Dev Roles
+             # Default Fallback Roles if store is empty
              roles_list = [
                  Role(role_id="role-admin", name="Admin", permissions=["*:*"], built_in=True),
                  Role(role_id="role-public", name="Public", permissions=["system:health", "system:metrics"], built_in=True)
              ]
+             for r in roles_list:
+                 rbac_store.upsert_role(r.model_dump())
              
          await engine.load_roles(roles_list)
          
-         # Mock Bindings for Dev
-         from app.domain.rbac.models import Binding, BindingEntry, Scope, ScopeType
-         # Bind 'anonymous' to public role
-         public_binding = Binding(
-             principal_id="anonymous",
-             bindings=[
-                 BindingEntry(binding_id="bind_anon", role_id="role-public", scope=Scope(scope_type=ScopeType.GLOBAL))
-             ]
-         )
-         # Bind 'dev-user' to admin
-         admin_binding = Binding(
-             principal_id="dev-user",
-             bindings=[
-                 BindingEntry(binding_id="bind_admin", role_id="role-admin", scope=Scope(scope_type=ScopeType.GLOBAL))
-             ]
-         )
+         # Load Bindings from Persistence
+         from app.domain.rbac.models import Binding
+         binding_data = rbac_store.list_bindings()
+         bindings_list = [Binding(**b) for b in binding_data]
          
-         await engine.load_bindings([public_binding, admin_binding])
+         if not bindings_list:
+              # Default Bindings
+              from app.domain.rbac.models import BindingEntry, Scope, ScopeType
+              public_binding = Binding(
+                  principal_id="anonymous",
+                  bindings=[
+                      BindingEntry(binding_id="bind_anon", role_id="role-public", scope=Scope(scope_type=ScopeType.GLOBAL))
+                  ]
+              )
+              admin_binding = Binding(
+                  principal_id="dev-user",
+                  bindings=[
+                      BindingEntry(binding_id="bind_admin", role_id="role-admin", scope=Scope(scope_type=ScopeType.GLOBAL))
+                  ]
+              )
+              bindings_list = [public_binding, admin_binding]
+              for b in bindings_list:
+                  rbac_store.upsert_binding(b.model_dump())
+         
+         await engine.load_bindings(bindings_list)
          
          _policy_engine_instance = engine
          

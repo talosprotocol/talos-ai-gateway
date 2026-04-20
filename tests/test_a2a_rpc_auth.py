@@ -28,15 +28,15 @@ def _mock_key_data(*, scopes: list[str]):
     return key_data
 
 
-def _rpc_request(method_name: str):
+def _rpc_request(method_name: str, path: str = "/rpc"):
     request = Mock()
     request.method = "POST"
-    request.route = SimpleNamespace(path="/rpc")
-    request.url = SimpleNamespace(path="/rpc")
+    request.route = SimpleNamespace(path=path)
+    request.url = SimpleNamespace(path=path)
     request.headers = {"Authorization": "Bearer test-token"}
     request.state = SimpleNamespace()
     request.client = None
-    request.scope = {"raw_path": b"/rpc", "query_string": b""}
+    request.scope = {"raw_path": path.encode("ascii"), "query_string": b""}
     request.body = AsyncMock(
         return_value=(
             f'{{"jsonrpc":"2.0","id":"req-1","method":"{method_name}","params":{{}}}}'.encode("utf-8")
@@ -65,12 +65,42 @@ async def test_auth_context_uses_rpc_method_specific_surface_lookup():
 
     key_store = Mock()
     key_store.hash_key.return_value = "hash"
-    key_store.lookup_by_hash.return_value = _mock_key_data(scopes=["a2a.send"])
+    key_store.lookup_by_hash = AsyncMock(return_value=_mock_key_data(scopes=["a2a.send"]))
 
     policy_engine = Mock()
     policy_engine.authorize.return_value = Mock(allowed=False, reason="no policy binding")
 
     request = _rpc_request("SendMessage")
+
+    ctx = await get_auth_context(
+        request,
+        authorization="Bearer test-token",
+        x_talos_signature=None,
+        key_store=key_store,
+        verifier=AsyncMock(),
+        principal_store=Mock(),
+        registry=registry,
+        audit_logger=Mock(),
+        policy_engine=policy_engine,
+    )
+
+    assert ctx.key_id == "01946765-c7e0-798c-8c65-22d7a64b91f5"
+    registry.match_request.assert_called_once_with("POST", "/rpc", rpc_method="SendMessage")
+
+
+@pytest.mark.asyncio
+async def test_auth_context_canonicalizes_a2a_v1_rpc_for_method_surface_lookup():
+    registry = Mock()
+    registry.match_request.return_value = _surface(["a2a.send"])
+
+    key_store = Mock()
+    key_store.hash_key.return_value = "hash"
+    key_store.lookup_by_hash = AsyncMock(return_value=_mock_key_data(scopes=["a2a.send"]))
+
+    policy_engine = Mock()
+    policy_engine.authorize.return_value = Mock(allowed=False, reason="no policy binding")
+
+    request = _rpc_request("SendMessage", path="/a2a/v1/rpc")
 
     ctx = await get_auth_context(
         request,
@@ -95,7 +125,7 @@ async def test_auth_context_denies_rpc_method_when_scope_missing():
 
     key_store = Mock()
     key_store.hash_key.return_value = "hash"
-    key_store.lookup_by_hash.return_value = _mock_key_data(scopes=["a2a.get"])
+    key_store.lookup_by_hash = AsyncMock(return_value=_mock_key_data(scopes=["a2a.get"]))
 
     policy_engine = Mock()
     policy_engine.authorize.return_value = Mock(allowed=False, reason="no policy binding")

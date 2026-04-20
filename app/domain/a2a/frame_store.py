@@ -1,9 +1,9 @@
 import logging
 import hashlib
-import base64
 from datetime import datetime, timezone
 from typing import Optional, List, Tuple
 from sqlalchemy.orm import Session
+from talos_contracts import base64url_decode, base64url_encode
 
 from app.domain.a2a.models import EncryptedFrame
 from app.adapters.postgres.models import A2AFrame
@@ -22,9 +22,7 @@ class A2AFrameStore:
     def _verify_size(self, b64u_str: str):
         # Precise size check
         try:
-            # base64url padding check and decode
-            padded = b64u_str + '=' * (-len(b64u_str) % 4)
-            data = base64.urlsafe_b64decode(padded)
+            data = base64url_decode(b64u_str)
             if len(data) > A2A_MAX_FRAME_BYTES:
                 raise ValueError("A2A_FRAME_SIZE_EXCEEDED")
             return data
@@ -122,9 +120,7 @@ class A2AFrameStore:
         # Cursor logic: (created_at, sender_id, sender_seq)
         if cursor:
             try:
-                # b64u decode
-                padded = cursor + '=' * (-len(cursor) % 4)
-                raw = base64.urlsafe_b64decode(padded).decode('utf-8')
+                raw = base64url_decode(cursor).decode('utf-8')
                 ts_str, s_id, s_seq = raw.split('|')
                 ts = datetime.fromisoformat(ts_str)
                 seq = int(s_seq)
@@ -151,6 +147,6 @@ class A2AFrameStore:
             last = frames[-1]
             # Encode next cursor
             raw_next = f"{last.created_at.isoformat()}|{last.sender_id}|{last.sender_seq}"
-            next_cursor = base64.urlsafe_b64encode(raw_next.encode('utf-8')).decode('ascii').rstrip('=')
+            next_cursor = base64url_encode(raw_next.encode('utf-8'))
         
         return frames, next_cursor

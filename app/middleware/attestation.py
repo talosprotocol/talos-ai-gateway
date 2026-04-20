@@ -58,7 +58,7 @@ async def get_attestation_auth(
     # Note: For attestation, we might need a specific hashing rule, 
     # but the KeyStore's lookup_by_hash expects f"{pepper_id}:{hash}".
     # We should use the key_store's lookup mechanism.
-    key_data = key_store.lookup_by_hash(key_hash)
+    key_data = await key_store.lookup_by_hash(key_hash)
     
     if not key_data:
         raise HTTPException(status_code=401, detail={"error": {"talos_code": "AUTH_INVALID", "message": "Unknown Key-Id"}})

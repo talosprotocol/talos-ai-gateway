@@ -71,7 +71,10 @@ class AuditLogger:
         event = self._build_event(surface, principal, http_info, outcome, request_id, metadata, resource)
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(self.sink.emit(event))
+            if loop.is_running():
+                loop.create_task(self.sink.emit(event))
+            else:
+                asyncio.run(self.sink.emit(event))
         except RuntimeError:
             try:
                 asyncio.run(self.sink.emit(event))
@@ -133,10 +136,8 @@ class AuditLogger:
             "surface_id": surface.id,
             "outcome": outcome,
             "principal": principal_clean,
-            "http": http_clean
-            # Meta is added conditionally
+            "http": http_clean,
         }
-        
         if safe_meta:
             event["meta"] = safe_meta
         
@@ -192,7 +193,8 @@ class AuditLogger:
                 redacted_keys.append(f"{k} (invalid type)")
                     
         if redacted_keys:
-            safe["meta_redacted_keys"] = sorted(redacted_keys) # Sorted List
+            safe["meta_redaction_applied"] = True
+            safe["meta_redacted_keys"] = ", ".join(sorted(redacted_keys))
             # Emit telemetry via logs (can be scraped by Loki/Fluentd)
             logging.warning(f"AUDIT_META_REDACTION: surface={surface.id} keys={redacted_keys}")
                     
@@ -204,4 +206,3 @@ class AuditLogger:
         # Ensure 'event_hash' is NOT in the input
         clean = {k: v for k, v in event.items() if k != "event_hash"}
         return canonical_json_bytes(clean)
-

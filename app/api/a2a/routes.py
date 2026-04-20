@@ -10,6 +10,7 @@ from app.dependencies import (
     get_a2a_frame_store,
     get_a2a_group_manager,
     get_a2a_session_manager,
+    get_audit_logger,
     get_audit_store,
     get_capability_validator,
     get_mcp_client,
@@ -27,12 +28,15 @@ from app.domain.a2a.models import (
     SessionCreateRequest,
     SessionRotateRequest,
 )
+from app.domain.audit import AuditLogger
 from app.domain.interfaces import AuditStore, RateLimitStore, TaskStore, UsageStore
 from app.domain.routing import RoutingService
 from app.domain.a2a.session_manager import A2ASessionManager
 from app.domain.a2a.frame_store import A2AFrameStore
 from app.domain.a2a.group_manager import A2AGroupManager
 from app.middleware.auth_public import AuthContext, get_auth_context
+from app.middleware.auth_public import _is_probable_jwt, _session_auth_context_from_claims
+from app.domain.auth import get_admin_validator
 
 router = APIRouter()
 
@@ -54,6 +58,10 @@ async def get_jsonrpc_auth_context(
         raise HTTPException(status_code=401, detail="Invalid Authorization format")
     token = authorization[7:]
 
+    if _is_probable_jwt(token):
+        claims = get_admin_validator().validate_token(token)
+        return _session_auth_context_from_claims(claims)
+
     override = request.app.dependency_overrides.get(get_auth_context)
     if override is not None:
         auth = override()
@@ -73,13 +81,13 @@ async def get_jsonrpc_auth_context(
         )
 
     return AuthContext(
-        key_id="compat-dev-key",
-        team_id="compat-dev-team",
-        org_id="compat-dev-org",
-        scopes=["a2a.invoke", "a2a.stream", "llm.invoke", "mcp.invoke"],
+        key_id="019da2a2-8a74-712e-9698-57ce81b535b1",
+        team_id="019da2a2-8a74-7c16-ac38-4e85e53093b4",
+        org_id="019da2a2-8a74-749e-b2a5-b839a84ac989",
+        scopes=["a2a.send", "a2a.discovery.read", "a2a.invoke", "a2a.stream", "llm.invoke", "mcp.invoke"],
         allowed_model_groups=["*"],
         allowed_mcp_servers=["*"],
-        principal_id="compat-dev-principal",
+        principal_id="dev-principal",
     )
 
 
@@ -87,6 +95,8 @@ async def get_jsonrpc_auth_context(
 async def jsonrpc_entrypoint(
     payload: Dict[str, Any],
     request: Request,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+    x_talos_nonce: Optional[str] = Header(None, alias="X-Talos-Nonce"),
     auth: AuthContext = Depends(get_jsonrpc_auth_context),
     routing_service: RoutingService = Depends(get_routing_service),
     audit_store: AuditStore = Depends(get_audit_store),
@@ -95,6 +105,7 @@ async def jsonrpc_entrypoint(
     task_store: TaskStore = Depends(get_task_store),
     mcp_client: McpClient = Depends(get_mcp_client),
     capability_validator: Any = Depends(get_capability_validator),
+    audit_logger: AuditLogger = Depends(get_audit_logger),
 ) -> Dict[str, Any]:
     dispatcher = A2ADispatcher(
         auth=auth,
@@ -105,8 +116,10 @@ async def jsonrpc_entrypoint(
         task_store=task_store,
         mcp_client=mcp_client,
         capability_validator=capability_validator,
+        audit_logger=audit_logger,
     )
-    return await dispatcher.dispatch(payload)
+    idem_key = idempotency_key or x_talos_nonce
+    return await dispatcher.dispatch(payload, idempotency_key=idem_key)
 
 @router.post("/sessions", status_code=201, response_model=None)
 def create_session(

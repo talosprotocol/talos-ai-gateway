@@ -4,7 +4,6 @@ This module provides production-grade envelope encryption primitives using AES-2
 """
 import os
 import binascii
-import base64
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -12,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from talos_contracts import base64url_encode
 
 ALGORITHM_AES_256_GCM = "aes-256-gcm"
 SCHEMA_ID_ENVELOPE = "talos.secrets.envelope"
@@ -52,7 +52,7 @@ class EncryptedEnvelope:
     @staticmethod
     def _hex_to_b64u(hex_str: Optional[str]) -> Optional[str]:
         if not hex_str: return None
-        return base64.urlsafe_b64encode(binascii.unhexlify(hex_str)).decode('ascii').rstrip('=')
+        return base64url_encode(binascii.unhexlify(hex_str))
 
     @property
     def ciphertext_b64u(self) -> str:

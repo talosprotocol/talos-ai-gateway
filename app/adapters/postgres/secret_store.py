@@ -1,10 +1,10 @@
 """PostgresSecretStore - Database-backed secret storage with envelope encryption."""
 import logging
-import base64
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from app.utils.id import uuid7
 from sqlalchemy.orm import Session
+from talos_contracts import base64url_encode
 from app.adapters.postgres.models import Secret, AuditEvent
 from app.domain.secrets.ports import SecretStore, KekProvider
 from app.domain.secrets.models import EncryptedEnvelope
@@ -111,7 +111,7 @@ class PostgresSecretStore(SecretStore):
             if len(s) == 32 and all(c in "0123456789abcdefABCDEF" for c in s):
                 try:
                     b = bytes.fromhex(s)
-                    return base64.urlsafe_b64encode(b).decode('ascii').rstrip('=')
+                    return base64url_encode(b)
                 except ValueError:
                     pass
             return s

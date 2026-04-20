@@ -1,6 +1,6 @@
 """Tests for KeyStore and PostgresKeyStore."""
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 import json
 
 from app.adapters.postgres.key_store import PostgresKeyStore
@@ -14,7 +14,10 @@ def mock_db():
 
 @pytest.fixture
 def mock_redis():
-    return MagicMock()
+    redis = MagicMock()
+    redis.get = AsyncMock()
+    redis.setex = AsyncMock()
+    return redis
 
 
 @pytest.fixture
@@ -43,7 +46,8 @@ def test_hash_key(store):
     assert h == expected
 
 
-def test_lookup_by_hash_cache_hit(store, mock_redis, mock_db):
+@pytest.mark.asyncio
+async def test_lookup_by_hash_cache_hit(store, mock_redis, mock_db):
     """Test lookup returns cached data if available."""
     key_hash = "p1:hash123"
     key_data = {
@@ -67,16 +71,17 @@ def test_lookup_by_hash_cache_hit(store, mock_redis, mock_db):
     
     mock_redis.get.return_value = json.dumps(key_data).encode()
     
-    res = store.lookup_by_hash(key_hash)
+    res = await store.lookup_by_hash(key_hash)
     
     assert res.id == "key-1"
     assert res.team_id == "team-1"
-    mock_redis.get.assert_called_with(f"key:{key_hash}")
+    mock_redis.get.assert_awaited_with(f"key:{key_hash}")
     # Should NOT call DB
     mock_db.query.assert_not_called()
 
 
-def test_lookup_by_hash_db_fallback_and_cache_set(store, mock_db, mock_redis):
+@pytest.mark.asyncio
+async def test_lookup_by_hash_db_fallback_and_cache_set(store, mock_db, mock_redis):
     """Test lookup falls back to DB and sets cache."""
     key_hash = "p1:hash123"
     
@@ -105,33 +110,35 @@ def test_lookup_by_hash_db_fallback_and_cache_set(store, mock_db, mock_redis):
     mock_redis.get.return_value = None
     mock_db.query.return_value.filter.return_value.first.return_value = mock_vk
     
-    res = store.lookup_by_hash(key_hash)
+    res = await store.lookup_by_hash(key_hash)
     
     assert res.id == "key-1"
     assert res.org_id == "org-1"
     
     # Verify cache was set
-    mock_redis.setex.assert_called()
+    mock_redis.setex.assert_awaited()
     called_args = mock_redis.setex.call_args[0]
     assert called_args[0] == f"key:{key_hash}"
     assert json.loads(called_args[2])["id"] == "key-1"
 
 
-def test_lookup_by_hash_not_found_negative_cache(store, mock_db, mock_redis):
+@pytest.mark.asyncio
+async def test_lookup_by_hash_not_found_negative_cache(store, mock_db, mock_redis):
     """Test negative caching when key not found in DB."""
     key_hash = "p1:missing"
     
     mock_redis.get.return_value = None
     mock_db.query.return_value.filter.return_value.first.return_value = None
     
-    res = store.lookup_by_hash(key_hash)
+    res = await store.lookup_by_hash(key_hash)
     
     assert res is None
     # Verify negative cache was set
-    mock_redis.setex.assert_called_with(f"key:{key_hash}", 30, "__NEGATIVE__")
+    mock_redis.setex.assert_awaited_with(f"key:{key_hash}", 30, "__NEGATIVE__")
 
 
-def test_lookup_by_hash_revocation_check(store, mock_redis, mock_db):
+@pytest.mark.asyncio
+async def test_lookup_by_hash_revocation_check(store, mock_redis, mock_db):
     """Test that revoked status is correctly returned."""
     key_hash = "p1:revoked"
     key_data = {
@@ -155,7 +162,7 @@ def test_lookup_by_hash_revocation_check(store, mock_redis, mock_db):
     
     mock_redis.get.return_value = json.dumps(key_data).encode()
     
-    res = store.lookup_by_hash(key_hash)
+    res = await store.lookup_by_hash(key_hash)
     
     assert res.revoked is True
 

@@ -1,15 +1,42 @@
 import requests
 import json
 import sys
+import os
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = os.getenv("TALOS_GATEWAY_URL", "http://localhost:8000").rstrip("/")
+ADMIN_URL = f"{BASE_URL}/admin/v1"
+AUTH_ADMIN_SECRET = os.getenv("AUTH_ADMIN_SECRET", "dev-admin-secret")
+AUTH_ADMIN_PRINCIPAL = os.getenv("AUTH_ADMIN_PRINCIPAL", "dev-admin")
+DATA_PLANE_TOKEN = os.getenv("TALOS_API_TOKEN", "test-key-hard")
+
+
+def session_headers(permissions, *, data_plane=False):
+    payload = {
+        "principal": AUTH_ADMIN_PRINCIPAL,
+        "permissions": permissions,
+        "ttl_seconds": 3600,
+    }
+    if data_plane:
+        payload["data_plane_token"] = DATA_PLANE_TOKEN
+
+    resp = requests.post(
+        f"{ADMIN_URL}/auth/token",
+        headers={
+            "Content-Type": "application/json",
+            "X-Talos-Admin-Secret": AUTH_ADMIN_SECRET,
+        },
+        json=payload,
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return {"Authorization": f"Bearer {resp.json()['token']}"}
 
 def check_leaks():
     print("--- Checking for Leaks ---")
     
     # 1. Check Secrets API
     try:
-        r = requests.get(f"{BASE_URL}/admin/v1/secrets")
+        r = requests.get(f"{ADMIN_URL}/secrets", headers=session_headers(["keys.read"]))
         r.raise_for_status()
         secrets = r.json()["secrets"]
         print(f"Found {len(secrets)} secrets.")
@@ -26,7 +53,7 @@ def check_leaks():
 
     # 2. Check Upstreams API
     try:
-        r = requests.get(f"{BASE_URL}/admin/v1/llm/upstreams")
+        r = requests.get(f"{ADMIN_URL}/llm/upstreams", headers=session_headers(["llm.read"]))
         r.raise_for_status()
         upstreams = r.json()["upstreams"]
         for u in upstreams:
@@ -51,7 +78,7 @@ def test_functionality():
     print("\n--- Testing Functionality (Chat) ---")
     # Try to chat with a model. We need to find a model group.
     try:
-        r = requests.get(f"{BASE_URL}/admin/v1/llm/model-groups")
+        r = requests.get(f"{ADMIN_URL}/llm/model-groups", headers=session_headers(["llm.read"]))
         groups = r.json()["model_groups"]
         if not groups:
             print("No model groups found to test.")
@@ -60,8 +87,7 @@ def test_functionality():
         target_model = groups[0]["id"]
         print(f"Testing chat with model: {target_model}")
         
-        # We use a test key for the gateway itself (defined in auth middleware)
-        headers = {"Authorization": "Bearer sk-test-key-1"} 
+        headers = session_headers(["llm.invoke"], data_plane=True)
         payload = {
             "model": target_model,
             "messages": [{"role": "user", "content": "Hello, are you working?"}]

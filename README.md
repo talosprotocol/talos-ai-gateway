@@ -44,10 +44,26 @@ make test
 
 | Endpoint                                | Description       |
 | --------------------------------------- | ----------------- |
+| `POST /admin/v1/auth/token`             | Mint dev-only session JWT scoped to requested registered RBAC permissions |
 | `GET /admin/v1/llm/upstreams`           | List upstreams    |
 | `GET /admin/v1/llm/model_groups`        | List model groups |
 | `GET /admin/v1/mcp/servers`             | List MCP registry |
 | `POST /admin/v1/mcp/policies/{team_id}` | Set team policy   |
+
+Local admin clients should not send the seeded virtual key directly to
+`/admin/v1/*`. First mint a scoped session token:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8001/admin/v1/auth/token \
+  -H 'X-Talos-Admin-Secret: dev-admin-secret' \
+  -H 'Content-Type: application/json' \
+  -d '{"principal":"dev-admin","permissions":["llm.read"],"ttl_seconds":3600}'
+```
+
+Use the returned `token` as `Authorization: Bearer <token>` for admin routes.
+Requests using `Bearer test-key-hard` against admin routes are rejected; that
+seeded virtual key is for direct data-plane auth and for minting scoped
+data-plane session tokens.
 
 ## Configuration
 

@@ -14,6 +14,7 @@ def mock_audit_logger():
     logger = Mock()
     logger.log_event = Mock()
     logger.log_event_async = Mock()
+    logger.trusted_proxies = []
     return logger
 
 def test_audit_e2e_success(client, mock_audit_logger):
@@ -54,7 +55,7 @@ def test_audit_e2e_success(client, mock_audit_logger):
     # Mock Auth Context
     async def mock_get_auth(request: Request):
         ctx = AuthContext(
-            key_id="key-1", team_id="team-1", org_id="org-1", scopes=["llm.invoke", "*"], 
+            key_id="key-1", team_id="team-1", org_id="org-1", scopes=["llm.read"],
             allowed_model_groups=["*"], allowed_mcp_servers=["*"], principal_id="p-1"
         )
         request.state.auth = ctx
@@ -79,11 +80,10 @@ def test_audit_e2e_success(client, mock_audit_logger):
     call_args = mock_audit_logger.log_event.call_args
     _, kwargs = call_args
     
-    assert kwargs["status"] == "success"
+    assert kwargs["outcome"] == "success"
     assert kwargs["principal"]["principal_id"] == "p-1"
     assert kwargs["metadata"]["field"] == "value"
     
     # Note: The Mock logger won't produce the final 'event' structure unless we replicate build_event logic.
     # But we can verify inputs to log_event.
     pass
-

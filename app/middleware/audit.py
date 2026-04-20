@@ -49,21 +49,22 @@ class TalosAuditMiddleware(BaseHTTPMiddleware):
             outcome = "success"
         
         # Principal Logic (Normative Shapes)
-        is_signed = auth.principal_id and auth.principal_id != auth.key_id
+        signer_key_id = getattr(auth, "signer_key_id", None)
+        is_signed = bool(signer_key_id)
         
         principal_data = {
             "principal_id": auth.principal_id or auth.key_id,
             "team_id": auth.team_id,
             "auth_mode": "signed" if is_signed else "bearer",
-            "signer_key_id": auth.principal_id if is_signed else None
+            "signer_key_id": signer_key_id if is_signed else None
         }
         
         client_ip = request.client.host if request.client else None
         audit_logger = get_audit_logger()
-        is_trusted = client_ip in audit_logger.trusted_proxies if client_ip else False
-
-        audit_logger = get_audit_logger()
-        is_trusted = client_ip in audit_logger.trusted_proxies if client_ip else False
+        trusted_proxies = getattr(audit_logger, "trusted_proxies", [])
+        if not isinstance(trusted_proxies, (list, tuple, set)):
+            trusted_proxies = []
+        is_trusted = client_ip in trusted_proxies if client_ip else False
 
         audit_logger.log_event(
             surface=surface,

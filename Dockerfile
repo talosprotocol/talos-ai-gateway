@@ -6,17 +6,24 @@ WORKDIR /app
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+    build-essential git libgmp-dev python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install python dependencies
-# Install python dependencies
-# Install python dependencies
-COPY services/ai-gateway/pyproject.toml .
-RUN sed -i 's|talos-sdk-py @ .*|talos-sdk-py",|' pyproject.toml
-# Monorepo: Copy local SDK
+# Monorepo: Copy local dependencies
 COPY sdks/python /sdks/python
+COPY contracts/python /contracts/python
+COPY libs/talos-config /libs/talos-config
+COPY services/governance-agent /services/governance-agent
+
+# Install dependencies first (to cache them)
+RUN pip install rfc8785
+RUN pip install /contracts/python
 RUN pip install /sdks/python
+RUN pip install /libs/talos-config
+RUN pip install /services/governance-agent
+
+COPY services/ai-gateway/pyproject.toml .
+# Strip specific local path references if needed, but here we just install it
 RUN pip install --no-cache-dir .
 
 # ==========================================
@@ -55,6 +62,7 @@ COPY services/ai-gateway/alembic.ini .
 COPY services/ai-gateway/scripts/ scripts/
 COPY services/ai-gateway/config/ config/
 COPY contracts/inventory/gateway_surface.json contracts/inventory/gateway_surface.json
+COPY contracts/schemas/a2a contracts/schemas/a2a
 
 # Set permissions
 RUN chown -R talos:talos /app
@@ -64,7 +72,7 @@ USER talos
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8001/health/live || exit 1
+    CMD curl -f http://localhost:8001/health || exit 1
 
 # Expose port
 EXPOSE 8001

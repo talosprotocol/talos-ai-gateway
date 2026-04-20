@@ -13,7 +13,10 @@ def db_session():
 
 @pytest.fixture
 def redis_client():
-    return AsyncMock()
+    redis = MagicMock()
+    redis.incrbyfloat = AsyncMock()
+    redis.set = AsyncMock()
+    return redis
 
 @pytest.fixture
 def budget_service(redis_client):

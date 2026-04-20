@@ -4,10 +4,21 @@ from typing import Any, Dict, Optional, Union
 from pydantic import BaseModel
 import jsonschema
 
+import os
+
 # Path to schemas in the monorepo
 # Use resolve() to handle running from different CWDs
 # Up 6 levels: a2a -> api -> app -> ai-gateway -> services -> root -> contracts
-SCHEMA_BASE = Path(__file__).resolve().parents[5] / "contracts" / "schemas" / "a2a"
+# In Docker, it might be at /app/contracts/schemas/a2a
+DEFAULT_SCHEMA_BASE = Path(__file__).resolve().parents[3] / "contracts" / "schemas" / "a2a"
+if not DEFAULT_SCHEMA_BASE.exists():
+    # Try the monorepo root path
+    try:
+        DEFAULT_SCHEMA_BASE = Path(__file__).resolve().parents[5] / "contracts" / "schemas" / "a2a"
+    except IndexError:
+        pass
+
+SCHEMA_BASE = Path(os.getenv("TALOS_A2A_SCHEMA_PATH", str(DEFAULT_SCHEMA_BASE)))
 
 class JsonRpcError(BaseModel):
     code: int

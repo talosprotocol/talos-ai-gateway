@@ -1,13 +1,33 @@
 import { McpClient } from './../talos-sdk-ts/packages/client/src/mcp-client';
 
 async function main() {
-  const GATEWAY_URL = 'http://127.0.0.1:8001';
-  const API_TOKEN = 'sk-test-key-1'; // Valid mock key from auth_public.py
+  const GATEWAY_URL = process.env.TALOS_GATEWAY_URL || 'http://127.0.0.1:8001';
+  const ADMIN_SECRET = process.env.AUTH_ADMIN_SECRET || 'dev-admin-secret';
+  const ADMIN_PRINCIPAL = process.env.AUTH_ADMIN_PRINCIPAL || 'dev-admin';
+  const DATA_PLANE_TOKEN = process.env.TALOS_API_TOKEN || 'test-key-hard';
 
   console.log('--- Talos SDK Interop Test ---');
   console.log(`Gateway: ${GATEWAY_URL}`);
 
-  const client = new McpClient(GATEWAY_URL, API_TOKEN);
+  const tokenResponse = await fetch(`${GATEWAY_URL}/admin/v1/auth/token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Talos-Admin-Secret': ADMIN_SECRET
+    },
+    body: JSON.stringify({
+      principal: ADMIN_PRINCIPAL,
+      permissions: ['mcp.read'],
+      data_plane_token: DATA_PLANE_TOKEN,
+      ttl_seconds: 3600
+    })
+  });
+  if (!tokenResponse.ok) {
+    throw new Error(`Failed to mint session token: ${tokenResponse.status} ${await tokenResponse.text()}`);
+  }
+  const { token } = await tokenResponse.json() as { token: string };
+
+  const client = new McpClient(GATEWAY_URL, token);
 
   try {
     console.log('\n[TEST] Listing Servers...');

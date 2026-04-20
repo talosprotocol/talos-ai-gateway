@@ -3,21 +3,39 @@ import asyncio
 import aiohttp
 import sys
 import logging
+import os
 from typing import List
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-BASE_URL = "http://localhost:8000"
-ADMIN_URL = "http://localhost:8000/admin/v1"
+BASE_URL = os.getenv("TALOS_GATEWAY_URL", "http://localhost:8000").rstrip("/")
+ADMIN_URL = f"{BASE_URL}/admin/v1"
+AUTH_ADMIN_SECRET = os.getenv("AUTH_ADMIN_SECRET", "dev-admin-secret")
+AUTH_ADMIN_PRINCIPAL = os.getenv("AUTH_ADMIN_PRINCIPAL", "dev-admin")
 
-# Headers for a test user
-HEADERS = {
-    "Authorization": "Bearer test-admin-token",
-    "X-Talos-Key-ID": "virtual-key-concurrency-test",
-    "Content-Type": "application/json"
-}
+
+async def session_headers(session: aiohttp.ClientSession, permissions: List[str]) -> dict:
+    async with session.post(
+        f"{ADMIN_URL}/auth/token",
+        headers={
+            "Content-Type": "application/json",
+            "X-Talos-Admin-Secret": AUTH_ADMIN_SECRET,
+        },
+        json={
+            "principal": AUTH_ADMIN_PRINCIPAL,
+            "permissions": permissions,
+            "ttl_seconds": 3600,
+        },
+    ) as resp:
+        body = await resp.json()
+        if resp.status != 200:
+            raise RuntimeError(f"Failed to mint session token: {resp.status} {body}")
+        return {
+            "Authorization": f"Bearer {body['token']}",
+            "Content-Type": "application/json",
+        }
 
 async def setup_budget_scope(session: aiohttp.ClientSession):
     """Creates a budget scope with a small limit for testing."""
@@ -62,20 +80,20 @@ async def make_reservation_request(session: aiohttp.ClientSession, idx: int) -> 
 async def worker_cleanup_verifier(session: aiohttp.ClientSession):
     """Verifies that leaked reservations are cleaned up."""
     logger.info("--- Testing Cleanup Worker ---")
+    headers = await session_headers(session, ["platform.admin"])
     
     # 1. Create a leaked reservation
     data = {
-        "scope_team_id": "team-concurrency",
-        "scope_key_id": "key-concurrency",
-        "amount_usd": 1.0,
-        "ttl_seconds": -10 # Already expired
+        "scope_id": "key-concurrency",
+        "amount": "1.0",
+        "scope_type": "virtual_key",
     }
     
     # Ensure scope exists first (implicitly handled by simulate-leak potentially, or needs setup)
     # The previous verify_budgets.py used "virtual_key" scope type.
     
     # We call simulate-leak
-    async with session.post(f"{ADMIN_URL}/test/budget/simulate-leak", json=data, headers=HEADERS) as resp:
+    async with session.post(f"{ADMIN_URL}/test/budget/simulate-leak", json=data, headers=headers) as resp:
         if resp.status != 200:
             text = await resp.text()
             logger.error(f"Failed to simulate leak: {text}")
@@ -84,7 +102,7 @@ async def worker_cleanup_verifier(session: aiohttp.ClientSession):
 
     # 2. Check reserved amount increased
     # We need to check the scope status
-    async with session.get(f"{ADMIN_URL}/test/budget/scope/virtual_key/key-concurrency", headers=HEADERS) as resp:
+    async with session.get(f"{ADMIN_URL}/test/budget/scope/virtual_key/key-concurrency", headers=headers) as resp:
         scope = await resp.json()
         logger.info(f"Scope state before cleanup: {scope}")
         if scope['reserved_usd'] < 1.0:
@@ -92,14 +110,14 @@ async def worker_cleanup_verifier(session: aiohttp.ClientSession):
              return False
 
     # 3. Trigger Cleanup
-    async with session.post(f"{ADMIN_URL}/test/budget/trigger-cleanup", headers=HEADERS) as resp:
+    async with session.post(f"{ADMIN_URL}/test/budget/trigger-cleanup", headers=headers) as resp:
         if resp.status != 200:
             logger.error("Failed to trigger cleanup")
             return False
         logger.info("Cleanup triggered.")
 
     # 4. Verify reserved amount decreased
-    async with session.get(f"{ADMIN_URL}/test/budget/scope/virtual_key/key-concurrency", headers=HEADERS) as resp:
+    async with session.get(f"{ADMIN_URL}/test/budget/scope/virtual_key/key-concurrency", headers=headers) as resp:
         scope = await resp.json()
         logger.info(f"Scope state after cleanup: {scope}")
         if scope['reserved_usd'] >= 1.0:

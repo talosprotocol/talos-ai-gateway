@@ -1,13 +1,41 @@
 #!/usr/bin/env python3
 """Integration verification script for Talos AI Gateway Admin API."""
+import os
 import requests
 import sys
 import uuid
 import time
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = os.getenv("TALOS_GATEWAY_URL", "http://localhost:8000").rstrip("/")
 ADMIN_URL = f"{BASE_URL}/admin/v1"
-HEADERS = {"Content-Type": "application/json", "Authorization": "Bearer admin-1"}
+AUTH_ADMIN_SECRET = os.getenv("AUTH_ADMIN_SECRET", "dev-admin-secret")
+AUTH_ADMIN_PRINCIPAL = os.getenv("AUTH_ADMIN_PRINCIPAL", "dev-admin")
+DATA_PLANE_TOKEN = os.getenv("TALOS_API_TOKEN", "test-key-hard")
+
+
+def session_headers(permissions, *, data_plane=False):
+    payload = {
+        "principal": AUTH_ADMIN_PRINCIPAL,
+        "permissions": permissions,
+        "ttl_seconds": 3600,
+    }
+    if data_plane:
+        payload["data_plane_token"] = DATA_PLANE_TOKEN
+
+    resp = requests.post(
+        f"{ADMIN_URL}/auth/token",
+        headers={
+            "Content-Type": "application/json",
+            "X-Talos-Admin-Secret": AUTH_ADMIN_SECRET,
+        },
+        json=payload,
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {resp.json()['token']}",
+    }
 
 def log(msg, success=True):
     icon = "✅" if success else "❌"
@@ -16,7 +44,10 @@ def log(msg, success=True):
 def test_catalog():
     print("\n--- Testing Provider Catalog ---")
     try:
-        r = requests.get(f"{ADMIN_URL}/catalog/provider-templates", headers=HEADERS)
+        r = requests.get(
+            f"{ADMIN_URL}/catalog/provider-templates",
+            headers=session_headers(["llm.read"]),
+        )
         r.raise_for_status()
         data = r.json()
         version = data.get("version")
@@ -37,8 +68,9 @@ def test_secrets():
     print("\n--- Testing Secrets API ---")
     secret_name = f"test-secret-{uuid.uuid4().hex[:8]}"
     try:
+        headers = session_headers(["keys.read", "keys.write"])
         # Create
-        r = requests.post(f"{ADMIN_URL}/secrets", headers=HEADERS, json={
+        r = requests.post(f"{ADMIN_URL}/secrets", headers=headers, json={
             "name": secret_name,
             "value": "sk-test-123456789"
         })
@@ -46,7 +78,7 @@ def test_secrets():
         log(f"Created secret: {secret_name}")
         
         # List
-        r = requests.get(f"{ADMIN_URL}/secrets", headers=HEADERS)
+        r = requests.get(f"{ADMIN_URL}/secrets", headers=headers)
         r.raise_for_status()
         secrets = r.json().get("secrets", [])
         if any(s["name"] == secret_name for s in secrets):
@@ -55,7 +87,7 @@ def test_secrets():
             log(f"Secret {secret_name} NOT found in list", False)
             
         # Delete
-        r = requests.delete(f"{ADMIN_URL}/secrets/{secret_name}", headers=HEADERS)
+        r = requests.delete(f"{ADMIN_URL}/secrets/{secret_name}", headers=headers)
         r.raise_for_status()
         log(f"Deleted secret: {secret_name}")
         
@@ -65,7 +97,7 @@ def test_secrets():
 def test_secrets_leaks():
     print("\n--- Testing Secrets Safety (Leaks) ---")
     try:
-        r = requests.get(f"{ADMIN_URL}/secrets", headers=HEADERS)
+        r = requests.get(f"{ADMIN_URL}/secrets", headers=session_headers(["keys.read"]))
         r.raise_for_status()
         secrets = r.json().get("secrets", [])
         leaks = False
@@ -86,8 +118,9 @@ def test_secrets_leaks():
 def test_chat():
     print("\n--- Testing Chat Functionality ---")
     try:
+        admin_headers = session_headers(["llm.read"])
         # Get a model group
-        r = requests.get(f"{ADMIN_URL}/llm/model-groups", headers=HEADERS)
+        r = requests.get(f"{ADMIN_URL}/llm/model-groups", headers=admin_headers)
         groups = r.json().get("model_groups", [])
         if not groups:
             log("No model groups to test chat", False)
@@ -96,9 +129,7 @@ def test_chat():
         target = groups[0]["id"]
         print(f"Testing chat with {target}...")
         
-        # Chat request
-        # Use test key defined in auth_public
-        chat_headers = {"Authorization": "Bearer sk-test-key-1"}
+        chat_headers = session_headers(["llm.invoke"], data_plane=True)
         payload = {
             "model": target,
             "messages": [{"role": "user", "content": "Hello"}]
@@ -123,7 +154,7 @@ def test_chat_ollama():
         target = "llama3"
         print(f"Testing chat with {target}...")
         
-        chat_headers = {"Authorization": "Bearer sk-test-key-1"}
+        chat_headers = session_headers(["llm.invoke"], data_plane=True)
         payload = {
             "model": target,
             "messages": [{"role": "user", "content": "Hello"}]
@@ -191,6 +222,7 @@ def test_mcp():
     print("\n--- Testing MCP API ---")
     server_id = f"mcp-test-{uuid.uuid4().hex[:8]}"
     try:
+        headers = session_headers(["mcp.read", "mcp.admin", "resource.delete"])
         # Create
         data = {
             "id": server_id,
@@ -200,12 +232,12 @@ def test_mcp():
             "env": {},
             "enabled": True
         }
-        r = requests.post(f"{ADMIN_URL}/mcp/servers", headers=HEADERS, json=data)
+        r = requests.post(f"{ADMIN_URL}/mcp/servers", headers=headers, json=data)
         r.raise_for_status()
         log(f"Created MCP server: {server_id}")
         
         # List
-        r = requests.get(f"{ADMIN_URL}/mcp/servers", headers=HEADERS)
+        r = requests.get(f"{ADMIN_URL}/mcp/servers", headers=headers)
         r.raise_for_status()
         servers = r.json().get("servers", [])
         created = next((s for s in servers if s["id"] == server_id), None)
@@ -215,12 +247,12 @@ def test_mcp():
             log(f"MCP server {server_id} NOT found", False)
             
         # Disable
-        r = requests.post(f"{ADMIN_URL}/mcp/servers/{server_id}:disable", headers=HEADERS)
+        r = requests.post(f"{ADMIN_URL}/mcp/servers/{server_id}:disable", headers=headers)
         r.raise_for_status()
         log(f"Disabled MCP server: {server_id}")
         
         # Delete
-        r = requests.delete(f"{ADMIN_URL}/mcp/servers/{server_id}", headers=HEADERS)
+        r = requests.delete(f"{ADMIN_URL}/mcp/servers/{server_id}", headers=headers)
         r.raise_for_status()
         log(f"Deleted MCP server: {server_id}")
         

@@ -1,15 +1,22 @@
 from typing import List, Dict, Optional, Tuple
+from dataclasses import dataclass
 import logging
 from .models import Role, Binding, BindingEntry, Scope, ScopeType, AuthzDecision
 
 logger = logging.getLogger(__name__)
 
+@dataclass
+class MatchResult:
+    matched: bool
+    specificity: int = -1
+    reason: Optional[str] = None
+
 class PolicyEngine:
-    def __init__(self):
-        self.roles: Dict[str, Role] = {}
+    def __init__(self, roles: Dict[str, Role] = None, binding_docs: Dict[str, Binding] = None):
+        self.roles = roles or {}
         # Simple in-memory store for bindings (principal_id -> Binding)
         # In production this would be cached from a DB or external service
-        self.bindings: Dict[str, Binding] = {}
+        self.bindings = binding_docs or {}
 
     async def load_roles(self, roles: List[Role]):
         """Load roles into the engine."""
@@ -23,10 +30,10 @@ class PolicyEngine:
             self.bindings[binding.principal_id] = binding
         logger.info(f"Loaded bindings for {len(bindings)} principals")
 
-    def _match_scope(self, required: Scope, binding_scope: Scope) -> int:
+    def _match_scope(self, required: Scope, binding_scope: Scope) -> MatchResult:
         """
         Calculate specificity score for scope match.
-        Returns -1 if no match, or specificity score >= 0.
+        Returns MatchResult with matched flag and specificity score >= 0.
         
         Specificity Rules:
         0. Global scope bindings match everything (Specificity 0)
@@ -38,33 +45,21 @@ class PolicyEngine:
         """
         # 0. Global binding matches everything
         if binding_scope.scope_type == ScopeType.GLOBAL:
-            return 0
+            return MatchResult(matched=True, specificity=0)
 
         # 1. Type Mismatch
         if required.scope_type != binding_scope.scope_type:
-            return -1
+            return MatchResult(matched=False, reason="scope_type_mismatch")
 
         score = 0
         
         # 2. Check attributes
         # Every attribute in the binding scope MUST match the required scope
-        # Note: We iterate over binding attributes because the binding defines the constraint.
-        # However, typically we check if the binding *covers* the requirement.
-        # Actually, for RBAC, the binding extracts a subset of resources.
-        # If binding says "repo: talos", and request is "repo: talos", match.
-        
-        # Let's follow the strict "Binding Covers Request" logic.
-        # A specific binding scope (e.g. repo=A) matches a request for repo=A.
-        
-        # For each attribute in the binding scope:
         for k, v in binding_scope.attributes.items():
             req_val = required.attributes.get(k)
             
-            # If binding has an attr that request doesn't have, it's a scope mismatch
-            # (e.g. binding is limited to branch=main, but request has no branch)
-            # conservatively deny.
             if req_val is None:
-                return -1
+                return MatchResult(matched=False, reason="missing_attribute")
                 
             if v == "*":
                 score += 1
@@ -72,9 +67,9 @@ class PolicyEngine:
                 score += 2
             else:
                 # Value mismatch
-                return -1
+                return MatchResult(matched=False, reason="attribute_mismatch")
                 
-        return score
+        return MatchResult(matched=True, specificity=score)
 
     async def resolve(self, principal_id: str, permission: str, request_scope: Scope) -> AuthzDecision:
         binding_container = self.bindings.get(principal_id)
@@ -105,8 +100,9 @@ class PolicyEngine:
                 continue
 
             # 2. Check Scope
-            score = self._match_scope(request_scope, entry.scope)
-            if score >= 0:
+            match = self._match_scope(request_scope, entry.scope)
+            if match.matched:
+                score = match.specificity
                 matched_roles.append(role.role_id)
                 matched_bindings.append(entry.binding_id)
                 

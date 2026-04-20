@@ -44,6 +44,10 @@ dev = [
     "types-redis",
 ]
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"

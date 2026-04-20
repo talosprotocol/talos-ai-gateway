@@ -1,12 +1,16 @@
 """TGA Runtime Loop bridged to the standalone talos-governance-agent package."""
 import logging
-from dataclasses import dataclass
+import hashlib
+import json
+import base64
+import re
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 from datetime import datetime, timezone
 
 from talos_governance_agent.domain.runtime import TgaRuntime as StandaloneTgaRuntime
-from talos_governance_agent.domain.models import ExecutionStateEnum
-from talos_governance_agent.domain.runtime import ExecutionPlan as StandaloneExecutionPlan
+from talos_governance_agent.domain.models import ExecutionStateEnum, ExecutionLogEntry, ArtifactType
+from talos_governance_agent.domain.runtime import ExecutionPlan as StandaloneExecutionPlan, RecoveryResult
 
 from app.domain.mcp.tool_guard import ToolGuard
 from app.adapters.mcp.client import McpClient
@@ -14,6 +18,8 @@ from app.domain.tga.state_store import get_state_store, TgaStateStore
 from app.settings import settings
 
 logger = logging.getLogger(__name__)
+
+ZERO_DIGEST = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 class RuntimeError(Exception):
     """Runtime execution error."""
@@ -26,10 +32,10 @@ class ExecutionPlan:
     """Legacy ExecutionPlan wrapper for compatibility."""
     trace_id: str
     plan_id: str
-    tool_server: str
-    tool_name: str
-    tool_args: Dict[str, Any]
     action_request: Dict[str, Any]
+    tool_server: str = "default-server"
+    tool_name: str = "default-tool"
+    tool_args: Dict[str, Any] = field(default_factory=dict)
     capability_jws: Optional[str] = None # Added for standalone parity
     supervisor_decision_fn: Optional[Callable] = None
     tool_dispatch_fn: Optional[Callable] = None
@@ -83,16 +89,94 @@ class TgaRuntime:
                 )
             else:
                 # Fallback for internal gateway plans without JWS (LEGACY PATH)
-                # In a consolidated world, everything should have a JWS eventually.
                 logger.warning(f"Executing TGA plan {trace_id} without JWS - using mock authorization")
-                # For now, we manually drive the standalone's store to maintain state machine parity
-                existing = await self.store.load_state(trace_id)
-                if existing and existing.current_state in (ExecutionStateEnum.COMPLETED, ExecutionStateEnum.FAILED, ExecutionStateEnum.DENIED):
-                     return ExecutionResult(trace_id=trace_id, final_state=existing.current_state)
                 
-                # Mock authorization entry
-                # (Normally authorize_tool_call does this)
-                pass
+                # Check for existing state
+                state = await self.store.load_state(trace_id)
+                if state:
+                    if state.current_state in (ExecutionStateEnum.COMPLETED, ExecutionStateEnum.FAILED, ExecutionStateEnum.DENIED):
+                         return ExecutionResult(trace_id=trace_id, final_state=state.current_state)
+                    # Trace exists, assume it was already authorized or in-progress
+                else:
+                    # NEW TRACE: Manually drive state machine to EXECUTING
+                    # We need valid UUIDv7 for principal_id in strict standalone mode
+                    principal_id = principal.get("principal_id") if principal else "01936a8b-4c2d-7000-8000-ffffffffffff"
+                    # Handle cases where principal_id is already a non-UUID name
+                    if not re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", principal_id):
+                        principal_id = "01936a8b-4c2d-7000-8000-ffffffffffff"
+
+                    def compute_art_digest(data: Any) -> str:
+                        canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
+                        digest = hashlib.sha256(canonical.encode("utf-8")).digest()
+                        return base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
+
+                    now_dt = datetime.now(timezone.utc)
+                    ts = now_dt.isoformat().replace("+00:00", "Z")
+                    
+                    # 1. Action Request (Genesis)
+                    ar_entry = ExecutionLogEntry(
+                        trace_id=trace_id,
+                        principal_id=principal_id,
+                        sequence_number=1,
+                        prev_entry_digest=ZERO_DIGEST,
+                        from_state=ExecutionStateEnum.PENDING,
+                        to_state=ExecutionStateEnum.PENDING,
+                        artifact_type=ArtifactType.ACTION_REQUEST,
+                        artifact_id=plan.plan_id,
+                        artifact_digest=compute_art_digest({"implicit": True}),
+                        ts=ts,
+                        entry_digest=ZERO_DIGEST
+                    )
+                    ar_entry.entry_digest = ar_entry.compute_digest()
+                    await self.store.append_log_entry(ar_entry)
+                    
+                    # 2. Mock Supervisor Decision
+                    decision = {"approved": True}
+                    if plan.supervisor_decision_fn:
+                        decision = await plan.supervisor_decision_fn(plan.action_request)
+                    
+                    approved = decision.get("approved", True)
+                    target_state = ExecutionStateEnum.AUTHORIZED if approved else ExecutionStateEnum.DENIED
+
+                    dec_entry = ExecutionLogEntry(
+                        trace_id=trace_id,
+                        principal_id=principal_id,
+                        sequence_number=2,
+                        prev_entry_digest=ar_entry.entry_digest,
+                        from_state=ExecutionStateEnum.PENDING,
+                        to_state=target_state,
+                        artifact_type=ArtifactType.SUPERVISOR_DECISION,
+                        artifact_id=decision.get("decision_id", f"01936a8b-4c2d-7000-8000-00000000d{trace_id[:8].replace('-', '')[:4]}"),
+                        artifact_digest=compute_art_digest(decision),
+                        ts=ts,
+                        entry_digest=ZERO_DIGEST
+                    )
+                    dec_entry.entry_digest = dec_entry.compute_digest()
+                    await self.store.append_log_entry(dec_entry)
+                    
+                    if not approved:
+                        return ExecutionResult(
+                            trace_id=trace_id, 
+                            final_state=ExecutionStateEnum.DENIED,
+                            error="Supervisor denied the action"
+                        )
+
+                    # 3. Tool Call -> EXECUTING
+                    call_entry = ExecutionLogEntry(
+                        trace_id=trace_id,
+                        principal_id=principal_id,
+                        sequence_number=3,
+                        prev_entry_digest=dec_entry.entry_digest,
+                        from_state=ExecutionStateEnum.AUTHORIZED,
+                        to_state=ExecutionStateEnum.EXECUTING,
+                        artifact_type=ArtifactType.TOOL_CALL,
+                        artifact_id=f"01936a8b-4c2d-7000-8000-00000000c{trace_id[:8].replace('-', '')[:4]}",
+                        artifact_digest=compute_art_digest({"server": plan.tool_server, "name": plan.tool_name}),
+                        ts=ts,
+                        entry_digest=ZERO_DIGEST
+                    )
+                    call_entry.entry_digest = call_entry.compute_digest()
+                    await self.store.append_log_entry(call_entry)
 
             # 2. Phase 9.2: Classification & Guarding (Gateway Specific)
             if self.tool_guard:
@@ -140,6 +224,10 @@ class TgaRuntime:
                 final_state=ExecutionStateEnum.FAILED,
                 error=str(e)
             )
+
+    async def recover(self, trace_id: str) -> RecoveryResult:
+        """Recover a TGA plan from the store."""
+        return await self.standalone.recover(trace_id)
 
 # Singleton
 _runtime_instance: Optional[TgaRuntime] = None

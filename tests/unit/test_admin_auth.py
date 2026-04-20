@@ -79,6 +79,85 @@ def test_get_rbac_context_success(mock_get_validator):
     assert "llm.read" in context.effective_permissions
     assert "llm.admin" in context.effective_permissions
 
+@patch("app.middleware.auth_admin.get_admin_validator")
+def test_get_rbac_context_session_permissions_narrow_rbac(mock_get_validator):
+    """Session JWT permissions narrow DB-granted RBAC for the request session."""
+    validator = MagicMock()
+    validator.validate_token.return_value = {
+        "sub": "admin-user",
+        "sid": "postman-session",
+        "rbac_permissions": ["llm.read"],
+    }
+    mock_get_validator.return_value = validator
+
+    db = MagicMock(spec=Session)
+    binding = RoleBinding(principal_id="admin-user", role_id="admin-role")
+    role = Role(id="admin-role", permissions=["llm.read", "llm.admin"])
+
+    query_mock = MagicMock()
+    db.query.return_value = query_mock
+    query_mock.filter.return_value.all.return_value = [binding]
+    query_mock.filter.return_value.first.return_value = role
+
+    context = run_async(get_rbac_context(authorization="Bearer valid-token", db=db))
+
+    assert context.principal_id == "admin-user"
+    assert context.has_permission("llm.read")
+    assert not context.has_permission("llm.admin")
+    assert context.effective_permissions == {"llm.read"}
+
+@patch("app.middleware.auth_admin.get_admin_validator")
+def test_get_rbac_context_rejects_ungranted_session_permissions(mock_get_validator):
+    """Session JWT permissions cannot broaden DB-granted RBAC."""
+    validator = MagicMock()
+    validator.validate_token.return_value = {
+        "sub": "admin-user",
+        "sid": "postman-session",
+        "rbac_permissions": ["llm.admin"],
+    }
+    mock_get_validator.return_value = validator
+
+    db = MagicMock(spec=Session)
+    binding = RoleBinding(principal_id="admin-user", role_id="viewer-role")
+    role = Role(id="viewer-role", permissions=["llm.read"])
+
+    query_mock = MagicMock()
+    db.query.return_value = query_mock
+    query_mock.filter.return_value.all.return_value = [binding]
+    query_mock.filter.return_value.first.return_value = role
+
+    with pytest.raises(HTTPException) as excinfo:
+        run_async(get_rbac_context(authorization="Bearer valid-token", db=db))
+
+    assert excinfo.value.status_code == 403
+    assert excinfo.value.detail["error"]["code"] == "RBAC_DENIED"
+
+@patch("app.middleware.auth_admin.get_admin_validator")
+def test_get_rbac_context_rejects_unregistered_session_permissions(mock_get_validator):
+    """Session JWT permissions must be registered concrete admin permissions."""
+    validator = MagicMock()
+    validator.validate_token.return_value = {
+        "sub": "admin-user",
+        "sid": "postman-session",
+        "rbac_permissions": ["does.not.exist"],
+    }
+    mock_get_validator.return_value = validator
+
+    db = MagicMock(spec=Session)
+    binding = RoleBinding(principal_id="admin-user", role_id="admin-role")
+    role = Role(id="admin-role", permissions=["*"])
+
+    query_mock = MagicMock()
+    db.query.return_value = query_mock
+    query_mock.filter.return_value.all.return_value = [binding]
+    query_mock.filter.return_value.first.return_value = role
+
+    with pytest.raises(HTTPException) as excinfo:
+        run_async(get_rbac_context(authorization="Bearer valid-token", db=db))
+
+    assert excinfo.value.status_code == 403
+    assert excinfo.value.detail["error"]["code"] == "RBAC_DENIED"
+
 def test_dashboard_route_requires_auth():
     """Verify that the dashboard root route is protected."""
     client = TestClient(app)

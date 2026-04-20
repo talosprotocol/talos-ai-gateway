@@ -86,7 +86,7 @@ class TestSessionLifecycle:
         session = sm.create_session("alice-did", req)
         
         with patch.object(sm, '_advisory_lock'):
-            with pytest.raises(PermissionError, match="Not the designated responder"):
+            with pytest.raises(PermissionError, match="A2A_MEMBER_NOT_ALLOWED"):
                 sm.accept_session(session.session_id, "eve-did", self._make_accept_req())
 
     def test_close_session(self, db_session):
@@ -109,7 +109,7 @@ class TestSessionLifecycle:
             sm.close_session(session.session_id, "alice-did")
             
             # Try to accept a closed session
-            with pytest.raises(ValueError, match="Invalid state transition"):
+            with pytest.raises(ValueError, match="A2A_SESSION_STATE_INVALID"):
                 sm.accept_session(session.session_id, "bob-did", self._make_accept_req())
 
 
@@ -228,7 +228,7 @@ class TestGroupLifecycle:
         group = gm.create_group("admin-did", req)
         
         with patch.object(gm, '_advisory_lock'):
-            with pytest.raises(PermissionError, match="Only owner can add members"):
+            with pytest.raises(PermissionError, match="A2A_MEMBER_NOT_ALLOWED"):
                 gm.add_member(group.group_id, "eve-did", GroupMemberAddRequest(member_id="bob-did"))
 
     def test_close_group(self, db_session):

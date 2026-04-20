@@ -15,16 +15,19 @@ Phase 12 Route Classification:
         - GET /config:export - consistency required
         - GET /me - auth context, security-critical
 """
-from fastapi import APIRouter, HTTPException, Depends, Request, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, Request, BackgroundTasks, Header
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import uuid
 import json
 import logging
+import hmac
+import os
 from decimal import Decimal
+import jwt
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +37,25 @@ from app.dependencies import (
     get_mcp_store, get_audit_store, get_routing_policy_store, get_usage_store,
     get_read_audit_store, get_read_usage_store, get_read_mcp_store,
     get_rotation_store, get_kek_provider, get_write_db, get_read_db,
-    get_budget_service,
+    get_budget_service, get_db, get_key_store, get_rbac_store,
 )
+from app.adapters.postgres.key_store import KeyStore
 from app.domain.secrets.rotation import RotationService
-from app.middleware.auth_admin import get_rbac_context, require_permission, RbacContext
+from app.middleware.auth_admin import (
+    REGISTERED_ADMIN_PERMISSIONS,
+    REGISTERED_PUBLIC_SCOPES,
+    get_rbac_context,
+    require_permission,
+    RbacContext,
+    resolve_principal_permissions,
+    validate_registered_session_permissions,
+    validate_session_permissions,
+)
 from app.domain.interfaces import (
     UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, 
-    RoutingPolicyStore, UsageStore, RotationOperationStore
+    RoutingPolicyStore, UsageStore, RotationOperationStore, RbacStore
 )
+from app.domain.rbac.models import Role, Binding
 from app.domain.secrets.ports import KekProvider
 
 from app.core.config import settings
@@ -89,6 +103,14 @@ class BudgetSimulationSchema(BaseModel):
     scope_type: str = "key"
 
 
+class AdminTokenRequest(BaseModel):
+    principal: str = Field(default="dev-admin", min_length=1)
+    permissions: List[str] = Field(min_length=1)
+    ttl_seconds: int = Field(default=3600, ge=60, le=86400)
+    session_id: Optional[str] = None
+    data_plane_token: Optional[str] = None
+
+
 class UpstreamUpdate(BaseModel):
     provider: Optional[str] = None
     endpoint: Optional[str] = None
@@ -122,9 +144,6 @@ class KekStatusResponse(BaseModel):
     stale_counts: Dict[str, int]
 
 
-from app.middleware.auth_admin import require_permission, get_rbac_context, RbacContext
-
-
 # ============ Helper ============
 
 def audit(store: AuditStore, action: str, resource_type: str, principal_id: str, 
@@ -142,6 +161,126 @@ def audit(store: AuditStore, action: str, resource_type: str, principal_id: str,
         "details": details
     }
     store.append_event(event)
+
+
+# ============ Local Auth Utilities ============
+
+@router.post("/auth/token")
+async def create_dev_admin_token(
+    payload: AdminTokenRequest,
+    x_talos_admin_secret: Optional[str] = Header(None, alias="X-Talos-Admin-Secret"),
+    db: Session = Depends(get_db),
+    key_store: KeyStore = Depends(get_key_store),
+) -> Dict[str, Any]:
+    """Mint a short-lived scoped session JWT for trusted API clients."""
+    configured_secret = os.getenv("AUTH_ADMIN_SECRET")
+    if not configured_secret:
+        raise HTTPException(status_code=500, detail="AUTH_ADMIN_SECRET is not configured")
+
+    if not x_talos_admin_secret or not hmac.compare_digest(
+        x_talos_admin_secret,
+        configured_secret,
+    ):
+        raise HTTPException(status_code=401, detail="Invalid admin secret")
+
+    requested_permissions = validate_registered_session_permissions(payload.permissions)
+
+    try:
+        granted_permissions, _ = resolve_principal_permissions(db, payload.principal)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": {"code": "RBAC_ERROR", "message": f"Failed to resolve RBAC: {str(e)}"}},
+        )
+
+    if not granted_permissions:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": {"code": "RBAC_DENIED", "message": f"Principal {payload.principal} has no permissions assigned"}},
+        )
+
+    admin_permissions = [
+        permission
+        for permission in requested_permissions
+        if permission in REGISTERED_ADMIN_PERMISSIONS
+    ]
+    public_only_permissions = [
+        permission
+        for permission in requested_permissions
+        if permission in REGISTERED_PUBLIC_SCOPES and permission not in REGISTERED_ADMIN_PERMISSIONS
+    ]
+    public_permissions = [
+        permission
+        for permission in requested_permissions
+        if permission in REGISTERED_PUBLIC_SCOPES
+    ] if payload.data_plane_token else []
+
+    if public_only_permissions and not payload.data_plane_token:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": {"code": "AUTH_INVALID", "message": "data_plane_token is required for public API permissions"}},
+        )
+
+    session_permissions = set()
+    if admin_permissions:
+        session_permissions.update(validate_session_permissions(admin_permissions, granted_permissions))
+
+    key_claims = None
+    if public_permissions:
+        assert payload.data_plane_token is not None
+        key_data = await key_store.lookup_by_hash(key_store.hash_key(payload.data_plane_token))
+        if key_data is None or key_data.revoked:
+            raise HTTPException(status_code=401, detail="Invalid data-plane token")
+        session_permissions.update(
+            validate_session_permissions(
+                public_permissions,
+                set(key_data.scopes or []),
+                registered_permissions=REGISTERED_PUBLIC_SCOPES,
+            )
+        )
+        key_claims = {
+            "key_id": key_data.id,
+            "team_id": key_data.team_id,
+            "org_id": key_data.org_id,
+            "scopes": sorted(set(public_permissions)),
+            "allowed_model_groups": key_data.allowed_model_groups,
+            "allowed_mcp_servers": key_data.allowed_mcp_servers,
+            "budget_mode": key_data.budget_mode,
+            "team_budget_mode": key_data.team_budget_mode,
+            "overdraft_usd": key_data.overdraft_usd,
+            "team_overdraft_usd": key_data.team_overdraft_usd,
+            "max_tokens_default": key_data.max_tokens_default,
+            "team_max_tokens_default": key_data.team_max_tokens_default,
+            "budget": key_data.budget,
+            "team_budget": key_data.team_budget,
+        }
+
+    session_permissions = sorted(session_permissions)
+    session_id = payload.session_id or str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=payload.ttl_seconds)
+    token = jwt.encode(
+        {
+            "sub": payload.principal,
+            "sid": session_id,
+            "rbac_permissions": session_permissions,
+            "data_plane": key_claims,
+            "iat": now,
+            "exp": expires_at,
+        },
+        configured_secret,
+        algorithm="HS256",
+    )
+
+    return {
+        "token_type": "Bearer",
+        "token": token,
+        "principal": payload.principal,
+        "session_id": session_id,
+        "permissions": session_permissions,
+        "expires_in": payload.ttl_seconds,
+        "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
+    }
 
 
 # ============ Catalog ============
@@ -757,6 +896,71 @@ async def delete_secret(
     store.delete_secret(name)
     audit(audit_store, "secret.delete", "secret", principal.id,
           resource_id=name, outcome="success")
+    return {"success": True}
+
+
+# ============ RBAC Operations ============
+
+@router.get("/rbac/roles")
+async def list_roles(
+    principal: RbacContext = Depends(require_permission("platform.admin")),
+    store: RbacStore = Depends(get_rbac_store)
+) -> Dict[str, List[Dict[str, Any]]]:
+    return {"roles": store.list_roles()}
+
+@router.post("/rbac/roles", status_code=201)
+async def create_role(
+    role: Role,
+    principal: RbacContext = Depends(require_permission("platform.admin")),
+    store: RbacStore = Depends(get_rbac_store),
+    audit_store: AuditStore = Depends(get_audit_store)
+) -> Role:
+    store.upsert_role(role.model_dump())
+    audit(audit_store, "rbac.role_upsert", "role", principal.id, 
+          resource_id=role.role_id, outcome="success")
+    return role
+
+@router.delete("/rbac/roles/{role_id}")
+async def delete_role(
+    role_id: str,
+    principal: RbacContext = Depends(require_permission("platform.admin")),
+    store: RbacStore = Depends(get_rbac_store),
+    audit_store: AuditStore = Depends(get_audit_store)
+) -> Dict[str, bool]:
+    store.delete_role(role_id)
+    audit(audit_store, "rbac.role_delete", "role", principal.id, 
+          resource_id=role_id, outcome="success")
+    return {"success": True}
+
+@router.get("/rbac/bindings")
+async def list_bindings(
+    principal: RbacContext = Depends(require_permission("platform.admin")),
+    store: RbacStore = Depends(get_rbac_store)
+) -> Dict[str, List[Dict[str, Any]]]:
+    return {"bindings": store.list_bindings()}
+
+@router.post("/rbac/bindings", status_code=201)
+async def create_binding(
+    binding: Binding,
+    principal: RbacContext = Depends(require_permission("platform.admin")),
+    store: RbacStore = Depends(get_rbac_store),
+    audit_store: AuditStore = Depends(get_audit_store)
+) -> Binding:
+    store.upsert_binding(binding.model_dump())
+    audit(audit_store, "rbac.binding_upsert", "binding", principal.id, 
+          resource_id=binding.principal_id, outcome="success")
+    return binding
+
+@router.delete("/rbac/bindings/{principal_id}")
+async def delete_binding(
+    principal_id: str,
+    principal: RbacContext = Depends(require_permission("platform.admin")),
+    store: RbacStore = Depends(get_rbac_store),
+    audit_store: AuditStore = Depends(get_audit_store)
+) -> Dict[str, bool]:
+    store.delete_binding(principal_id)
+    audit(audit_store, "rbac.binding_delete", "binding", principal.id, 
+          resource_id=principal_id, outcome="success")
     return {"success": True}
 
 

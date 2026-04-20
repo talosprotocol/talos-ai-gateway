@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any, cast
 
-from app.domain.interfaces import UpstreamStore, ModelGroupStore, McpStore, AuditStore, RoutingPolicyStore, PrincipalStore, UsageStore
+from app.domain.interfaces import UpstreamStore, ModelGroupStore, McpStore, AuditStore, RoutingPolicyStore, PrincipalStore, UsageStore, RbacStore
 from app.domain.secrets.ports import SecretStore
 from app import config_loader
 
@@ -377,3 +377,67 @@ class JsonPrincipalStore(PrincipalStore):
 
     def get_principal(self, pid: str) -> Optional[Dict[str, Any]]:
         return self._cache.get(pid)
+
+class JsonRbacStore(RbacStore):
+    def list_roles(self) -> List[Dict[str, Any]]:
+        config = config_loader.get_config()
+        roles = config.get("roles", [])
+        if isinstance(roles, dict):
+            return list(roles.values())
+        return roles
+
+    def get_role(self, role_id: str) -> Optional[Dict[str, Any]]:
+        roles = self.list_roles()
+        for r in roles:
+            if r.get('id') == role_id:
+                return r
+        return None
+
+    def upsert_role(self, role: Dict[str, Any]) -> None:
+        config = config_loader.get_config()
+        roles = config.setdefault("roles", [])
+        existing = False
+        for i, r in enumerate(roles):
+            if r.get('id') == role['id']:
+                roles[i] = role
+                existing = True
+                break
+        if not existing:
+            roles.append(role)
+        config_loader.save_config(config)
+
+    def delete_role(self, role_id: str) -> None:
+        config = config_loader.get_config()
+        roles = config.get("roles", [])
+        config["roles"] = [r for r in roles if r.get('id') != role_id]
+        config_loader.save_config(config)
+
+    def list_bindings(self) -> List[Dict[str, Any]]:
+        config = config_loader.get_config()
+        return config.get("role_bindings", [])
+
+    def get_binding(self, principal_id: str) -> Optional[Dict[str, Any]]:
+        bindings = self.list_bindings()
+        for b in bindings:
+            if b.get('principal_id') == principal_id:
+                return b
+        return None
+
+    def upsert_binding(self, binding: Dict[str, Any]) -> None:
+        config = config_loader.get_config()
+        bindings = config.setdefault("role_bindings", [])
+        existing = False
+        for i, b in enumerate(bindings):
+            if b.get('principal_id') == binding['principal_id']:
+                bindings[i] = binding
+                existing = True
+                break
+        if not existing:
+            bindings.append(binding)
+        config_loader.save_config(config)
+
+    def delete_binding(self, principal_id: str) -> None:
+        config = config_loader.get_config()
+        bindings = config.get("role_bindings", [])
+        config["role_bindings"] = [b for b in bindings if b.get('principal_id') != principal_id]
+        config_loader.save_config(config)
