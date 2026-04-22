@@ -3,9 +3,12 @@ import requests
 import asyncio
 import aiohttp
 import time
+import os
 from decimal import Decimal
 
-BASE_URL = "http://localhost:8000/v1"
+
+BASE_URL = "http://localhost:8003/v1"
+ADMIN_URL = "http://localhost:8003"
 
 # Keys from setup_test_budget.py
 KEY_HARD = "test-key-hard"        # $0.03 limit
@@ -26,6 +29,11 @@ async def make_request(session, key, model="gpt-4", max_tokens=1000, stream=Fals
         "stream": stream
     }
     async with session.post(f"{BASE_URL}/chat/completions", headers=headers, json=payload) as resp:
+        if stream and resp.status == 200:
+            # Consume stream to allow settlement logic to run
+            await resp.read()
+            return resp.status, resp.headers, {"stream": "consumed"}
+            
         body = await resp.json()
         return resp.status, resp.headers, body
 
@@ -33,12 +41,12 @@ async def test_hard_enforcement():
     print("\n--- Testing HARD Enforcement ---")
     async with aiohttp.ClientSession() as session:
         # Request 1: Should succeed
-        # Estimate $0.03 (1000 tokens gpt-4)
-        status, headers, body = await make_request(session, KEY_HARD, max_tokens=1000)
+        # Estimate $0.0075 (100 tokens gpt-4)
+        status, headers, body = await make_request(session, KEY_HARD, max_tokens=100)
         print(f"Req 1: Status={status}, Body={body}, Remaining={headers.get('X-Talos-Budget-Remaining-USD')}")
         assert status == 200, f"Expected 200, got {status}: {body}"
         
-        # Request 2: Should fail (Remaining $0.02, Estimate $0.03)
+        # Request 2: Should fail (Remaining ~$0.0225, Estimate $0.0615 if we use 1000 tokens)
         status, headers, body = await make_request(session, KEY_HARD, max_tokens=1000)
         print(f"Req 2: Status={status}, Error={body.get('detail', {}).get('error', {}).get('code')}")
         assert status == 402
@@ -68,45 +76,85 @@ async def test_precedence():
     print("\n--- Testing Precedence (Team Blocks Key) ---")
     async with aiohttp.ClientSession() as session:
         # KEY_PRECEDENCE has $100 limit, but Team Precedence has $0.05 limit.
-        # It was manually set to 0.04 used_usd in setup.
-        # Estimate $0.03 -> Total 0.07 > 0.05 -> BLOCK.
+        # Estimate $0.0075 -> Total 0.0475 < 0.05 -> ALLOW.
+        # Wait, if I want it to fail, I need to exceed 0.05.
+        # Team used = 0.04. Capacity = 0.05.
+        # Estimate 0.03 -> Total 0.07 -> BLOCK.
         status, headers, body = await make_request(session, KEY_PRECEDENCE, max_tokens=1000)
         print(f"Precedence Req: Status={status}, Body={body}")
         assert status == 402
         assert body['detail']['error']['code'] == "BUDGET_EXCEEDED"
 
-async def test_streaming_deferral():
-    print("\n--- Testing Streaming Deferral (Bypass HARD) ---")
+async def test_streaming_settlement():
+    print("\n--- Testing Streaming Settlement (Settle-on-end) ---")
+    scope_id = "test-key-streaming"
+    
     async with aiohttp.ClientSession() as session:
         # KEY_STREAMING has $0.00 limit. Non-streaming fails.
         status, headers, body = await make_request(session, KEY_STREAMING, max_tokens=1000, stream=False)
         print(f"Regular Req (Should Block): Status={status}, Body={body}")
         assert status == 402
         
-        # Streaming should bypass reservation (WARN behavior).
+        # Streaming should bypass reservation (Optimistic behavior).
         status, headers, body = await make_request(session, KEY_STREAMING, max_tokens=1000, stream=True)
-        print(f"Streaming Req (Should Bypass 402): Status={status}, Body={body}")
-        # Bypass 402 -> reaches route logic -> 400 not implemented.
-        assert status == 400
+        print(f"Streaming Req: Status={status}")
+        assert status == 200
+        
+        # Verify settlement happened asynchronously
+        print("Waiting for settlement...")
+        await asyncio.sleep(2)
+        
+        token = await get_admin_token(session)
+        headers = {"Authorization": f"Bearer {token}"}
+        async with session.get(f"{ADMIN_URL}/test/budget/scope/virtual_key/{scope_id}", headers=headers) as resp:
+            data = await resp.json()
+            if resp.status != 200:
+                print(f"Error verifying stream settlement: Status={resp.status}, Body={data}")
+            assert resp.status == 200
+            used = Decimal(data["used_usd"])
+            print(f"Used USD after stream: {used}")
+            # Mock returns 10+10 tokens, cost should be non-zero
+            assert used > 0
 
 import sys
 import traceback
 
-ADMIN_URL = "http://localhost:8000/admin/v1"
+ADMIN_URL = "http://localhost:8003/admin/v1"
+
+async def get_admin_token(session):
+    admin_secret = "dev-admin-secret-change-in-prod"
+    payload = {
+        "principal": "admin",
+        "permissions": ["platform.admin"],
+        "ttl_seconds": 3600
+    }
+    headers = {"X-Talos-Admin-Secret": admin_secret}
+    async with session.post(f"{ADMIN_URL}/auth/token", headers=headers, json=payload) as resp:
+        if resp.status != 200:
+            body = await resp.text()
+            print(f"Failed to get admin token: {resp.status} - {body}")
+            return None
+        data = await resp.json()
+        return data["token"]
 
 async def test_forced_crash():
     print("\n--- Testing Forced Crash (Cleanup) ---")
-    scope_id = "key-hard-5c"
+    scope_id = "test-key-hard"
     
     async with aiohttp.ClientSession() as session:
-        headers = {"X-Talos-Principal": "admin"}
+        token = await get_admin_token(session)
+        if not token:
+            print("Skipping test_forced_crash due to missing token")
+            assert False, "Could not obtain admin token"
+            
+        headers = {"Authorization": f"Bearer {token}"}
         
         # 1. Get initial state
         async with session.get(f"{ADMIN_URL}/test/budget/scope/virtual_key/{scope_id}", headers=headers) as resp:
             data = await resp.json()
             if resp.status != 200:
-                print(f"Error getting scope: Status={resp.status}, Body={data}")
-                assert resp.status == 200
+                print(f"Error getting scope (step 1): Status={resp.status}, Body={data}")
+            assert resp.status == 200
             initial_reserved = Decimal(data["reserved_usd"])
         print(f"Initial reserved_usd: {initial_reserved}")
         
@@ -120,7 +168,7 @@ async def test_forced_crash():
             data = await resp.json()
             if resp.status != 200:
                 print(f"Error simulating leak: Status={resp.status}, Body={data}")
-                assert resp.status == 200
+            assert resp.status == 200
         print(f"Simulation: Leaked ${leak_amount} reservation created.")
         
         # 3. Verify it's reserved in the scope
@@ -128,7 +176,7 @@ async def test_forced_crash():
             data = await resp.json()
             if resp.status != 200:
                 print(f"Error verifying leak: Status={resp.status}, Body={data}")
-                assert resp.status == 200
+            assert resp.status == 200
             after_leak_reserved = Decimal(data["reserved_usd"])
         print(f"Reserved after leak: {after_leak_reserved}")
         assert after_leak_reserved == initial_reserved + Decimal(leak_amount)
@@ -138,7 +186,7 @@ async def test_forced_crash():
             data = await resp.json()
             if resp.status != 200:
                 print(f"Error triggering cleanup: Status={resp.status}, Body={data}")
-                assert resp.status == 200
+            assert resp.status == 200
             print(f"Cleanup Triggered: {data}")
         
         # 5. Verify released
@@ -146,7 +194,7 @@ async def test_forced_crash():
             data = await resp.json()
             if resp.status != 200:
                 print(f"Error verifying cleanup: Status={resp.status}, Body={data}")
-                assert resp.status == 200
+            assert resp.status == 200
             final_reserved = Decimal(data["reserved_usd"])
         print(f"Final reserved_usd: {final_reserved}")
         assert final_reserved == initial_reserved
@@ -157,7 +205,7 @@ async def main():
         await test_hard_enforcement()
         await test_concurrency() 
         await test_precedence()
-        await test_streaming_deferral()
+        await test_streaming_settlement()
         await test_forced_crash()
         print("\nALL TESTS PASSED")
     except AssertionError as e:

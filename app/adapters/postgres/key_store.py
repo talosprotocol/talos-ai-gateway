@@ -51,6 +51,10 @@ class KeyStore(ABC):
     def hash_key(self, raw_key: str) -> str:
         """Hash a key for storage/lookup."""
 
+    @abstractmethod
+    def list_keys(self) -> list[Dict[str, Any]]:
+        """List all keys (metadata only)."""
+
 
 class PostgresKeyStore(KeyStore):
     """Database-backed key store with HMAC-SHA256 hashing.
@@ -95,7 +99,7 @@ class PostgresKeyStore(KeyStore):
         # Ensure we don't hash with a default pepper in production
         if not self._pepper or self._pepper == b"dev-pepper-change-in-prod":
             # This check is a safety net; the factory should have caught it.
-            if os.getenv("DEV_MODE", "false").lower() not in (
+            if os.getenv("DEV_MODE", "false").strip().lower() not in (
                 "true", "1", "yes"
             ):
                 raise RuntimeError(
@@ -168,6 +172,25 @@ class PostgresKeyStore(KeyStore):
             await self._cache_set(key_hash, key_data)
 
         return key_data
+
+    def list_keys(self) -> list[Dict[str, Any]]:
+        """List all virtual keys metadata."""
+        keys = self._db.query(VirtualKey).all()
+        return [
+            {
+                "id": vk.id,
+                "team_id": vk.team_id,
+                "scopes": vk.scopes or [],
+                "allowed_model_groups": vk.allowed_model_groups or [],
+                "revoked": vk.revoked,
+                "expires_at": vk.expires_at.isoformat() if vk.expires_at else None,
+                "budget_mode": vk.budget_mode,
+                "overdraft_usd": str(vk.overdraft_usd),
+                "budget": vk.budget or {},
+                "created_at": vk.created_at.isoformat() if vk.created_at else None,
+            }
+            for vk in keys
+        ]
 
     async def _try_cache_get(self, key_hash: str) -> Optional[Union[KeyData, bool]]:
         """Try to get from cache. Returns None if not in cache."""
@@ -243,12 +266,14 @@ def get_key_store(
     pepper = os.getenv("TALOS_KEY_PEPPER")
     pepper_id = os.getenv("TALOS_PEPPER_ID", "p1")
     
-    if not pepper:
+    is_dev = os.getenv("DEV_MODE", "false").strip().lower() in ("true", "1", "yes")
+    
+    if not pepper and not is_dev:
         raise RuntimeError(
             "CRITICAL: TALOS_KEY_PEPPER environment variable is missing in "
             "production mode."
         )
-    if pepper == "dev-pepper-change-in-prod":
+    if pepper == "dev-pepper-change-in-prod" and not is_dev:
         raise RuntimeError(
             "CRITICAL: Default pepper detected in production mode. "
             "Security breach risk."

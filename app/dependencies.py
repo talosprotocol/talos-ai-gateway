@@ -257,7 +257,7 @@ def get_read_db(request: Request, response: Response) -> Generator[Session, None
 
 from app.domain.interfaces import (
     UpstreamStore, ModelGroupStore, McpStore, AuditStore, 
-    RoutingPolicyStore, RotationOperationStore
+    RoutingPolicyStore, RotationOperationStore, TeamStore
 )
 from app.domain.secrets.ports import SecretStore as SecretStorePort
 from app.adapters.json_store.stores import (
@@ -265,7 +265,7 @@ from app.adapters.json_store.stores import (
 )
 from app.adapters.postgres.stores import (
     PostgresUpstreamStore, PostgresModelGroupStore, PostgresMcpStore, 
-    PostgresAuditStore, PostgresRoutingPolicyStore, PostgresRotationStore, PostgresRbacStore
+    PostgresAuditStore, PostgresRoutingPolicyStore, PostgresRotationStore, PostgresRbacStore, PostgresTeamStore
 )
 from app.domain.interfaces import RbacStore
 
@@ -461,6 +461,10 @@ def get_rbac_store(db: Session = Depends(get_write_db)) -> RbacStore:
     if USE_JSON_STORES: return JsonRbacStore()
     return PostgresRbacStore(db)
 
+def get_team_store(db: Session = Depends(get_write_db)) -> TeamStore:
+    # No JSON store for teams currently, Phase 15 mandates Postgres for teams
+    return PostgresTeamStore(db)
+
 from app.middleware.attestation_http import AttestationVerifier, RedisReplayDetector
 async def get_attestation_verifier(p_store: PrincipalStore = Depends(get_principal_store)) -> AttestationVerifier:
     redis_client = await get_redis_client()
@@ -582,6 +586,25 @@ async def get_policy_engine_async(rbac_store: RbacStore = Depends(get_rbac_store
          if not bindings_list:
               # Default Bindings
               from app.domain.rbac.models import BindingEntry, Scope, ScopeType
+              
+              # Ensure default principals exist
+              from app.domain.interfaces import PrincipalStore
+              try:
+                  from app.dependencies import _write_engine, USE_JSON_STORES
+                  from sqlalchemy.orm import Session
+                  from app.adapters.postgres.stores import PostgresPrincipalStore
+                  from app.adapters.json_store.stores import JsonPrincipalStore
+                  
+                  with Session(_write_engine) as db:
+                      p_store = JsonPrincipalStore() if USE_JSON_STORES else PostgresPrincipalStore(db)
+                      if not p_store.get_principal("anonymous"):
+                          db.execute(text("INSERT INTO principals (id, type) VALUES ('anonymous', 'service_account') ON CONFLICT DO NOTHING"))
+                      if not p_store.get_principal("dev-user"):
+                          db.execute(text("INSERT INTO principals (id, type) VALUES ('dev-user', 'user') ON CONFLICT DO NOTHING"))
+                      db.commit()
+              except Exception as e:
+                  logger.warning(f"Could not initialize default principals: {e}")
+
               public_binding = Binding(
                   principal_id="anonymous",
                   bindings=[

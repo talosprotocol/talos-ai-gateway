@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
+from sqlalchemy.orm import Session
 from app.utils.id import uuid7
 import json
 import time
@@ -13,7 +14,8 @@ from app.middleware.auth_public import require_scope, AuthContext
 # check_rate_limit removed
 from app.dependencies import (
     get_routing_service, get_model_group_store, get_audit_store, 
-    get_rate_limit_store, get_budget_service, get_usage_manager
+    get_rate_limit_store, get_budget_service, get_usage_manager,
+    get_db
 )
 from app.domain.routing import RoutingService
 from app.domain.interfaces import ModelGroupStore, AuditStore, RateLimitStore
@@ -74,7 +76,8 @@ async def chat_completions(
     audit_store: AuditStore = Depends(get_audit_store),
     rl_store: RateLimitStore = Depends(get_rate_limit_store),
     budget_service: BudgetService = Depends(get_budget_service),
-    usage_manager: UsageManager = Depends(get_usage_manager)
+    usage_manager: UsageManager = Depends(get_usage_manager),
+    db: Session = Depends(get_db)
 ) -> Any:
     """OpenAI-compatible chat completions endpoint."""
     request_id = uuid7()
@@ -106,13 +109,6 @@ async def chat_completions(
                 "X-RateLimit-Remaining": "0",
                 "X-RateLimit-Reset": rl_result.reset_at.isoformat() + "Z"
             })
-    
-    # Handle streaming
-    if request.stream:
-        # TODO: Implement streaming with settle-on-end logic in Phase 3
-        raise HTTPException(status_code=400, detail={
-            "error": {"code": "STREAMING_NOT_SUPPORTED", "message": "Streaming not yet implemented"}
-        })
     
     # --- Phase 15: Budget Enforcement ---
     latency_ms = 0
@@ -148,6 +144,7 @@ async def chat_completions(
     if reserving:
         try:
             budget_headers = await budget_service.reserve(
+                db=db,
                 request_id=str(request_id),
                 team_id=auth.team_id,
                 key_id=auth.key_id,
@@ -172,6 +169,7 @@ async def chat_completions(
     else:
         # WARN/OFF mode or Forced WARN (streaming)
         budget_headers = await budget_service.reserve(
+            db=db,
             request_id=str(request_id),
             team_id=auth.team_id,
             key_id=auth.key_id,
@@ -190,7 +188,7 @@ async def chat_completions(
         audit(audit_store, "routing_decision", "llm", auth.key_id, model_group_id, "error", error_code="NO_UPSTREAM")
         # Release budget reservation if any
         if reserving:
-            await budget_service.settle(str(request_id), auth.team_id, auth.key_id, estimate_usd, Decimal("0"))
+            await budget_service.settle(db, str(request_id), auth.team_id, auth.key_id, estimate_usd, Decimal("0"))
         raise HTTPException(status_code=502, detail={
             "error": {"code": "UPSTREAM_5XX", "message": "No available upstream for model group"}
         })
@@ -211,6 +209,36 @@ async def chat_completions(
     try:
         # Mock Response Logic
         if requires_auth and not api_key:
+            if request.stream:
+                async def mock_stream_gen():
+                    # Yield a few chunks to simulate a real stream
+                    yield f'data: {{"id": "chatcmpl-{str(request_id)[:8]}", "object": "chat.completion.chunk", "created": {int(time.time())}, "model": "{model_name}", "choices": [{{"index": 0, "delta": {{"role": "assistant"}}, "finish_reason": null}}]}}'
+                    content = f"[Mock - no API key configured for {provider}] Response via {upstream['id']}"
+                    yield f'data: {{"id": "chatcmpl-{str(request_id)[:8]}", "object": "chat.completion.chunk", "created": {int(time.time())}, "model": "{model_name}", "choices": [{{"index": 0, "delta": {{"content": "{content}"}}, "finish_reason": null}}]}}'
+                    yield f'data: {{"id": "chatcmpl-{str(request_id)[:8]}", "object": "chat.completion.chunk", "created": {int(time.time())}, "model": "{model_name}", "choices": [{{"index": 0, "delta": {{}}, "finish_reason": "stop"}}], "usage": {{"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20}}}}'
+                
+                settled_gen = stream_with_settle(
+                    stream_gen=mock_stream_gen(),
+                    usage_manager=usage_manager,
+                    request_id=str(request_id),
+                    team_id=auth.team_id,
+                    key_id=auth.key_id,
+                    org_id=auth.org_id or "",
+                    model_group_id=model_group_id,
+                    provider=provider or "unknown",
+                    estimate_usd=estimate_usd,
+                    start_time=start_time
+                )
+                
+                return StreamingResponse(
+                    settled_gen,
+                    media_type="text/event-stream",
+                    headers={
+                        "X-Request-Id": str(request_id),
+                        "X-Upstream-Id": upstream["id"]
+                    }
+                )
+
             latency_ms = int((time.time() - start_time) * 1000)
             res = {
                 "id": f"chatcmpl-{str(request_id)[:8]}",
@@ -251,6 +279,39 @@ async def chat_completions(
         # Real upstream call
         messages = [{"role": m.role, "content": m.content} for m in request.messages]
         
+        if request.stream:
+            stream_gen = stream_openai_compatible(
+                endpoint=upstream["endpoint"],
+                model_name=model_name,
+                messages=messages,
+                api_key=api_key,
+                temperature=request.temperature or 0.7,
+                max_tokens=request.max_tokens
+            )
+            
+            # Wrap with settle-on-end logic
+            settled_gen = stream_with_settle(
+                stream_gen=stream_gen,
+                usage_manager=usage_manager,
+                request_id=str(request_id),
+                team_id=auth.team_id,
+                key_id=auth.key_id,
+                org_id=auth.org_id or "",
+                model_group_id=model_group_id,
+                provider=provider or "unknown",
+                estimate_usd=estimate_usd,
+                start_time=start_time
+            )
+            
+            return StreamingResponse(
+                settled_gen,
+                media_type="text/event-stream",
+                headers={
+                    "X-Request-Id": str(request_id),
+                    "X-Upstream-Id": upstream["id"]
+                }
+            )
+
         result = await invoke_openai_compatible(
             endpoint=upstream["endpoint"], 
             model_name=model_name, 

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.budgets.pricing import PricingRegistry, get_pricing_registry
 from app.adapters.postgres.models import BudgetScope, BudgetReservation
+from app.utils.id import uuid7
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,7 @@ class BudgetService:
 
     async def reserve(
         self,
+        db: Session,
         request_id: str,
         team_id: str,
         key_id: str,
@@ -126,6 +128,7 @@ class BudgetService:
     ) -> Dict[str, str]:
         
         period = datetime.now(timezone.utc).strftime("%Y-%m")
+        period_start = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0).date()
         keys = self._get_keys(team_id, key_id, period)
         
         # Adjust limits with overdraft
@@ -138,15 +141,6 @@ class BudgetService:
             return self._headers("off", "cache", 999999, eff_limit_team, 0)
         
         # WARN/HARD -> Execute Script (Atomic Check)
-        # For WARN we invoke it but ignore failure result? 
-        # Actually WARN should track usage but NOT block.
-        # But if we use INCRBY, we are reserving.
-        # If WARN mode, we might simply want to track usage without hard limit block.
-        # But for simplicity, let's reserve in WARN too so we have accurate tracking?
-        # Or does WARN imply "Don't stop, just log"?
-        # If we reserve in WARN, we might block if limit hit in Lua.
-        # So for WARN, we pass infinite limit to Lua?
-        
         run_limit_team = eff_limit_team if budget_mode == "hard" else 999999999
         run_limit_key = eff_limit_key if budget_mode == "hard" else 999999999
 
@@ -171,8 +165,39 @@ class BudgetService:
         if allowed == 0:
             if budget_mode == "hard":
                 raise BudgetExceededError(msg, remaining, Decimal(effective_limit))
-            # WARN mode: Log but allow (we passed infinite limit so shouldn't happen unless overflow)
+            # WARN mode: Log but allow
             logger.warning(f"Budget WARN: {msg}")
+
+        # --- Phase 15: DB Persistence ---
+        # 1. Record Reservation in DB
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+        res_row = BudgetReservation(
+            id=str(uuid7()),
+            request_id=request_id,
+            scope_team_id=team_id,
+            scope_key_id=key_id,
+            reserved_usd=estimate_usd,
+            status="ACTIVE",
+            expires_at=expires_at
+        )
+        db.add(res_row)
+
+        # 2. Update Scopes (Sync Reservation to DB)
+        if team_id != "none":
+            db.execute(
+                update(BudgetScope)
+                .where(BudgetScope.scope_type == "team", BudgetScope.scope_id == team_id, BudgetScope.period_start == period_start)
+                .values(reserved_usd=BudgetScope.reserved_usd + estimate_usd)
+            )
+        if key_id != "none":
+            db.execute(
+                update(BudgetScope)
+                .where(BudgetScope.scope_type == "virtual_key", BudgetScope.scope_id == key_id, BudgetScope.period_start == period_start)
+                .values(reserved_usd=BudgetScope.reserved_usd + estimate_usd)
+            )
+        
+        # We commit here to ensure the reservation is saved even if the subsequent upstream call fails.
+        db.commit()
 
         return self._headers(budget_mode, "redis", remaining, effective_limit, usage)
 

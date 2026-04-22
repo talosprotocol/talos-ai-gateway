@@ -8,12 +8,12 @@ from app.utils.id import uuid7
 import json
 from app.domain.interfaces import (
     UpstreamStore, ModelGroupStore, SecretStore, McpStore, AuditStore, 
-    RoutingPolicyStore, PrincipalStore, RotationOperationStore, RbacStore
+    RoutingPolicyStore, PrincipalStore, RotationOperationStore, RbacStore, TeamStore
 )
 from app.adapters.postgres.models import (
     LlmUpstream, ModelGroup, Secret, McpServer, McpPolicy, AuditEvent, 
     Deployment, Principal, RoutingPolicy, UsageEvent, RotationOperation,
-    Role, RoleBinding
+    Role, RoleBinding, Team
 )
 
 logger = logging.getLogger(__name__)
@@ -440,20 +440,35 @@ class PostgresRbacStore(RbacStore):
 
     def list_roles(self) -> List[Dict[str, Any]]:
         objs = self.db.query(Role).all()
-        return [to_dict(o) for o in objs]
+        res = []
+        for o in objs:
+            d = to_dict(o)
+            if 'id' in d:
+                d['role_id'] = d.pop('id')
+            res.append(d)
+        return res
 
     def get_role(self, role_id: str) -> Optional[Dict[str, Any]]:
         obj = self.db.query(Role).filter(Role.id == role_id).first()
-        return to_dict(obj)
+        if not obj: return None
+        d = to_dict(obj)
+        if 'id' in d:
+            d['role_id'] = d.pop('id')
+        return d
 
     def upsert_role(self, role: Dict[str, Any]) -> None:
-        obj = self.db.query(Role).filter(Role.id == role['id']).first()
+        rid = role.get('id') or role.get('role_id')
+        obj = self.db.query(Role).filter(Role.id == rid).first()
+        valid_keys = {c.name for c in Role.__table__.columns}
         if obj:
             for k, v in role.items():
-                if hasattr(obj, k):
+                if k in valid_keys and hasattr(obj, k):
                     setattr(obj, k, v)
         else:
-            obj = Role(**role)
+            if 'role_id' in role and 'id' not in role:
+                role['id'] = role.pop('role_id')
+            filtered_role = {k: v for k, v in role.items() if k in valid_keys}
+            obj = Role(**filtered_role)
             self.db.add(obj)
         self.db.commit()
 
@@ -520,7 +535,10 @@ class PostgresRbacStore(RbacStore):
                 "role_id": entry['role_id']
             }
             scope = entry.get('scope', {})
-            db_entry["scope_type"] = scope.get('scope_type', 'global')
+            stype = scope.get('scope_type', 'global')
+            if hasattr(stype, 'value'):
+                stype = stype.value
+            db_entry["scope_type"] = stype
             attrs = scope.get('attributes', {})
             if 'org_id' in attrs: db_entry['scope_org_id'] = attrs['org_id']
             if 'team_id' in attrs: db_entry['scope_team_id'] = attrs['team_id']
@@ -533,3 +551,36 @@ class PostgresRbacStore(RbacStore):
     def delete_binding(self, principal_id: str) -> None:
         self.db.query(RoleBinding).filter(RoleBinding.principal_id == principal_id).delete()
         self.db.commit()
+
+class PostgresTeamStore(TeamStore):
+    def __init__(self, db: Session):
+        self.db = db
+
+    def list_teams(self) -> List[Dict[str, Any]]:
+        objs = self.db.query(Team).all()
+        return [to_dict(o) for o in objs]
+
+    def get_team(self, team_id: str) -> Optional[Dict[str, Any]]:
+        obj = self.db.query(Team).filter(Team.id == team_id).first()
+        return to_dict(obj)
+
+    def create_team(self, team: Dict[str, Any]) -> None:
+        obj = Team(**team)
+        self.db.add(obj)
+        self.db.commit()
+
+    def update_team(self, team_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+        obj = self.db.query(Team).filter(Team.id == team_id).first()
+        if not obj:
+            raise KeyError(f"Team {team_id} not found")
+        for k, v in updates.items():
+            if hasattr(obj, k):
+                setattr(obj, k, v)
+        self.db.commit()
+        return to_dict(obj)
+
+    def delete_team(self, team_id: str) -> None:
+        obj = self.db.query(Team).filter(Team.id == team_id).first()
+        if obj:
+            self.db.delete(obj)
+            self.db.commit()

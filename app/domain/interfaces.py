@@ -208,3 +208,15 @@ class RbacStore(ABC):
     def upsert_binding(self, binding: Dict[str, Any]) -> None: pass
     @abstractmethod
     def delete_binding(self, principal_id: str) -> None: pass
+
+class TeamStore(ABC):
+    @abstractmethod
+    def list_teams(self) -> List[Dict[str, Any]]: pass
+    @abstractmethod
+    def get_team(self, team_id: str) -> Optional[Dict[str, Any]]: pass
+    @abstractmethod
+    def create_team(self, team: Dict[str, Any]) -> None: pass
+    @abstractmethod
+    def update_team(self, team_id: str, updates: Dict[str, Any]) -> Dict[str, Any]: pass
+    @abstractmethod
+    def delete_team(self, team_id: str) -> None: pass

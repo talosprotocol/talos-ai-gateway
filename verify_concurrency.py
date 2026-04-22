@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 BASE_URL = os.getenv("TALOS_GATEWAY_URL", "http://localhost:8000").rstrip("/")
 ADMIN_URL = f"{BASE_URL}/admin/v1"
 AUTH_ADMIN_SECRET = os.getenv("AUTH_ADMIN_SECRET", "dev-admin-secret")
-AUTH_ADMIN_PRINCIPAL = os.getenv("AUTH_ADMIN_PRINCIPAL", "dev-admin")
+AUTH_ADMIN_PRINCIPAL = os.getenv("AUTH_ADMIN_PRINCIPAL", "admin")
 
 
 async def session_headers(session: aiohttp.ClientSession, permissions: List[str]) -> dict:
@@ -105,22 +105,22 @@ async def worker_cleanup_verifier(session: aiohttp.ClientSession):
     async with session.get(f"{ADMIN_URL}/test/budget/scope/virtual_key/key-concurrency", headers=headers) as resp:
         scope = await resp.json()
         logger.info(f"Scope state before cleanup: {scope}")
-        if scope['reserved_usd'] < 1.0:
+        if float(scope['reserved_usd']) < 1.0:
              logger.error("Reservation usage not reflected!")
              return False
-
+ 
     # 3. Trigger Cleanup
     async with session.post(f"{ADMIN_URL}/test/budget/trigger-cleanup", headers=headers) as resp:
         if resp.status != 200:
             logger.error("Failed to trigger cleanup")
             return False
         logger.info("Cleanup triggered.")
-
+ 
     # 4. Verify reserved amount decreased
     async with session.get(f"{ADMIN_URL}/test/budget/scope/virtual_key/key-concurrency", headers=headers) as resp:
         scope = await resp.json()
         logger.info(f"Scope state after cleanup: {scope}")
-        if scope['reserved_usd'] >= 1.0:
+        if float(scope['reserved_usd']) >= 1.0:
              logger.error("Reservation NOT cleaned up!")
              # return False # Temporarily allow failure while implementing logic
              return True # Skipping strict fail for initial scaffolding

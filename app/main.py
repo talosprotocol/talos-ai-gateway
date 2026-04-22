@@ -89,9 +89,8 @@ def _start_background_workers(shutdown_event: asyncio.Event) -> list[asyncio.Tas
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    # Startup
     shutdown_event = asyncio.Event()
-    worker_tasks = _start_background_workers(shutdown_event)
+    worker_tasks = []
 
     # Phase 12: Migrations
     run_mig = os.getenv("RUN_MIGRATIONS", "false").lower()
@@ -115,13 +114,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.error(f"Migration Failed: {e}")
             # If migration fails, we should probably crash
             sys.exit(1)
+            
+    # Start background workers after migrations to avoid DB deadlocks
+    worker_tasks = _start_background_workers(shutdown_event)
     
     # Phase 7: policy initialization for dependency-based auth paths
     try:
         logger.info("Initializing authorization policy engine...")
-        await get_policy_engine_async()
+        from app.dependencies import _write_engine, USE_JSON_STORES
+        from sqlalchemy.orm import Session
+        from app.adapters.postgres.stores import PostgresRbacStore
+        from app.adapters.json_store.stores import JsonRbacStore
+
+        with Session(_write_engine) as db:
+            if USE_JSON_STORES:
+                rbac_store = JsonRbacStore()
+            else:
+                rbac_store = PostgresRbacStore(db)
+            await get_policy_engine_async(rbac_store)
     except Exception as e:
         logger.error(f"Authorization initialization failed: {e}")
+        shutdown_event.set()
         sys.exit(1)
 
     # Phase 9.2: Tool Classifier Initialization

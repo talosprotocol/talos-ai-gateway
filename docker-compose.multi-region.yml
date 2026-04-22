@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   postgres-primary:
     image: postgres:15
@@ -73,10 +71,14 @@ services:
       TALOS_REGION_ID: us
       RUN_MIGRATIONS: "true"
       MODE: dev
-      DEV_MODE: "true"  # Enable debug/sleep endpoint
+      DEV_MODE: "true"
       RATE_LIMIT_ENABLED: "false"
+      AUTH_ADMIN_SECRET: "dev-admin-secret-change-in-prod"
     ports:
       - "8003:8000"
+    volumes:
+      - ./app:/app/app
+      - ../../contracts/inventory:/app/contracts/inventory:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health/ready"]
       interval: 5s
@@ -101,17 +103,22 @@ services:
       TALOS_REGION_ID: eu
       RUN_MIGRATIONS: "false"
       MODE: dev
-      DEV_MODE: "true"  # Enable debug/sleep endpoint
+      DEV_MODE: "true"
       RATE_LIMIT_ENABLED: "false"
       READ_FALLBACK_ENABLED: "true"
     ports:
       - "8004:8000"
+    volumes:
+      - ./app:/app/app
+      - ../../contracts/inventory:/app/contracts/inventory:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health/ready"]
       interval: 5s
       timeout: 3s
       retries: 5
     depends_on:
+      gateway-region-a:
+        condition: service_healthy
       postgres-primary:
         condition: service_healthy
       postgres-replica:
