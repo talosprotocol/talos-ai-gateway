@@ -8,7 +8,6 @@ This module provides a reconciliation worker that:
 
 Can be run daily or hourly.
 """
-import time
 import logging
 from decimal import Decimal
 from sqlalchemy import select, func
@@ -37,17 +36,18 @@ class BudgetReconciler:
             
             scopes = db.query(BudgetScope).filter(BudgetScope.reserved_usd > 0).all()
             
+            from datetime import datetime, timezone, timedelta
+            now = datetime.now(timezone.utc)
+            
             for scope in scopes:
                 # 2. Sum active reservations
+                # Filter by period_start to match scope month
+                next_month = (scope.period_start + timedelta(days=32)).replace(day=1)
+                
                 stmt = select(func.sum(BudgetReservation.reserved_usd)).where(
-                    BudgetReservation.status == 'active',
-                    BudgetReservation.expires_at > func.now(), # approximate active definition matching cleanup
-                    # Actually spec says: Active = status='active'.
-                    # Cleanup worker handles expiry.
-                    # If expired but not cleaned, is it active?
-                    # The Invariant says "ACTIVE reservations".
-                    # Technical definition: status='active'.
-                    # Uncleaned expired reservations ARE active until cleaned.
+                    BudgetReservation.status == 'ACTIVE',
+                    BudgetReservation.created_at >= datetime.combine(scope.period_start, datetime.min.time(), tzinfo=timezone.utc),
+                    BudgetReservation.created_at < datetime.combine(next_month, datetime.min.time(), tzinfo=timezone.utc)
                 )
                 
                 if scope.scope_type == 'team':
