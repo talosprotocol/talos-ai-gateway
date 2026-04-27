@@ -1,49 +1,77 @@
 from fastapi.testclient import TestClient
 from app.main import app
 import json
+import base64
+from talos.core.session import SessionManager, PrekeyBundle
+from talos.core.crypto import generate_signing_keypair
 
 def test_handshake():
     print("Connecting to WebSocket...")
     client = TestClient(app)
+    
+    # 1. Fetch Prekey
+    resp = client.get("/v1/protocol/prekey")
+    assert resp.status_code == 200
+    bundle_data = resp.json()
+    bundle = PrekeyBundle(
+        identity_key=base64.urlsafe_b64decode(bundle_data["identity_key"] + "==="),
+        signed_prekey=base64.urlsafe_b64decode(bundle_data["signed_prekey"] + "==="),
+        prekey_signature=base64.urlsafe_b64decode(bundle_data["prekey_signature"] + "===")
+    )
+    print("✅ Fetched Prekey Bundle")
+
+    # 2. Setup Alice Session
+    kp = generate_signing_keypair()
+    alice_manager = SessionManager(kp)
+    alice_session = alice_manager.create_session_as_initiator("gateway", bundle)
+
     try:
         with client.websocket_connect("/v1/connect") as websocket:
-            # 1. Send Handshake
+            # 3. Send HANDSHAKE
             handshake = {
                 "version": 1,
                 "type": "HANDSHAKE",
-                "payload": "eyJrZXkiOiJ2YWwifQ" # Base64url {"key":"val"}
+                "payload": base64.urlsafe_b64encode(alice_session.state.dh_keypair.public_key).decode().rstrip("="),
+                "nonce": base64.urlsafe_b64encode(alice_manager.identity_keypair.public_key).decode().rstrip("="),
+                "session_id": "test-alice-1"
             }
             websocket.send_text(json.dumps(handshake))
             print("Sent HANDSHAKE")
             
-            # 2. Receive ACK
+            # 4. Receive HANDSHAKE_ACK
             data = websocket.receive_text()
-            print(f"Received: {data}")
             response = json.loads(data)
             assert response["type"] == "HANDSHAKE_ACK"
-            print("✅ Handshake Success")
+            session_id = response["session_id"]
+            print(f"✅ Handshake Success, Session: {session_id}")
             
-            # 3. Send PING
-            ping = {
+            # 5. Send Encrypted DATA (PING)
+            request = {"method": "ping", "params": {"hello": "world"}}
+            plaintext = json.dumps(request).encode()
+            ciphertext = alice_session.encrypt(plaintext)
+            
+            data_frame = {
                 "version": 1,
-                "type": "PING",
-                "payload": "ping-payload"
+                "type": "DATA",
+                "payload": base64.urlsafe_b64encode(ciphertext).decode().rstrip("="),
+                "sequence": 0
             }
-            websocket.send_text(json.dumps(ping))
-            print("Sent PING")
+            websocket.send_text(json.dumps(data_frame))
+            print("Sent Encrypted DATA")
             
-            # 4. Receive PONG
+            # 6. Receive Encrypted Response
             data = websocket.receive_text()
-            print(f"Received: {data}")
-            response = json.loads(data)
-            assert response["type"] == "PONG"
-            assert response["payload"] == "ping-payload"
-            print("✅ Ping/Pong Success")
+            resp_frame = json.loads(data)
+            assert resp_frame["type"] == "DATA"
             
-            # 5. Close
-            close = {"version": 1, "type": "CLOSE", "payload": ""}
-            websocket.send_text(json.dumps(close))
-            print("Sent CLOSE")
+            resp_ciphertext = base64.urlsafe_b64decode(resp_frame["payload"] + "===")
+            resp_plaintext = alice_session.decrypt(resp_ciphertext)
+            resp_json = json.loads(resp_plaintext.decode())
+            
+            print(f"Received: {resp_json}")
+            assert "error" in resp_json # Because 'ping' method is unknown but processed securely
+            print("✅ Secure DATA Exchange Success")
+            
     except Exception as e:
         print(f"Test failed: {e}")
         raise

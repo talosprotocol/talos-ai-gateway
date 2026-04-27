@@ -322,8 +322,8 @@ async def a2a_http_exception_handler(request: Request, exc: HTTPException) -> JS
 
 # Mount routers
 app.include_router(dashboard_router.router, prefix="", tags=["Dashboard"])
-# from app.api.talos_protocol import router as protocol_router
-# app.include_router(protocol_router.router, prefix="", tags=["Protocol"])
+from app.api.talos_protocol import router as protocol_router
+app.include_router(protocol_router.router, prefix="", tags=["Protocol"])
 app.include_router(ai_router.router, prefix="/v1", tags=["LLM"])
 app.include_router(mcp_router.router, prefix="/v1/mcp", tags=["MCP"])
 app.include_router(admin_router.router, prefix="/admin/v1", tags=["Admin"])

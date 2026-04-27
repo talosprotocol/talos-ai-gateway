@@ -3,7 +3,7 @@ import os
 import logging
 import time
 import threading
-from typing import Optional, Generator, Any, List, Dict
+from typing import Optional, Generator, Any
 from dataclasses import dataclass, field
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine, text
@@ -232,7 +232,7 @@ def get_read_db(request: Request, response: Response) -> Generator[Session, None
             raise
             
         # Availability errors - fallback is appropriate
-        opened = _circuit_breaker.record_failure()
+        _circuit_breaker.record_failure()
         
         if settings.READ_FALLBACK_ENABLED:
             reason = "connect_error"
@@ -405,6 +405,39 @@ def get_mcp_client() -> McpClient: return McpClient()
 from app.domain.interfaces import SessionStore
 from app.adapters.redis.stores import RedisSessionStore
 from app.adapters.memory_store.stores import MemorySessionStore
+from talos.core.session import SessionManager as DoubleRatchetSessionManager
+from talos.core.crypto import Wallet as DoubleRatchetWallet, KeyPair
+
+_protocol_session_manager: Optional[DoubleRatchetSessionManager] = None
+
+def get_protocol_session_manager() -> DoubleRatchetSessionManager:
+    global _protocol_session_manager
+    if _protocol_session_manager is None:
+        # In a real app, we'd load this from a secure store. 
+        # For this prototype, we'll generate one or use a hardcoded dev key.
+        identity_key_hex = os.getenv("TALOS_PROTOCOL_IDENTITY_KEY")
+        if identity_key_hex:
+             # Assume it's a seed or raw private key
+             # This is a simplified reconstruction
+             from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+             sk = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(identity_key_hex))
+             pk = sk.public_key().public_bytes(
+                 encoding=serialization.Encoding.Raw,
+                 format=serialization.PublicFormat.Raw
+             )
+             sk_bytes = sk.private_bytes(
+                 encoding=serialization.Encoding.Raw,
+                 format=serialization.PrivateFormat.Raw,
+                 encryption_algorithm=serialization.NoEncryption()
+             )
+             kp = KeyPair(private_key=sk_bytes, public_key=pk)
+        else:
+             from talos.core.crypto import generate_signing_keypair
+             kp = generate_signing_keypair()
+             
+        _protocol_session_manager = DoubleRatchetSessionManager(kp)
+    return _protocol_session_manager
+
 def get_session_store() -> SessionStore:
     if os.getenv("REDIS_URL"): return RedisSessionStore()
     return MemorySessionStore()
@@ -555,7 +588,8 @@ def get_audit_logger() -> AuditLogger:
 
 # Phase 7: Updated Policy Engine
 from app.domain.rbac.policy_engine import PolicyEngine
-from app.domain.rbac.models import Role
+from app.domain.rbac.bootstrap import ensure_bootstrap_rbac
+from app.domain.rbac.models import Binding, Role
 _policy_engine_instance = None
 
 async def get_policy_engine_async(rbac_store: RbacStore = Depends(get_rbac_store)) -> PolicyEngine:
@@ -563,63 +597,19 @@ async def get_policy_engine_async(rbac_store: RbacStore = Depends(get_rbac_store
     if _policy_engine_instance is None:
          engine = PolicyEngine()
          
+         # Local admin auth depends on bootstrap RBAC records. Restore them if a
+         # mutable store drifted while the service was running.
+         ensure_bootstrap_rbac(rbac_store)
+
          # Load Roles from Persistence
          roles_data = rbac_store.list_roles()
          roles_list = [Role(**r) for r in roles_data]
-         
-         if not roles_list:
-             # Default Fallback Roles if store is empty
-             roles_list = [
-                 Role(role_id="role-admin", name="Admin", permissions=["*:*"], built_in=True),
-                 Role(role_id="role-public", name="Public", permissions=["system:health", "system:metrics"], built_in=True)
-             ]
-             for r in roles_list:
-                 rbac_store.upsert_role(r.model_dump())
-             
+
          await engine.load_roles(roles_list)
          
          # Load Bindings from Persistence
-         from app.domain.rbac.models import Binding
          binding_data = rbac_store.list_bindings()
          bindings_list = [Binding(**b) for b in binding_data]
-         
-         if not bindings_list:
-              # Default Bindings
-              from app.domain.rbac.models import BindingEntry, Scope, ScopeType
-              
-              # Ensure default principals exist
-              from app.domain.interfaces import PrincipalStore
-              try:
-                  from app.dependencies import _write_engine, USE_JSON_STORES
-                  from sqlalchemy.orm import Session
-                  from app.adapters.postgres.stores import PostgresPrincipalStore
-                  from app.adapters.json_store.stores import JsonPrincipalStore
-                  
-                  with Session(_write_engine) as db:
-                      p_store = JsonPrincipalStore() if USE_JSON_STORES else PostgresPrincipalStore(db)
-                      if not p_store.get_principal("anonymous"):
-                          db.execute(text("INSERT INTO principals (id, type) VALUES ('anonymous', 'service_account') ON CONFLICT DO NOTHING"))
-                      if not p_store.get_principal("dev-user"):
-                          db.execute(text("INSERT INTO principals (id, type) VALUES ('dev-user', 'user') ON CONFLICT DO NOTHING"))
-                      db.commit()
-              except Exception as e:
-                  logger.warning(f"Could not initialize default principals: {e}")
-
-              public_binding = Binding(
-                  principal_id="anonymous",
-                  bindings=[
-                      BindingEntry(binding_id="bind_anon", role_id="role-public", scope=Scope(scope_type=ScopeType.GLOBAL))
-                  ]
-              )
-              admin_binding = Binding(
-                  principal_id="dev-user",
-                  bindings=[
-                      BindingEntry(binding_id="bind_admin", role_id="role-admin", scope=Scope(scope_type=ScopeType.GLOBAL))
-                  ]
-              )
-              bindings_list = [public_binding, admin_binding]
-              for b in bindings_list:
-                  rbac_store.upsert_binding(b.model_dump())
          
          await engine.load_bindings(bindings_list)
          

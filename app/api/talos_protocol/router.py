@@ -1,90 +1,72 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from app.api.talos_protocol.models import Frame, FrameType
-from app.dependencies import get_session_store, get_key_store
+from app.dependencies import get_session_store, get_key_store, get_protocol_session_manager, get_mcp_client
 from app.domain.interfaces import SessionStore
 from app.adapters.postgres.key_store import KeyStore
 from app.adapters.redis.client import get_redis_client
-from talos_core_rs import Wallet
+from talos.core.session import SessionManager, PrekeyBundle, RatchetState
+from talos.core.crypto import KeyPair
 from app.utils.id import uuid7
 import json
 import logging
 import base64
 import time
+from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+@router.get("/v1/protocol/prekey")
+async def get_prekey_bundle(
+    manager: SessionManager = Depends(get_protocol_session_manager)
+):
+    """Get the Gateway's prekey bundle for X3DH handshake."""
+    bundle = manager.get_prekey_bundle()
+    return {
+        "identity_key": base64.urlsafe_b64encode(bundle.identity_key).decode().rstrip("="),
+        "signed_prekey": base64.urlsafe_b64encode(bundle.signed_prekey).decode().rstrip("="),
+        "prekey_signature": base64.urlsafe_b64encode(bundle.prekey_signature).decode().rstrip("="),
+    }
+
 @router.websocket("/v1/connect")
 async def websocket_endpoint(
     websocket: WebSocket,
     store: SessionStore = Depends(get_session_store),
-    key_store: KeyStore = Depends(get_key_store)
+    manager: SessionManager = Depends(get_protocol_session_manager),
+    mcp_client: Any = Depends(get_mcp_client)
 ):
     await websocket.accept()
     session_id = None
+    session_obj = None
     
     try:
-        # Expect HANDSHAKE
+        # 1. HANDSHAKE (X3DH Responder)
         data = await websocket.receive_text()
-        try:
-            frame_dict = json.loads(data)
-            frame = Frame(**frame_dict)
-        except Exception:
-            await websocket.close(code=1002, reason="Invalid format")
-            return
+        frame = Frame.model_validate_json(data)
         
         if frame.type != FrameType.HANDSHAKE:
             await websocket.close(code=1002, reason="Expected HANDSHAKE")
             return
 
-        # 1. Validate mandatory fields
-        if not all([frame.signature, frame.nonce, frame.timestamp]):
-             await websocket.close(code=1008, reason="Missing security fields")
-             return
-
-        # 2. Freshness Check
-        now = int(time.time())
-        if abs(now - frame.timestamp) > 60:
-             await websocket.close(code=1008, reason="Clock skew exceeded")
-             return
-
-        # 3. Payload Binding & Verification
-        # In HANDSHAKE, the 'payload' should contain the public key or some params
-        # The signature is over: version | nonce | timestamp | type | payload
         try:
-            # We assume payload is base64url encoded params
-            # Standard handshake signature payload:
-            sig_payload = f"{frame.version}|{frame.nonce}|{frame.timestamp}|{frame.type}|{frame.payload}".encode()
+            # Initiator's ephemeral public key is in frame.payload
+            # Initiator's identity is in frame.nonce
+            ephemeral_public = base64.urlsafe_b64decode(frame.payload + "===")
+            initiator_identity = base64.urlsafe_b64decode(frame.nonce + "===")
             
-            sig_bytes = base64.urlsafe_b64decode(frame.signature + "===")
-            
-            # The 'payload' itself for handshake is the public key (as b64url)
-            public_key_bytes = base64.urlsafe_b64decode(frame.payload + "===")
-            if len(public_key_bytes) != 32:
-                 raise ValueError("Invalid public key length")
-            
-            if not Wallet.verify(sig_payload, sig_bytes, public_key_bytes):
-                raise ValueError("Signature verification failed")
+            session_obj = manager.create_session_as_responder(
+                peer_id=frame.session_id or "initiator",
+                peer_dh_public=ephemeral_public,
+                peer_identity=initiator_identity
+            )
+            session_id = str(uuid7())
         except Exception as e:
-            logger.warning(f"Handshake signature failed: {e}")
-            await websocket.close(code=1008, reason="Signature verification failed")
+            logger.warning(f"Handshake failed: {e}")
+            await websocket.close(code=1008, reason="Handshake failed")
             return
 
-        # 4. Replay Protection
-        redis_client = await get_redis_client()
-        if redis_client:
-            nonce_key = f"protocol:nonce:{frame.payload}:{frame.nonce}"
-            if not await redis_client.set(nonce_key, "1", ex=300, nx=True):
-                await websocket.close(code=1008, reason="Replay detected")
-                return
-
-        # 5. Session Creation
-        public_key_hex = public_key_bytes.hex()
-        session_id = uuid7()
-        await store.create_session(session_id, public_key_hex)
-        
-        # Send HANDSHAKE_ACK with session_id
+        # Send HANDSHAKE_ACK
         ack = Frame(
             version=1,
             type=FrameType.HANDSHAKE_ACK,
@@ -93,44 +75,63 @@ async def websocket_endpoint(
         )
         await websocket.send_text(ack.model_dump_json())
         
+        # 2. Secure DATA Loop
         while True:
             data = await websocket.receive_text()
-            frame_dict = json.loads(data)
-            frame = Frame(**frame_dict)
+            frame = Frame.model_validate_json(data)
             
-            # Global Frame Validation: Session & Sequence
-            if frame.type in [FrameType.DATA, FrameType.PING]:
-                if frame.session_id != session_id:
-                    await websocket.close(code=1008, reason="Session ID mismatch")
-                    break
-                
-                if frame.sequence is None:
-                    await websocket.close(code=1008, reason="Missing sequence")
-                    break
-                
-                # REPLAY PROTECTION: Validate sequence matches expected monotonic counter
-                is_valid = await store.validate_sequence(session_id, frame.sequence)
-                if not is_valid:
-                    logger.warning(f"Replay detected: session={session_id} seq={frame.sequence}")
-                    await websocket.close(code=1008, reason="Sequence invalid or replay")
-                    break
-
             if frame.type == FrameType.PING:
-                pong = Frame(
-                    type=FrameType.PONG, 
-                    session_id=session_id,
-                    payload=frame.payload
-                )
+                pong = Frame(type=FrameType.PONG, session_id=session_id, payload=frame.payload)
                 await websocket.send_text(pong.model_dump_json())
             elif frame.type == FrameType.CLOSE:
                 await websocket.close()
                 break
             elif frame.type == FrameType.DATA:
-                # Process data...
-                print(f"Received DATA [{frame.sequence}]: {frame.payload[:50]}...")
+                # Decrypt DATA frame using Double Ratchet
+                try:
+                    ciphertext = base64.urlsafe_b64decode(frame.payload + "===")
+                    plaintext = session_obj.decrypt(ciphertext)
+                    
+                    # Process Request
+                    request = json.loads(plaintext.decode())
+                    method = request.get("method")
+                    params = request.get("params", {})
+                    
+                    logger.info(f"Protocol: Received secure {method}")
+                    
+                    result = {}
+                    if method == "list_tools":
+                        server_id = params.get("server_id")
+                        result = {"tools": await mcp_client.list_tools(server_id)}
+                    elif method == "get_tool_schema":
+                        server_id = params.get("server_id")
+                        tool_name = params.get("tool_name")
+                        result = {"json_schema": await mcp_client.get_tool_schema(server_id, tool_name)}
+                    elif method == "call_tool":
+                        server_id = params.get("server_id")
+                        tool_name = params.get("tool_name")
+                        arguments = params.get("arguments", {})
+                        result = {"output": await mcp_client.call_tool(server_id, tool_name, arguments)}
+                    else:
+                        result = {"error": "Unknown method"}
+
+                    # Encrypt Response
+                    encrypted_response = session_obj.encrypt(json.dumps(result).encode())
+                    
+                    resp_frame = Frame(
+                        type=FrameType.DATA,
+                        session_id=session_id,
+                        sequence=frame.sequence,
+                        payload=base64.urlsafe_b64encode(encrypted_response).decode().rstrip("=")
+                    )
+                    await websocket.send_text(resp_frame.model_dump_json())
+                    
+                except Exception as e:
+                    logger.error(f"Secure processing failed: {e}")
+                    await websocket.close(code=1008, reason="Processing failure")
+                    break
                 
     except WebSocketDisconnect:
         logger.info(f"Client disconnected: {session_id}")
     except Exception as e:
         logger.error(f"Protocol error: {e}")
-        # await websocket.close(code=1011)
