@@ -21,7 +21,7 @@ from typing import List, Optional
 # Ajusta PYTHONPATH para imports relativos funcionarem
 sys.path.insert(0, str(Path(__file__).parent))
 
-from scraper.states import SCRAPERS, get_all_scrapers, get_scraper
+from scraper.states import SCRAPERS, get_scraper
 from db import Database
 
 logging.basicConfig(

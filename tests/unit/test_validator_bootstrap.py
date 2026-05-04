@@ -1,9 +1,7 @@
 import os
-import pytest
 from unittest.mock import patch
 from app.dependencies import get_capability_validator
 from app.core.config import settings as core_settings
-from app.settings import settings as a2a_settings
 
 def test_capability_validator_uses_tga_prefixed_key():
     """Test that the validator uses the TGA_SUPERVISOR_PUBLIC_KEY from settings."""

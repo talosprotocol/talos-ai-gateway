@@ -7,7 +7,6 @@ para skills baseadas em conhecimento (knowledge-only).
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -97,7 +96,6 @@ class RateLimitExceeded(Exception):
 
 
 if __name__ == "__main__":
-    import sys
     recent = get_recent_actions(20)
     if recent:
         for a in recent:

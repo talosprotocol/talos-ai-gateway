@@ -4,7 +4,6 @@
 Static code analysis verification (no imports required).
 """
 
-import re
 from pathlib import Path
 
 

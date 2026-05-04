@@ -17,7 +17,6 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-import uuid
 from uuid6 import uuid7
 
 def upgrade() -> None:

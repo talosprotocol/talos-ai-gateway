@@ -1,9 +1,6 @@
 """Verification script for Phase 15 Budgets."""
-import requests
 import asyncio
 import aiohttp
-import time
-import os
 from decimal import Decimal
 
 

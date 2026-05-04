@@ -11,7 +11,6 @@ Uso:
   python complexity_analyzer.py C:/Users/renat/earbudllm --module llm --threshold 10
 """
 
-import os
 import re
 import sys
 import json
@@ -26,7 +25,7 @@ if sys.platform == 'win32':
     except AttributeError:
         pass  # Python < 3.7 fallback
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 from collections import defaultdict
 
 
@@ -171,7 +170,7 @@ class KotlinComplexityAnalyzer:
     def _extract_functions(self, content: str, filepath: str) -> List[FunctionMetrics]:
         """Extrai e analisa todas as funções do arquivo."""
         functions = []
-        lines = content.split('\n')
+        content.split('\n')
 
         # Pattern para declarações de função Kotlin
         fun_pattern = re.compile(

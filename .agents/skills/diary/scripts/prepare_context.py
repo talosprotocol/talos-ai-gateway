@@ -13,7 +13,6 @@ Generates a standardized AGENT_CONTEXT.md with 5 core sections:
 import os
 import sys
 import json
-import glob
 from pathlib import Path
 from datetime import datetime
 

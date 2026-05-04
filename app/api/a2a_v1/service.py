@@ -43,7 +43,6 @@ from app.domain.interfaces import AuditStore, RateLimitStore, TaskStore, UsageSt
 from app.domain.routing import RoutingService
 from app.middleware.auth_public import AuthContext
 from app.adapters.mcp.client import McpClient
-from app.settings import settings
 from app.utils.id import uuid7
 
 ALLOWED_V1_METHODS = {

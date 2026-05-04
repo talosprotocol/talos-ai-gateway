@@ -6,7 +6,6 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.adapters.postgres.models import RotationOperation
 from app.adapters.postgres.secret_store import PostgresSecretStore
-from app.adapters.postgres.stores import PostgresRotationStore
 from app.domain.secrets.rotation import RotationService
 from app.dependencies import get_write_db, get_kek_provider
 

@@ -5,7 +5,6 @@ It orchestrates between KekProvider (Port) and SecretStore (Port).
 """
 from typing import List, Optional, Dict, Any
 from .ports import KekProvider, SecretStore
-from .models import EncryptedEnvelope
 
 class SecretsManager:
     """Domain Service for Secrets Management."""

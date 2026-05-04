@@ -1,10 +1,7 @@
 import os
-import base64
 import requests
 import time
 import uuid
-import binascii
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 # Configuration
 API_URL = os.getenv("API_URL", "http://localhost:8000")
@@ -86,18 +83,6 @@ def test_rotation_flow():
         time.sleep(2)
     
     assert status == "completed"
-    print("✓ Rotation flow complete.")
-
-if __name__ == "__main__":
-    try:
-        test_aad_binding()
-        test_multi_kek_status()
-        test_rotation_flow()
-        print("\nALL VERIFICATIONS PASSED")
-    except Exception as e:
-        print(f"\nVERIFICATION FAILED: {e}")
-        exit(1)
-tatus == "completed"
     print("✓ Rotation flow complete.")
 
 if __name__ == "__main__":

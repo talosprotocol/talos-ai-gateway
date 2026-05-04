@@ -1,6 +1,5 @@
 """Secrets Domain Models."""
-from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 ALGORITHM_AES_256_GCM = "aes-256-gcm"

@@ -17,7 +17,6 @@ from pathlib import Path
 # Add SDK to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "sdks/python/src"))
 
-from talos_sdk import Wallet
 from talos_sdk.a2a import RatchetFrameCrypto
 from talos_sdk.crypto import generate_signing_keypair
 from talos_sdk.session import SessionManager

@@ -1,12 +1,9 @@
 
 import logging
-import time
-import hashlib
-from typing import Optional, Tuple
+from typing import Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.adapters.postgres.models import SecretsKeyring
-from app.domain.secrets.models import EncryptedEnvelope
 
 logger = logging.getLogger(__name__)
 

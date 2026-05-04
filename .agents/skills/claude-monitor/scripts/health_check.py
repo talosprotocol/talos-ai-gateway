@@ -13,7 +13,6 @@ Uso:
 """
 
 import json
-import os
 import socket
 import subprocess
 import sys
@@ -33,7 +32,7 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).parent))
 from config import (
     BROWSER_NAMES, CLAUDE_NAMES, API_ENDPOINT,
-    THRESHOLDS, classify
+    classify
 )
 
 
@@ -70,7 +69,6 @@ def check_ram():
 def check_browsers(detail=False):
     """Verifica processos de browser e consumo de RAM."""
     browsers = {}
-    all_procs = []
 
     for proc in psutil.process_iter(["pid", "name", "memory_info"]):
         try:

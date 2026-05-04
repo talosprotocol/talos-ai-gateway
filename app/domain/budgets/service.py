@@ -1,7 +1,6 @@
 """Budget Service (Redis Backed)."""
 import logging
-import time
-from typing import Optional, Dict, List
+from typing import Optional, Dict
 from decimal import Decimal
 from datetime import datetime, timezone, timedelta
 

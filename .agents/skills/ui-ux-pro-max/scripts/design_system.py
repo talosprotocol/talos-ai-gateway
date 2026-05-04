@@ -11,7 +11,6 @@ Usage:
 
 import csv
 import json
-from pathlib import Path
 from core import search, DATA_DIR
 
 

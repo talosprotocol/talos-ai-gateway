@@ -15,7 +15,6 @@ Prerequisites:
 import asyncio
 import httpx
 import pytest
-import time
 from typing import AsyncIterator
 
 
@@ -93,7 +92,7 @@ class TestDistributedTracing:
         """Test that sensitive data is redacted from traces."""
         # Make a request with Authorization header
         headers = {"Authorization": "Bearer secret_token_123"}
-        resp = await http_client.get(f"{GATEWAY_URL}/health/live", headers=headers)
+        await http_client.get(f"{GATEWAY_URL}/health/live", headers=headers)
         
         # Wait for trace export
         await asyncio.sleep(2)

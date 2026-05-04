@@ -259,7 +259,6 @@ async def stream_openai_compatible(
     timeout: float = DEFAULT_TIMEOUT
 ) -> AsyncGenerator[str, None]:
     """Stream from an OpenAI-compatible endpoint."""
-    from typing import AsyncGenerator
     
     # Resolve endpoint if it's an env reference
     resolved_endpoint = resolve_endpoint(endpoint)

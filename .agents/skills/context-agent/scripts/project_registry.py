@@ -5,7 +5,6 @@ Mantém PROJECT_REGISTRY.md atualizado.
 
 import re
 from datetime import datetime
-from pathlib import Path
 
 from config import (
     PROJECT_REGISTRY_PATH,

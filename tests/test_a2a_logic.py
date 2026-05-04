@@ -1,9 +1,9 @@
 import pytest
-from unittest.mock import MagicMock, ANY
+from unittest.mock import MagicMock
 from datetime import datetime, timedelta, timezone
 from app.domain.a2a.session_manager import A2ASessionManager
 from app.domain.a2a.models import SessionCreateRequest, SessionAcceptRequest, SessionRotateRequest
-from app.adapters.postgres.models import A2ASession, A2ASessionEvent
+from app.adapters.postgres.models import A2ASession
 
 @pytest.fixture
 def mock_db():

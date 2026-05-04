@@ -6,7 +6,6 @@ Transcreve áudio para texto e gera atas/resumos usando LLM.
 
 import os
 import sys
-import json
 import subprocess
 import shutil
 from datetime import datetime
@@ -27,8 +26,7 @@ except ImportError:
     from rich.console import Console
     from rich.prompt import Prompt
     from rich.panel import Panel
-    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
-    from rich import print as rprint
+    from rich.progress import Progress, SpinnerColumn, TextColumn
 
 # tqdm for progress bars
 try:
@@ -382,7 +380,7 @@ def save_outputs(transcript_text, ata_text, audio_file, output_dir="."):
         tuple: (transcript_path, ata_path or None)
     """
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    base_name = Path(audio_file).stem
+    Path(audio_file).stem
     
     # Sempre salva transcript
     transcript_filename = f"transcript-{timestamp}.md"

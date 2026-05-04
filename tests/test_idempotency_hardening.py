@@ -2,7 +2,7 @@
 import json
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import patch, AsyncMock
 
 from app.api.a2a.routes import router
 from fastapi import FastAPI

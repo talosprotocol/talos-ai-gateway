@@ -7,7 +7,7 @@ RICE = (Reach x Impact x Confidence) / Effort
 
 import json
 import csv
-from typing import List, Dict, Tuple
+from typing import List, Dict
 import argparse
 
 class RICECalculator:

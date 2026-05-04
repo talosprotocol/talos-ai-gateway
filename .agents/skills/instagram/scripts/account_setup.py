@@ -194,7 +194,7 @@ async def verify_setup() -> None:
 
     # 5. Permissões básicas (tenta buscar mídia)
     try:
-        media = await api.get_user_media(limit=1)
+        await api.get_user_media(limit=1)
         checks.append({
             "check": "Permissão instagram_basic",
             "passed": True,

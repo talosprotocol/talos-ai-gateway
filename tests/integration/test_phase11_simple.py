@@ -8,7 +8,6 @@ No app imports required - works with any running Gateway.
 
 import httpx
 import asyncio
-import time
 
 
 GATEWAY_URL = "http://localhost:8000"

@@ -1,5 +1,4 @@
 from opentelemetry.sdk.trace import SpanProcessor, ReadableSpan
-from opentelemetry.sdk.trace.export import SpanExporter
 import re
 from typing import Optional
 

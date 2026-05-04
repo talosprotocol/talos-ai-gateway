@@ -31,7 +31,7 @@ from config import (
     RETRY_BACKOFF_BASE,
 )
 from db import Database
-from governance import GovernanceManager, RateLimitExceeded
+from governance import GovernanceManager
 
 logger = logging.getLogger(__name__)
 

@@ -1,5 +1,4 @@
 """TGA Capability Validator using PyJWT for EdDSA/Ed25519 support."""
-from typing import Optional
 import jwt
 from .models import TgaCapability, TgaCapabilityConstraints
 import hashlib

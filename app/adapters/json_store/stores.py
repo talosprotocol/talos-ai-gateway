@@ -389,7 +389,7 @@ class JsonRbacStore(RbacStore):
     def get_role(self, role_id: str) -> Optional[Dict[str, Any]]:
         roles = self.list_roles()
         for r in roles:
-            if r.get('id') == role_id:
+            if r.get('role_id') == role_id:
                 return r
         return None
 
@@ -398,7 +398,7 @@ class JsonRbacStore(RbacStore):
         roles = config.setdefault("roles", [])
         existing = False
         for i, r in enumerate(roles):
-            if r.get('id') == role['id']:
+            if r.get('role_id') == role['role_id']:
                 roles[i] = role
                 existing = True
                 break
@@ -409,7 +409,7 @@ class JsonRbacStore(RbacStore):
     def delete_role(self, role_id: str) -> None:
         config = config_loader.get_config()
         roles = config.get("roles", [])
-        config["roles"] = [r for r in roles if r.get('id') != role_id]
+        config["roles"] = [r for r in roles if r.get('role_id') != role_id]
         config_loader.save_config(config)
 
     def list_bindings(self) -> List[Dict[str, Any]]:

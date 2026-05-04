@@ -3,11 +3,10 @@ from fastapi import Header, HTTPException, Depends
 from typing import Optional, Set, Tuple, List
 from dataclasses import dataclass
 
-from app.dependencies import get_db
+from app.dependencies import get_db, get_rbac_store
 from app.adapters.postgres.models import RoleBinding, Role
 from sqlalchemy.orm import Session
 from app.domain.auth import get_admin_validator
-import os
 
 REGISTERED_ADMIN_PERMISSIONS = {
     "audit.read",
@@ -81,22 +80,29 @@ def has_permission(permissions: Set[str], permission: str) -> bool:
     return False
 
 
-def resolve_principal_permissions(db: Session, principal_id: str) -> Tuple[Set[str], list]:
-    """Resolve DB-granted RBAC permissions and binding metadata."""
+from app.domain.interfaces import RbacStore
+
+def resolve_principal_permissions(rbac_store: RbacStore, principal_id: str) -> Tuple[Set[str], list]:
+    """Resolve granted RBAC permissions and binding metadata using the RbacStore."""
     effective_permissions: Set[str] = set()
     binding_data = []
 
-    bindings = db.query(RoleBinding).filter(RoleBinding.principal_id == principal_id).all()
-    for binding in bindings:
-        role = db.query(Role).filter(Role.id == binding.role_id).first()
-        if role:
-            effective_permissions.update(role.permissions or [])
-        binding_data.append({
-            "role_id": binding.role_id,
-            "scope_type": binding.scope_type,
-            "scope_org_id": binding.scope_org_id,
-            "scope_team_id": binding.scope_team_id
-        })
+    binding = rbac_store.get_binding(principal_id)
+    if binding:
+        entries = binding.get("bindings", [])
+        for entry in entries:
+            role_id = entry.get("role_id")
+            role = rbac_store.get_role(role_id)
+            if role:
+                effective_permissions.update(role.get("permissions", []) or [])
+            
+            scope = entry.get("scope", {})
+            binding_data.append({
+                "role_id": role_id,
+                "scope_type": scope.get("scope_type", "global"),
+                "scope_org_id": scope.get("scope_org_id"),
+                "scope_team_id": scope.get("scope_team_id")
+            })
 
     return effective_permissions, binding_data
 
@@ -149,7 +155,7 @@ def validate_registered_session_permissions(requested_permissions: List[str]) ->
 
 async def get_rbac_context(
     authorization: Optional[str] = Header(None),
-    db: Session = Depends(get_db)
+    rbac_store: RbacStore = Depends(get_rbac_store)
 ) -> RbacContext:
     """Extract RBAC context from JWT. No fallbacks allowed."""
     principal_id = None
@@ -181,9 +187,9 @@ async def get_rbac_context(
             detail={"error": {"code": "AUTH_INVALID", "message": "Principal (sub) not found in token"}}
         )
 
-    # 2. RBAC Resolution from DB (Mandatory)
+    # 2. RBAC Resolution from Persistence (Mandatory)
     try:
-        effective_permissions, binding_data = resolve_principal_permissions(db, principal_id)
+        effective_permissions, binding_data = resolve_principal_permissions(rbac_store, principal_id)
     except Exception as e:
         raise HTTPException(
             status_code=500, 

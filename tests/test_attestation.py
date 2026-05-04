@@ -121,7 +121,7 @@ def test_attestation_verifier_vectors(vectors):
         else:
             # Expect failure
             with PatchTime(inp['timestamp']):
-                with pytest.raises(AttestationError) as excinfo:
+                with pytest.raises(AttestationError):
                      loop.run_until_complete(verifier.verify_request(
                         headers, raw_body, method, path_query, opcode
                     ))

@@ -18,7 +18,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
 

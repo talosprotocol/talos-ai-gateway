@@ -4,7 +4,6 @@ import sys
 import os
 import asyncio
 import aiohttp
-from concurrent.futures import ThreadPoolExecutor
 
 # Configuration
 GLB_URL = os.getenv("GLB_URL", "http://localhost:8005")

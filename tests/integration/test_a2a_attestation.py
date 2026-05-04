@@ -66,7 +66,6 @@ async def async_client():
         mock_keystore = Mock()
         
         # Test Key Setup
-        TEST_IV = "test_iv"
         # Mock Key Object (Mimics PostgresKeyStore return)
         mock_key_data = Mock()
         mock_key_data.id = TEST_KEY_ID
@@ -115,7 +114,7 @@ async def async_client():
         app.dependency_overrides[get_principal_store] = lambda: mock_p_store
         
         # Ensure Registry is loaded
-        real_registry = get_surface_registry() 
+        get_surface_registry() 
         # (Assuming it loads from file OK, valid_inventory.py passed so it should)
         
         

@@ -1,13 +1,7 @@
 """TGA State Store implementation using the standalone TGA Protocol."""
 import asyncio
-import hashlib
-import json
 import logging
-import base64
-from datetime import datetime, timezone
-from enum import Enum
 from typing import Any, Dict, List, Optional
-import uuid
 
 from talos_governance_agent.ports.state_store import TgaStateStore as ITgaStateStore
 from talos_governance_agent.domain.models import (
@@ -15,7 +9,6 @@ from talos_governance_agent.domain.models import (
     ExecutionState,
     ExecutionCheckpoint,
     ExecutionStateEnum,
-    ArtifactType,
 )
 
 logger = logging.getLogger(__name__)

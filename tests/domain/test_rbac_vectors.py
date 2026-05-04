@@ -2,7 +2,7 @@ import json
 import pytest
 import os
 from app.domain.rbac.policy_engine import PolicyEngine
-from app.domain.rbac.models import Scope, ScopeType
+from app.domain.rbac.models import Scope
 
 # Path to vectors
 VECTOR_PATH = "../../../contracts/test_vectors/rbac/scope_match_vectors.json"

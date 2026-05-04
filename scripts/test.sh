@@ -10,6 +10,11 @@ mkdir -p "$ARTIFACTS_DIR"
 
 COMMAND=${1:-"--unit"}
 
+run_static_syntax() {
+    echo "=== Running Static Syntax Checks ==="
+    python3 -m py_compile verify_rotation.py verify_phase13_static.py
+}
+
 run_unit() {
     echo "=== Running Unit Tests ==="
     PYTHONPATH=. pytest tests/unit -v --cov=. --cov-branch --cov-report=xml:"$ARTIFACTS_DIR/coverage.xml"
@@ -17,7 +22,17 @@ run_unit() {
 
 run_smoke() {
     echo "=== Running Smoke Tests ==="
-    PYTHONPATH=. pytest tests/unit -m smoke --maxfail=1 -q || run_unit
+    set +e
+    PYTHONPATH=. pytest tests/unit -m smoke --maxfail=1 -q
+    local status=$?
+    set -e
+    if [[ $status -eq 0 || $status -eq 5 ]]; then
+        if [[ $status -eq 5 ]]; then
+            echo "No smoke tests collected. Skipping."
+        fi
+        return 0
+    fi
+    return "$status"
 }
 
 run_integration() {
@@ -32,23 +47,29 @@ run_coverage() {
 
 case "$COMMAND" in
     --smoke)
+        run_static_syntax
         run_smoke
         ;;
     --unit)
+        run_static_syntax
         run_unit
         ;;
     --integration)
+        run_static_syntax
         run_integration
         ;;
     --coverage)
+        run_static_syntax
         run_coverage
         ;;
     --ci)
+        run_static_syntax
         run_smoke
         run_unit
         run_coverage
         ;;
     --full)
+        run_static_syntax
         run_smoke
         run_unit
         run_integration

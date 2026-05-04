@@ -7,10 +7,9 @@ findings por severidade, recomendacoes e plano de acao.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from config import DIMENSION_WEIGHTS, REPORTS_DIR, SEVERITY_ORDER, get_score_label
+from config import REPORTS_DIR, SEVERITY_ORDER, get_score_label
 
 
 def _severity_icon(severity: str) -> str:

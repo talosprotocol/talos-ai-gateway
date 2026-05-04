@@ -10,7 +10,7 @@ from app.domain.a2a.mapper_mcp import McpMapper
 from app.domain.routing import RoutingService
 import json
 from fastapi.concurrency import run_in_threadpool
-from app.domain.interfaces import AuditStore, RateLimitStore, UsageStore, TaskStore
+from app.domain.interfaces import AuditStore, RateLimitStore, UsageStore, TaskStore, A2ATaskRecord
 from app.middleware.auth_public import AuthContext
 from app.adapters.upstreams_ai.client import (
     UpstreamClientError,
@@ -25,7 +25,7 @@ from redis.asyncio import Redis
 from app.adapters.redis.client import get_redis_client, rate_limit_key
 from app.domain.a2a.push_notifications import schedule_push_notifications
 
-ALLOWED_METHODS = {"tasks.send", "tasks.get", "tasks.cancel"}
+ALLOWED_METHODS = {"tasks.send", "tasks.get", "tasks.cancel", "tasks.list"}
 AUTH_REQUIRED_PROVIDERS = {
     "anthropic",
     "azure",
@@ -190,6 +190,8 @@ class A2ADispatcher:
                 result = await self.handle_get(params)
             elif method == "tasks.cancel":
                 result = await self.handle_cancel(params)
+            elif method == "tasks.list":
+                result = await self.handle_list(params)
                 
             # 5. Validate Response Structure (Optional/Strict)
             response_payload = {
@@ -512,10 +514,102 @@ class A2ADispatcher:
 
 
     async def handle_get(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        if not _has_any_scope(self.auth.scopes, "a2a.invoke", "a2a.get"):
+        if not _has_any_scope(self.auth.scopes, "a2a.send", "a2a.get"):
              raise JsonRpcException(-32000, "Permission denied", data={"talos_code": "RBAC_DENIED"})
 
-        raise JsonRpcException(-32000, "tasks.get not implemented", data={"talos_code": "NOT_IMPLEMENTED"})
+        task_id = params.get("task_id")
+        if not task_id:
+            raise JsonRpcException(-32602, "Missing task_id")
+
+        task = await run_in_threadpool(self.task_store.get_task, task_id, self.auth.team_id)
+        if not task:
+            raise JsonRpcException(-32000, "Task not found", data={"talos_code": "NOT_FOUND"})
+
+        return self._map_task_to_result(task)
+
+    async def handle_list(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        if not _has_any_scope(self.auth.scopes, "a2a.send", "a2a.get"):
+             raise JsonRpcException(-32000, "Permission denied", data={"talos_code": "RBAC_DENIED"})
+
+        page_size = params.get("page_size", 50)
+        status = params.get("status")
+        context_id = params.get("context_id")
+        
+        cursor_updated_at = None
+        cursor_task_id = None
+        cursor = params.get("cursor")
+        if cursor:
+            try:
+                # Simple cursor parsing: updated_at:id
+                parts = cursor.split(":")
+                if len(parts) == 2:
+                    cursor_updated_at = datetime.fromisoformat(parts[0])
+                    cursor_task_id = parts[1]
+            except Exception:
+                pass
+
+        tasks, next_cursor_tuple, _ = await run_in_threadpool(
+            self.task_store.list_tasks,
+            self.auth.team_id,
+            context_id=context_id,
+            status=status,
+            page_size=page_size,
+            cursor_updated_at=cursor_updated_at,
+            cursor_task_id=cursor_task_id
+        )
+
+        results = [self._map_task_to_result(t) for t in tasks]
+        
+        next_cursor = None
+        if next_cursor_tuple:
+            next_cursor = f"{next_cursor_tuple[0].isoformat()}:{next_cursor_tuple[1]}"
+
+        return {
+            "tasks": results,
+            "next_cursor": next_cursor,
+            "has_more": bool(next_cursor)
+        }
+
+    async def handle_cancel(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        if not _has_any_scope(self.auth.scopes, "a2a.send", "a2a.cancel"):
+             raise JsonRpcException(-32000, "Permission denied", data={"talos_code": "RBAC_DENIED"})
+
+        task_id = params.get("task_id")
+        if not task_id:
+            raise JsonRpcException(-32602, "Missing task_id")
+
+        task = await run_in_threadpool(self.task_store.get_task, task_id, self.auth.team_id)
+        if not task:
+            raise JsonRpcException(-32000, "Task not found", data={"talos_code": "NOT_FOUND"})
+
+        if task["status"] in {"completed", "failed", "canceled", "rejected"}:
+            return {"status": self._map_v1_state(task["status"]), "task_id": task_id}
+
+        # Update to CANCELED
+        await run_in_threadpool(
+            self.task_store.update_task_status,
+            task_id, "canceled",
+            expected_version=task["version"]
+        )
+        await self._publish_event(task_id, "canceled", task["version"] + 1, task["request_id"])
+
+        return {"status": "TASK_STATE_CANCELED", "task_id": task_id}
+
+    def _map_task_to_result(self, task: A2ATaskRecord) -> Dict[str, Any]:
+        result = {
+            "task_id": task["id"],
+            "status": self._map_v1_state(task["status"]),
+            "created_at": task["created_at"].isoformat() + "Z",
+            "updated_at": task["updated_at"].isoformat() + "Z",
+            "version": task["version"]
+        }
+        if task.get("result"):
+            result["result"] = task["result"]
+        if task.get("error"):
+            result["error"] = task["error"]
+        if task.get("request_meta"):
+            result["metadata"] = task["request_meta"]
+        return result
 
     def _sanitize_request_meta(self, meta: Dict[str, Any]) -> Dict[str, Any]:
         ALLOWED_KEYS = {"method", "profile_id", "profile_version", "model_group_id", "has_tool_call", "tool_server_id", "tool_name", "origin_surface", "context_id", "message_id"}
@@ -538,11 +632,6 @@ class A2ADispatcher:
         # Since we construct request_meta from params, we are safe if we only select known scalars.
         return sanitized
 
-    async def handle_cancel(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        if not _has_any_scope(self.auth.scopes, "a2a.invoke", "a2a.cancel"):
-             raise JsonRpcException(-32000, "Permission denied", data={"talos_code": "RBAC_DENIED"})
-
-        raise JsonRpcException(-32000, "Cancellation not supported", data={"talos_code": "NOT_CANCELABLE"})
 
     def _audit(self, action: str, outcome: str, resource_id: Optional[str] = None, details: Optional[Dict[str, Any]] = None, error_code: Optional[str] = None) -> None:
         audit_details = details or {}

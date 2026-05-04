@@ -1,6 +1,4 @@
-import os
-import pytest
-from app.domain.topology import GatewayTopology, RegionInfo
+from app.domain.topology import GatewayTopology
 
 def test_topology_load_from_env(monkeypatch):
     monkeypatch.setenv("MCP_SERVER_US", "http://us-gateway")

@@ -16,7 +16,6 @@ import argparse
 import asyncio
 import statistics
 import time
-from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List
 import aiohttp

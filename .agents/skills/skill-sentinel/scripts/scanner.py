@@ -256,7 +256,6 @@ class SkillScanner:
 
 # -- CLI -----------------------------------------------------------------------
 if __name__ == "__main__":
-    import json
     scanner = SkillScanner()
     skills = scanner.discover_all()
     print(f"Skills encontradas: {len(skills)}\n")

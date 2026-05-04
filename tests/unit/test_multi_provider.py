@@ -2,7 +2,6 @@ import os
 import pytest
 import base64
 from app.adapters.secrets.multi_provider import MultiKekProvider
-from app.domain.secrets.models import EncryptedEnvelope
 
 def b64u_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode('ascii').rstrip('=')

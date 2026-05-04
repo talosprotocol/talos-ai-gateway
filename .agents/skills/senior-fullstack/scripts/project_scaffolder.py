@@ -4,12 +4,11 @@ Project Scaffolder
 Automated tool for senior fullstack tasks
 """
 
-import os
 import sys
 import json
 import argparse
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict
 
 class ProjectScaffolder:
     """Main class for project scaffolder functionality"""

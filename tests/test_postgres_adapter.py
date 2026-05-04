@@ -1,6 +1,5 @@
 """Unit tests for PostgresTgaStateStore."""
-import pytest
-from unittest.mock import MagicMock, AsyncMock, call
+from unittest.mock import MagicMock, AsyncMock
 from app.adapters.postgres.tga_store import PostgresTgaStateStore
 from app.domain.tga.state_store import ExecutionLogEntry, ExecutionStateEnum
 

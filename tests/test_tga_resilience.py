@@ -1,9 +1,7 @@
 import pytest
-import hashlib
-import json
 from unittest.mock import AsyncMock, MagicMock
 from app.domain.tga.runtime import TgaRuntime, ExecutionPlan, ExecutionResult
-from app.domain.tga.state_store import TgaStateStore, ExecutionState, ExecutionStateEnum, ZERO_DIGEST
+from app.domain.tga.state_store import TgaStateStore, ExecutionState, ExecutionStateEnum
 from app.domain.mcp.tool_guard import ToolGuard, GuardPolicy, ToolClass
 
 @pytest.fixture

@@ -20,7 +20,6 @@ import argparse
 import base64
 import io
 import json
-import re
 import sys
 import time
 from datetime import datetime
@@ -33,13 +32,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import (
     API_BASE,
     ENDPOINTS,
-    MIME_MAP,
     MODELS,
     DEFAULT_MODEL,
     OUTPUT_DIR,
     OUTPUT_SETTINGS,
     USER_AGENT,
-    get_api_key,
     get_all_api_keys,
     get_mime_type,
     resolve_aspect_ratio,

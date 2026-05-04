@@ -10,7 +10,6 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from config import SKILL_MD_RECOMMENDED_SECTIONS, SKILL_MD_REQUIRED_SECTIONS
 
 
 def _check_frontmatter(content: str) -> Dict[str, bool]:

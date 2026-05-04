@@ -34,8 +34,7 @@ logger = logging.getLogger(__name__)
 from sqlalchemy.orm import Session
 from app.dependencies import (
     get_upstream_store, get_model_group_store, get_secret_store, 
-    get_mcp_store, get_audit_store, get_routing_policy_store, get_usage_store,
-    get_read_audit_store, get_read_usage_store, get_read_mcp_store,
+    get_mcp_store, get_audit_store, get_routing_policy_store, get_read_audit_store, get_read_usage_store, get_read_mcp_store,
     get_rotation_store, get_kek_provider, get_write_db, get_read_db,
     get_budget_service, get_db, get_key_store, get_rbac_store, get_team_store,
 )
@@ -56,6 +55,11 @@ from app.domain.interfaces import (
     RoutingPolicyStore, UsageStore, RotationOperationStore, RbacStore, TeamStore
 )
 from app.domain.rbac.models import Role, Binding
+from app.domain.rbac.bootstrap import (
+    is_protected_rbac_principal,
+    is_protected_rbac_role,
+    role_is_referenced,
+)
 from app.domain.secrets.ports import KekProvider
 
 from app.core.config import settings
@@ -169,7 +173,7 @@ def audit(store: AuditStore, action: str, resource_type: str, principal_id: str,
 async def create_dev_admin_token(
     payload: AdminTokenRequest,
     x_talos_admin_secret: Optional[str] = Header(None, alias="X-Talos-Admin-Secret"),
-    db: Session = Depends(get_db),
+    rbac_store: RbacStore = Depends(get_rbac_store),
     key_store: KeyStore = Depends(get_key_store),
 ) -> Dict[str, Any]:
     """Mint a short-lived scoped session JWT for trusted API clients."""
@@ -186,7 +190,7 @@ async def create_dev_admin_token(
     requested_permissions = validate_registered_session_permissions(payload.permissions)
 
     try:
-        granted_permissions, _ = resolve_principal_permissions(db, payload.principal)
+        granted_permissions, _ = resolve_principal_permissions(rbac_store, payload.principal)
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -915,6 +919,12 @@ async def create_role(
     store: RbacStore = Depends(get_rbac_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ) -> Role:
+    existing_role = store.get_role(role.role_id)
+    if is_protected_rbac_role(role.role_id, existing_role):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": {"code": "RBAC_DENIED", "message": f"Role {role.role_id} is protected"}},
+        )
     store.upsert_role(role.model_dump())
     audit(audit_store, "rbac.role_upsert", "role", principal.id, 
           resource_id=role.role_id, outcome="success")
@@ -927,6 +937,19 @@ async def delete_role(
     store: RbacStore = Depends(get_rbac_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ) -> Dict[str, bool]:
+    role = store.get_role(role_id)
+    if role is None:
+        raise HTTPException(status_code=404, detail={"error": {"code": "NOT_FOUND", "message": f"Role {role_id} not found"}})
+    if is_protected_rbac_role(role_id, role):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": {"code": "RBAC_DENIED", "message": f"Role {role_id} is protected"}},
+        )
+    if role_is_referenced(store.list_bindings(), role_id):
+        raise HTTPException(
+            status_code=409,
+            detail={"error": {"code": "RBAC_ROLE_IN_USE", "message": f"Role {role_id} is still referenced by bindings"}},
+        )
     store.delete_role(role_id)
     audit(audit_store, "rbac.role_delete", "role", principal.id, 
           resource_id=role_id, outcome="success")
@@ -946,6 +969,11 @@ async def create_binding(
     store: RbacStore = Depends(get_rbac_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ) -> Binding:
+    if is_protected_rbac_principal(binding.principal_id):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": {"code": "RBAC_DENIED", "message": f"Binding {binding.principal_id} is protected"}},
+        )
     store.upsert_binding(binding.model_dump())
     audit(audit_store, "rbac.binding_upsert", "binding", principal.id, 
           resource_id=binding.principal_id, outcome="success")
@@ -958,6 +986,11 @@ async def delete_binding(
     store: RbacStore = Depends(get_rbac_store),
     audit_store: AuditStore = Depends(get_audit_store)
 ) -> Dict[str, bool]:
+    if is_protected_rbac_principal(principal_id):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": {"code": "RBAC_DENIED", "message": f"Binding {principal_id} is protected"}},
+        )
     store.delete_binding(principal_id)
     audit(audit_store, "rbac.binding_delete", "binding", principal.id, 
           resource_id=principal_id, outcome="success")
@@ -1042,7 +1075,7 @@ async def apply_config(
     if not val["valid"]:
          raise HTTPException(status_code=400, detail={"error": {"code": "VALIDATION_ERROR", "errors": val["errors"]}})
          
-    request_id = uuid7()
+    uuid7()
     applied = {"upstreams": 0, "model_groups": 0}
     
     for uid, upstream in data.get("upstreams", {}).items():
@@ -1191,7 +1224,7 @@ async def get_test_scope(
         
     from app.adapters.postgres.models import BudgetScope
     from datetime import datetime
-    period_start = datetime.utcnow().date().replace(day=1)
+    datetime.utcnow().date().replace(day=1)
     
     # Relaxed query to find the most recent period for testing
     scope = db.query(BudgetScope).filter(

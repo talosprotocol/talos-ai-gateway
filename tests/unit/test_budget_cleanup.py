@@ -36,7 +36,7 @@ async def test_release_expired_reservations(budget_service, db_session):
         expires_at=now - timedelta(minutes=1),
         created_at=now - timedelta(minutes=16)
     )
-    active_res = BudgetReservation(
+    BudgetReservation(
         id="res2",
         request_id="req2",
         scope_team_id="team1",

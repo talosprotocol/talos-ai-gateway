@@ -12,7 +12,6 @@ Uso:
 """
 
 import json
-import os
 import signal
 import subprocess
 import sys

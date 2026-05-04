@@ -10,14 +10,13 @@ Uso:
   python dependency_graph.py C:/Users/renat/earbudllm --format dot --output deps.dot
 """
 
-import os
 import re
 import sys
 import json
 import argparse
 from pathlib import Path
-from dataclasses import dataclass, field
-from typing import Dict, List, Set, Optional, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Set, Optional
 
 # Fix Windows terminal encoding (cp1252 doesn't support emojis/unicode)
 if sys.platform == 'win32':

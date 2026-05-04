@@ -28,7 +28,6 @@ from config import (
     FORMAT_ALIASES,
     OUTPUTS_DIR,
     OUTPUT_SETTINGS,
-    get_api_key,
     get_all_api_keys,
     safety_check_model,
     safety_check_daily_limit,

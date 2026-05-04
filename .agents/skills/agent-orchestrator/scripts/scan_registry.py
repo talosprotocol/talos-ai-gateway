@@ -264,8 +264,8 @@ def assess_status(skill_dir: Path) -> str:
     if not skill_md.exists():
         return "missing"
 
-    has_scripts = (skill_dir / "scripts").exists()
-    has_refs = (skill_dir / "references").exists()
+    (skill_dir / "scripts").exists()
+    (skill_dir / "references").exists()
 
     # Parse frontmatter to check for required fields
     meta = parse_yaml_frontmatter(skill_md)

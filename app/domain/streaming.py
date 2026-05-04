@@ -1,10 +1,9 @@
 import json
 import time
 import logging
-from typing import AsyncGenerator, Dict, Any, Optional
+from typing import AsyncGenerator
 from decimal import Decimal
 from app.domain.usage.manager import UsageManager
-from app.utils.id import uuid7
 
 logger = logging.getLogger(__name__)
 

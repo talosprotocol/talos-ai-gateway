@@ -3,7 +3,6 @@ Compressão inteligente e arquivamento de sessões antigas.
 Mantém o histórico enxuto sem perder informação crítica.
 """
 
-import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -40,7 +39,6 @@ def _compress_session(text: str) -> str:
         "métricas", "arquivos modificados", "dívida técnica",
     }
 
-    current_section = ""
     keeping = True
 
     for line in lines:
@@ -59,7 +57,6 @@ def _compress_session(text: str) -> str:
                 compressed.append(line)
             else:
                 keeping = False
-            current_section = section_name
             continue
 
         if keeping and line.strip():

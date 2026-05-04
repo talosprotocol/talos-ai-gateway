@@ -18,8 +18,7 @@ import argparse
 import json
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # Add lib to path
@@ -39,7 +38,6 @@ from lib import (
     schema,
     score,
     ui,
-    websearch,
     xai_x,
 )
 

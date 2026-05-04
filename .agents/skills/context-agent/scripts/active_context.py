@@ -3,9 +3,7 @@ Gerencia o ACTIVE_CONTEXT.md — arquivo que é sincronizado com MEMORY.md.
 Limite rígido de ~150 linhas para caber no system prompt.
 """
 
-import shutil
 from datetime import datetime
-from pathlib import Path
 
 from config import (
     ACTIVE_CONTEXT_PATH,

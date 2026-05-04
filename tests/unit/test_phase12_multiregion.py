@@ -10,8 +10,6 @@ Tests:
 import pytest
 import time
 import threading
-from unittest.mock import MagicMock, patch, PropertyMock
-from dataclasses import dataclass, field
 
 # Test the CircuitBreakerState class directly
 from app.dependencies import CircuitBreakerState, REPLICA_READ_ALLOWLIST
@@ -119,8 +117,6 @@ class TestReadOnlyEnforcement:
     
     def test_misclassification_detected(self):
         """Write on read-only path raises HTTPException, not fallback."""
-        from fastapi import HTTPException
-        from sqlalchemy.exc import ProgrammingError
         
         # Simulate what happens when a write is attempted on read-only session
         error_msg = "cannot execute INSERT in a read-only transaction"
@@ -130,7 +126,6 @@ class TestReadOnlyEnforcement:
     
     def test_availability_errors_trigger_fallback(self):
         """Connection/timeout errors should trigger fallback, not error."""
-        from sqlalchemy.exc import OperationalError
         
         # These errors should trigger fallback
         fallback_errors = [
@@ -179,7 +174,6 @@ class TestRouteClassification:
     
     def test_admin_router_has_classification_comment(self):
         """Admin router should have route classification documentation."""
-        import inspect
         from app.api.admin import router
         
         module_doc = router.__doc__ or ""

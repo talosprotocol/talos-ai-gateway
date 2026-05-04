@@ -1,8 +1,6 @@
 import pytest
-import json
-import asyncio
 from decimal import Decimal
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import AsyncMock
 from app.domain.streaming import stream_with_settle
 
 @pytest.mark.asyncio

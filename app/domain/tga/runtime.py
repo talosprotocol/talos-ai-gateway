@@ -5,12 +5,12 @@ import json
 import base64
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Optional
 from datetime import datetime, timezone
 
 from talos_governance_agent.domain.runtime import TgaRuntime as StandaloneTgaRuntime
 from talos_governance_agent.domain.models import ExecutionStateEnum, ExecutionLogEntry, ArtifactType
-from talos_governance_agent.domain.runtime import ExecutionPlan as StandaloneExecutionPlan, RecoveryResult
+from talos_governance_agent.domain.runtime import RecoveryResult
 
 from app.domain.mcp.tool_guard import ToolGuard
 from app.adapters.mcp.client import McpClient

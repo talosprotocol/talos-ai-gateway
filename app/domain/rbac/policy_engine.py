@@ -1,7 +1,7 @@
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 import logging
-from .models import Role, Binding, BindingEntry, Scope, ScopeType, AuthzDecision
+from .models import Role, Binding, Scope, ScopeType, AuthzDecision
 
 logger = logging.getLogger(__name__)
 

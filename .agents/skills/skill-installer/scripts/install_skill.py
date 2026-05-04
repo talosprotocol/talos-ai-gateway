@@ -338,7 +338,7 @@ def _backup_ignore(directory, contents):
     ignored = set()
     dir_path = Path(directory)
     for item in contents:
-        item_path = dir_path / item
+        dir_path / item
         # Skip backup and staging directories to prevent recursion
         if item in ("backups", "staging") and dir_path.name == "data":
             ignored.add(item)
@@ -912,7 +912,7 @@ def install_single(
                 + ", ".join(c["check"] for c in failed_checks)
             )
 
-        log_entry = step10_log(skill_name, str(source), result)
+        step10_log(skill_name, str(source), result)
         result["steps"]["11_log"] = {"logged": True}
         if verbose:
             _ok("Operation logged")

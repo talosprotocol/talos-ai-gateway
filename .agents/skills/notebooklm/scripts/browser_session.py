@@ -10,7 +10,7 @@ import sys
 from typing import Any, Dict, Optional
 from pathlib import Path
 
-from patchright.sync_api import BrowserContext, Page
+from patchright.sync_api import BrowserContext
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent))

@@ -1,12 +1,10 @@
 import os
 import sys
 import uuid
-import time
-import json
 import hmac
 import hashlib
 from decimal import Decimal
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker, declarative_base
 import redis as redis_lib
@@ -17,7 +15,7 @@ try:
     from app.utils.id import uuid7
 except ImportError:
     # Fallback for local run
-    from uuid import uuid4 as uuid7
+    pass
 
 # Database Setup
 DATABASE_URL = os.getenv("DATABASE_WRITE_URL", "postgresql://talos:talos@localhost:5452/talos")
@@ -87,7 +85,7 @@ class BudgetScope(Base):
 def setup_scope(scope_type, scope_id, period_start, limit_usd):
     # Unique constraint is on (scope_type, scope_id, period_start)
     # id is usually a uuid7 or similar, let's use a stable one for tests
-    scope_id_full = f"{scope_type}:{scope_id}:{period_start.strftime('%Y-%m')}"
+    f"{scope_type}:{scope_id}:{period_start.strftime('%Y-%m')}"
     scope = session.query(BudgetScope).filter(BudgetScope.scope_type == scope_type, BudgetScope.scope_id == scope_id, BudgetScope.period_start == period_start).first()
     if scope:
         scope.limit_usd = Decimal(str(limit_usd))

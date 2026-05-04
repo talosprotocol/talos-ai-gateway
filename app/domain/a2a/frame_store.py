@@ -1,6 +1,6 @@
 import logging
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional, List, Tuple
 from sqlalchemy.orm import Session
 from talos_contracts import base64url_decode, base64url_encode

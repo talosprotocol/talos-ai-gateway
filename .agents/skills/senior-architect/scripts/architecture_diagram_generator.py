@@ -4,12 +4,11 @@ Architecture Diagram Generator
 Automated tool for senior architect tasks
 """
 
-import os
 import sys
 import json
 import argparse
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict
 
 class ArchitectureDiagramGenerator:
     """Main class for architecture diagram generator functionality"""

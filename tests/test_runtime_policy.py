@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, patch
 from app.domain.tga.runtime import (
     TgaRuntime,
     ExecutionPlan,
-    ExecutionResult,
 )
 from app.domain.tga.state_store import (
     TgaStateStore,

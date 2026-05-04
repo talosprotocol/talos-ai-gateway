@@ -5,12 +5,10 @@ Analisa mensagens e gera session-NNN.md.
 
 import re
 from datetime import datetime
-from pathlib import Path
 
 from config import (
     SESSIONS_DIR,
     DECISION_MARKERS,
-    PENDING_MARKERS,
 )
 from models import SessionSummary, PendingTask, SessionEntry
 

@@ -2,9 +2,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
-from opentelemetry.trace import Span, SpanContext, NonRecordingSpan
 from opentelemetry.sdk.trace import ReadableSpan
-from opentelemetry.sdk.resources import Resource
 import os
 
 from app.main import app

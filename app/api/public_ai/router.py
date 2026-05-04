@@ -5,7 +5,6 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from app.utils.id import uuid7
-import json
 import time
 from datetime import datetime
 from decimal import Decimal
@@ -112,10 +111,9 @@ async def chat_completions(
     
     # --- Phase 15: Budget Enforcement ---
     latency_ms = 0
-    status = "success"
     prompt_tokens = 0
     completion_tokens = 0
-    cost_usd = Decimal("0")
+    Decimal("0")
     
     # 1. Prepare Budget Context
     # Use max_tokens or default
@@ -352,7 +350,6 @@ async def chat_completions(
 
     except Exception as e:
         latency_ms = int((time.time() - start_time) * 1000)
-        status = "error"
         # Determine specific error code
         err_code = "INTERNAL"
         if isinstance(e, UpstreamRateLimitError): err_code = "UPSTREAM_RATE_LIMITED"

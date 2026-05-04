@@ -1,16 +1,13 @@
 """Tests for TGA Runtime Recovery with Payload (Phase 9.3)."""
 print("DEBUG: Starting test script execution...")
 # import pytest
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import AsyncMock
 from app.domain.tga.runtime import (
     TgaRuntime,
     ExecutionPlan,
-    ExecutionResult,
     ExecutionStateEnum
 )
 from app.domain.tga.state_store import TgaStateStore, ExecutionLogEntry, ZERO_DIGEST
-from app.domain.mcp.classifier import ToolClassification
-from datetime import datetime
 
 class TestTgaRecovery:
     """Test TgaRuntime recovery logic."""

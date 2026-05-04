@@ -4,8 +4,7 @@ SEO Content Optimizer - Analyzes and optimizes content for SEO
 """
 
 import re
-from typing import Dict, List, Set
-import json
+from typing import Dict, List
 
 class SEOOptimizer:
     def __init__(self):

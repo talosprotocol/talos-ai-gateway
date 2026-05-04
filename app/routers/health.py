@@ -42,6 +42,21 @@ async def readiness(db: Session = Depends(get_read_db)):  # REPLICA-SAFE: pure S
         
     return health
 
+@router.get("/api/gateway/status")
+async def gateway_status_alias(db: Session = Depends(get_read_db)):
+    """Alias for /health/ready to support legacy/common health checks."""
+    return await readiness(db)
+
+@router.get("/peers")
+async def list_peers():
+    """List connected peers (TUI compatibility)."""
+    return {"peers": []}
+
+@router.get("/sessions")
+async def list_sessions():
+    """List active A2A sessions (TUI compatibility)."""
+    return {"sessions": []}
+
 @router.get("/health/ollama")
 async def health_ollama():
     """Proxy health check for Ollama downstream."""

@@ -7,8 +7,6 @@ Based on the MCP server implementation
 
 import json
 import argparse
-import uuid
-import os
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime

@@ -2,8 +2,6 @@ import sys
 import os
 sys.path.append(os.getcwd())
 
-from fastapi import FastAPI
-from starlette.middleware import Middleware
 
 try:
     from app.main import app

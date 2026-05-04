@@ -2,7 +2,6 @@
 import pytest
 import time
 import httpx
-import os
 import psycopg2
 import uuid
 import logging
@@ -110,7 +109,6 @@ def test_strong_consistency(wait_for_services):
     # Yes we do.
     
     # Create Session
-    init_id = "test-initiator"
     body = {
         "responder_id": "test-responder",
         "ratchet_state_blob_b64u": "e30", # {} base64url
@@ -123,7 +121,7 @@ def test_strong_consistency(wait_for_services):
     
     # Let's skip complex payload validation and just check endpoint reachability
     # If we get 422, it reached the code.
-    r_create = httpx.post(f"{REGION_A_URL}/a2a/v1/sessions", json=body, headers=get_auth_header())
+    httpx.post(f"{REGION_A_URL}/a2a/v1/sessions", json=body, headers=get_auth_header())
     
     # If 403/401, check logs. 
     # For now, let's assume we can verify Side Effects via DB if API creates it.
@@ -161,7 +159,7 @@ def test_resilience_read_fallback(wait_for_services):
     
     # Region B should fallback
     # Check readiness (Strict Spec: 503)
-    r_ready = httpx.get(f"{REGION_B_URL}/health/ready")
+    httpx.get(f"{REGION_B_URL}/health/ready")
     # assert r_ready.status_code == 503 # Strict spec A3
     
     # Check Endpoint (Fallback Spec A3: Success)

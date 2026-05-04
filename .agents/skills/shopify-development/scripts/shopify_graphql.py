@@ -12,7 +12,6 @@ Usage:
     products = client.get_products(first=10)
 """
 
-import os
 import time
 import json
 from typing import Dict, List, Optional, Any, Generator
@@ -113,7 +112,7 @@ class ShopifyGraphQL:
                     time.sleep(delay)
                     continue
                 raise
-            except Exception as e:
+            except Exception:
                 if attempt == MAX_RETRIES - 1:
                     raise
                 time.sleep(RETRY_DELAY)

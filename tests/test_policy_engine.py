@@ -2,13 +2,11 @@
 
 Tests scope matching vectors from contracts.
 """
-import json
 import pytest
 from pathlib import Path
 
 from app.domain.rbac.models import (
     Role,
-    Binding,
     BindingEntry,
     BindingDocument,
     Scope,

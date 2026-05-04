@@ -9,12 +9,10 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from config import (
     ACTION_CATEGORIES,
-    RATE_LIMIT_DMS_PER_HOUR,
     RATE_LIMIT_HASHTAGS_PER_WEEK,
     RATE_LIMIT_PUBLISHES_PER_DAY,
     RATE_LIMIT_REQUESTS_PER_HOUR,
@@ -195,7 +193,7 @@ class GovernanceManager:
         self, action: str, details: Dict[str, Any], rate_status: Dict[str, Any],
     ) -> str:
         """Formata mensagem de confirmação legível."""
-        category = self.get_confirmation_category(action)
+        self.get_confirmation_category(action)
         action_names = {
             "publish_photo": "PUBLICAR uma foto",
             "publish_video": "PUBLICAR um vídeo",

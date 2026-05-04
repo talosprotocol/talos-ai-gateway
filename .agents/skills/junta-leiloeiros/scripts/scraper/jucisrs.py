@@ -230,7 +230,7 @@ class JucisrsScraper(AbstractJuntaScraper):
                 resp = await client.get(self.url)
                 if resp.status_code >= 400:
                     return []
-                soup = BeautifulSoup(resp.text, "lxml")
+                BeautifulSoup(resp.text, "lxml")
                 return self._parse_plain_html(resp.text)
         except Exception as exc:
             logger.error("[RS] Erro no GET: %s", exc)
@@ -240,7 +240,6 @@ class JucisrsScraper(AbstractJuntaScraper):
         """Playwright com SSL completamente desabilitado para cert autoassinado."""
         try:
             from playwright.async_api import async_playwright
-            from bs4 import BeautifulSoup
             async with async_playwright() as pw:
                 browser = await pw.chromium.launch(
                     headless=True,

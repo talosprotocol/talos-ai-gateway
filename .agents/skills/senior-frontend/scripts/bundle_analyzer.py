@@ -13,11 +13,10 @@ Usage:
 
 import argparse
 import json
-import os
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, Optional, Tuple
 
 
 # Known heavy packages and their lighter alternatives

@@ -4,13 +4,11 @@ Tests for shopify_init.py
 Run with: pytest test_shopify_init.py -v --cov=shopify_init --cov-report=term-missing
 """
 
-import os
 import sys
 import json
 import pytest
-import subprocess
 from pathlib import Path
-from unittest.mock import Mock, patch, mock_open, MagicMock
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -96,7 +94,6 @@ ANOTHER_VALID=test
         """Test configuration loading priority across different AI tool directories."""
         skill_dir = tmp_path / "skill"
         skills_dir = tmp_path
-        agent_dir = tmp_path.parent  # Could be .agent, .claude, .gemini, .cursor
 
         skill_dir.mkdir(parents=True)
 

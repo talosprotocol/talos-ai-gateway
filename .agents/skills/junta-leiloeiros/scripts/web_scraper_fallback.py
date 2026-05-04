@@ -68,7 +68,7 @@ async def run_web_scraper_for_state(estado: str, url: str) -> list[dict]:
     logger.info("[%s] Acionando web-scraper para: %s", estado, url)
 
     # Constrói o prompt para o web-scraper
-    prompt = (
+    (
         f"Acesse a URL: {url}\n\n"
         f"{EXTRACTION_SCHEMA['instructions']}\n\n"
         f"Retorne APENAS um JSON com a estrutura:\n"

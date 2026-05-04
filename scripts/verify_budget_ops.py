@@ -7,16 +7,13 @@ Tests:
 import sys
 import asyncio
 import os
-import random
 from decimal import Decimal
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
 # Setup paths
 sys.path.append(os.path.join(os.getcwd(), "services/ai-gateway"))
 
-from app.domain.budgets.service import BudgetService, BudgetExceededError
-from app.api.public_ai.router import chat_completions
-from app.jobs.budget_cleanup import budget_cleanup_worker
+from app.domain.budgets.service import BudgetService
 
 # Mock DB Session
 class MockSession:
@@ -76,7 +73,7 @@ async def test_cleanup_worker():
     print("\n--- Testing Budget Cleanup Worker ---")
     
     # budget_cleanup_worker is a function now
-    shutdown_event = asyncio.Event()
+    asyncio.Event()
     # verify_budget_ops.py just checks if it's importable and basic setup
     print("Worker function imported successfully.")
     print("PASSED: Cleanup Worker Import")

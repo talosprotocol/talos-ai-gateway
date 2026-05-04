@@ -3,9 +3,8 @@
 This module provides logic for re-wrapping secrets when a KEK is rotated.
 """
 import logging
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple
 from app.domain.secrets.ports import SecretStore, KekProvider
-from app.domain.secrets.models import EncryptedEnvelope
 
 logger = logging.getLogger(__name__)
 

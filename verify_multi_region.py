@@ -16,7 +16,6 @@ import time
 import argparse
 import statistics
 import requests
-import subprocess
 from typing import List, Optional, Tuple
 
 # Configuration

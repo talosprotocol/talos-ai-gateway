@@ -1,6 +1,5 @@
 from typing import List, Optional
-import json
-from sqlalchemy import text, select, func
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -8,7 +7,6 @@ from app.domain.tga.state_store import (
     TgaStateStore,
     ExecutionLogEntry,
     ExecutionState,
-    ExecutionCheckpoint,
     ExecutionStateEnum,
     StateStoreError
 )

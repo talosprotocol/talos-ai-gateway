@@ -9,14 +9,13 @@ Tests the full A2A lifecycle including:
 """
 
 import pytest
-import asyncio
 import hashlib
-from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch
+from datetime import datetime
+from unittest.mock import patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.adapters.postgres.models import Base, A2ASession, A2AFrame
+from app.adapters.postgres.models import Base
 from app.domain.a2a.session_manager import A2ASessionManager
 from app.domain.a2a.frame_store import A2AFrameStore
 from app.domain.a2a.group_manager import A2AGroupManager

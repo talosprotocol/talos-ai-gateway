@@ -2,9 +2,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from unittest.mock import MagicMock, patch
-from app.middleware.auth_admin import get_rbac_context, RbacContext
-from app.adapters.postgres.models import RoleBinding, Role
-from sqlalchemy.orm import Session
+from app.middleware.auth_admin import get_rbac_context
 from app.main import app
 import asyncio
 
@@ -12,17 +10,80 @@ import asyncio
 def run_async(coro):
     return asyncio.run(coro)
 
+
+class FakeRbacStore:
+    def __init__(self, roles=None, bindings=None):
+        self.roles = {role["role_id"]: role for role in roles or []}
+        self.bindings = {
+            binding["principal_id"]: binding for binding in bindings or []
+        }
+
+    def list_roles(self):
+        return list(self.roles.values())
+
+    def get_role(self, role_id):
+        return self.roles.get(role_id)
+
+    def upsert_role(self, role):
+        self.roles[role["role_id"]] = role
+
+    def delete_role(self, role_id):
+        self.roles.pop(role_id, None)
+
+    def list_bindings(self):
+        return list(self.bindings.values())
+
+    def get_binding(self, principal_id):
+        return self.bindings.get(principal_id)
+
+    def upsert_binding(self, binding):
+        self.bindings[binding["principal_id"]] = binding
+
+    def delete_binding(self, principal_id):
+        self.bindings.pop(principal_id, None)
+
+
+def rbac_store_for(principal_id, role_id, permissions):
+    return FakeRbacStore(
+        roles=[
+            {
+                "role_id": role_id,
+                "name": role_id,
+                "permissions": permissions,
+                "built_in": False,
+            }
+        ],
+        bindings=[
+            {
+                "principal_id": principal_id,
+                "bindings": [
+                    {
+                        "binding_id": f"bind-{principal_id}",
+                        "role_id": role_id,
+                        "scope": {"scope_type": "global", "attributes": {}},
+                    }
+                ],
+            }
+        ],
+    )
+
+
 def test_get_rbac_context_no_auth():
     """Verify that missing Authorization header raises 401."""
     with pytest.raises(HTTPException) as excinfo:
-        run_async(get_rbac_context(authorization=None, db=MagicMock(spec=Session)))
+        run_async(get_rbac_context(authorization=None, rbac_store=FakeRbacStore()))
     assert excinfo.value.status_code == 401
     assert excinfo.value.detail["error"]["code"] == "AUTH_MISSING"
 
 def test_get_rbac_context_invalid_header():
     """Verify that non-Bearer Authorization header raises 401."""
     with pytest.raises(HTTPException) as excinfo:
-        run_async(get_rbac_context(authorization="Basic dXNlcjpwYXNz", db=MagicMock(spec=Session)))
+        run_async(
+            get_rbac_context(
+                authorization="Basic dXNlcjpwYXNz",
+                rbac_store=FakeRbacStore(),
+            )
+        )
     assert excinfo.value.status_code == 401
     assert excinfo.value.detail["error"]["code"] == "AUTH_MISSING"
 
@@ -34,7 +95,12 @@ def test_get_rbac_context_invalid_token(mock_get_validator):
     mock_get_validator.return_value = validator
     
     with pytest.raises(HTTPException) as excinfo:
-        run_async(get_rbac_context(authorization="Bearer invalid-token", db=MagicMock(spec=Session)))
+        run_async(
+            get_rbac_context(
+                authorization="Bearer invalid-token",
+                rbac_store=FakeRbacStore(),
+            )
+        )
     assert excinfo.value.status_code == 401
     assert excinfo.value.detail["error"]["code"] == "AUTH_INVALID"
 
@@ -45,12 +111,13 @@ def test_get_rbac_context_no_permissions(mock_get_validator):
     validator.validate_token.return_value = {"sub": "user-without-perms"}
     mock_get_validator.return_value = validator
     
-    db = MagicMock(spec=Session)
-    # Mock query for RoleBinding returning empty list
-    db.query.return_value.filter.return_value.all.return_value = []
-    
     with pytest.raises(HTTPException) as excinfo:
-        run_async(get_rbac_context(authorization="Bearer valid-token", db=db))
+        run_async(
+            get_rbac_context(
+                authorization="Bearer valid-token",
+                rbac_store=FakeRbacStore(),
+            )
+        )
     assert excinfo.value.status_code == 403
     assert excinfo.value.detail["error"]["code"] == "RBAC_DENIED"
 
@@ -61,19 +128,16 @@ def test_get_rbac_context_success(mock_get_validator):
     validator.validate_token.return_value = {"sub": "admin-user"}
     mock_get_validator.return_value = validator
     
-    db = MagicMock(spec=Session)
-    
-    binding = RoleBinding(principal_id="admin-user", role_id="admin-role")
-    role = Role(id="admin-role", permissions=["llm.read", "llm.admin"])
-    
-    # Mock binding lookup
-    query_mock = MagicMock()
-    db.query.return_value = query_mock
-    query_mock.filter.return_value.all.return_value = [binding]
-    # Mock role lookup
-    query_mock.filter.return_value.first.return_value = role
-    
-    context = run_async(get_rbac_context(authorization="Bearer valid-token", db=db))
+    context = run_async(
+        get_rbac_context(
+            authorization="Bearer valid-token",
+            rbac_store=rbac_store_for(
+                "admin-user",
+                "admin-role",
+                ["llm.read", "llm.admin"],
+            ),
+        )
+    )
     
     assert context.principal_id == "admin-user"
     assert "llm.read" in context.effective_permissions
@@ -90,16 +154,16 @@ def test_get_rbac_context_session_permissions_narrow_rbac(mock_get_validator):
     }
     mock_get_validator.return_value = validator
 
-    db = MagicMock(spec=Session)
-    binding = RoleBinding(principal_id="admin-user", role_id="admin-role")
-    role = Role(id="admin-role", permissions=["llm.read", "llm.admin"])
-
-    query_mock = MagicMock()
-    db.query.return_value = query_mock
-    query_mock.filter.return_value.all.return_value = [binding]
-    query_mock.filter.return_value.first.return_value = role
-
-    context = run_async(get_rbac_context(authorization="Bearer valid-token", db=db))
+    context = run_async(
+        get_rbac_context(
+            authorization="Bearer valid-token",
+            rbac_store=rbac_store_for(
+                "admin-user",
+                "admin-role",
+                ["llm.read", "llm.admin"],
+            ),
+        )
+    )
 
     assert context.principal_id == "admin-user"
     assert context.has_permission("llm.read")
@@ -117,17 +181,13 @@ def test_get_rbac_context_rejects_ungranted_session_permissions(mock_get_validat
     }
     mock_get_validator.return_value = validator
 
-    db = MagicMock(spec=Session)
-    binding = RoleBinding(principal_id="admin-user", role_id="viewer-role")
-    role = Role(id="viewer-role", permissions=["llm.read"])
-
-    query_mock = MagicMock()
-    db.query.return_value = query_mock
-    query_mock.filter.return_value.all.return_value = [binding]
-    query_mock.filter.return_value.first.return_value = role
-
     with pytest.raises(HTTPException) as excinfo:
-        run_async(get_rbac_context(authorization="Bearer valid-token", db=db))
+        run_async(
+            get_rbac_context(
+                authorization="Bearer valid-token",
+                rbac_store=rbac_store_for("admin-user", "viewer-role", ["llm.read"]),
+            )
+        )
 
     assert excinfo.value.status_code == 403
     assert excinfo.value.detail["error"]["code"] == "RBAC_DENIED"
@@ -143,17 +203,13 @@ def test_get_rbac_context_rejects_unregistered_session_permissions(mock_get_vali
     }
     mock_get_validator.return_value = validator
 
-    db = MagicMock(spec=Session)
-    binding = RoleBinding(principal_id="admin-user", role_id="admin-role")
-    role = Role(id="admin-role", permissions=["*"])
-
-    query_mock = MagicMock()
-    db.query.return_value = query_mock
-    query_mock.filter.return_value.all.return_value = [binding]
-    query_mock.filter.return_value.first.return_value = role
-
     with pytest.raises(HTTPException) as excinfo:
-        run_async(get_rbac_context(authorization="Bearer valid-token", db=db))
+        run_async(
+            get_rbac_context(
+                authorization="Bearer valid-token",
+                rbac_store=rbac_store_for("admin-user", "admin-role", ["*"]),
+            )
+        )
 
     assert excinfo.value.status_code == 403
     assert excinfo.value.detail["error"]["code"] == "RBAC_DENIED"
@@ -175,24 +231,21 @@ def test_dashboard_route_success(mock_get_validator):
     validator.validate_token.return_value = {"sub": "admin-user"}
     mock_get_validator.return_value = validator
 
-    db = MagicMock(spec=Session)
-    
-    # Use FastAPI dependency overrides for db and stores
-    from app.dependencies import get_db, get_read_db, get_upstream_store, get_model_group_store
-    app.dependency_overrides[get_db] = lambda: db
-    app.dependency_overrides[get_read_db] = lambda: db
-    app.dependency_overrides[get_upstream_store] = lambda: MagicMock()
-    app.dependency_overrides[get_model_group_store] = lambda: MagicMock()
-    
-    binding = RoleBinding(principal_id="admin-user", role_id="admin-role")
-    role = Role(id="admin-role", permissions=["llm.read"])
-    
-    # Mock DB queries
-    query_mock = MagicMock()
-    db.query.return_value = query_mock
-    query_mock.filter.return_value.all.return_value = [binding]
-    query_mock.filter.return_value.first.return_value = role
-    
+    upstream_store = MagicMock()
+    upstream_store.list_upstreams.return_value = []
+    model_group_store = MagicMock()
+    model_group_store.list_model_groups.return_value = []
+
+    from app.dependencies import get_model_group_store, get_rbac_store, get_upstream_store
+
+    app.dependency_overrides[get_rbac_store] = lambda: rbac_store_for(
+        "admin-user",
+        "admin-role",
+        ["llm.read"],
+    )
+    app.dependency_overrides[get_upstream_store] = lambda: upstream_store
+    app.dependency_overrides[get_model_group_store] = lambda: model_group_store
+
     # Also need to mock stores used in dashboard route
     with patch("app.dashboard.router.get_upstream_store") as mock_u_store, \
          patch("app.dashboard.router.get_model_group_store") as mock_mg_store:
@@ -205,3 +258,5 @@ def test_dashboard_route_success(mock_get_validator):
         
         assert response.status_code == 200
         assert "Talos AI Gateway" in response.text
+
+    app.dependency_overrides.clear()

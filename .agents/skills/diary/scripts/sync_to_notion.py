@@ -16,7 +16,6 @@ Notion Diary Sync Script
 import os
 import sys
 import re
-import json
 import requests
 from datetime import datetime
 from pathlib import Path

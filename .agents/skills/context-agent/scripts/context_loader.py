@@ -6,9 +6,8 @@ Gera briefings de diferentes níveis de detalhe.
 from pathlib import Path
 
 from config import SESSIONS_DIR, MAX_RECENT_SESSIONS
-from models import SessionSummary
-from active_context import load_active_context, ACTIVE_CONTEXT_PATH
-from project_registry import load_registry, PROJECT_REGISTRY_PATH
+from active_context import load_active_context
+from project_registry import load_registry
 from compressor import get_archive_summary
 
 
