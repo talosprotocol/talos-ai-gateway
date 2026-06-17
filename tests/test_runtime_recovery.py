@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock
 from app.domain.tga.runtime import (
     TgaRuntime,
     ExecutionPlan,
-    ExecutionStateEnum
+    ExecutionStateEnum,
+    ArtifactType
 )
 from app.domain.tga.state_store import TgaStateStore, ExecutionLogEntry, ZERO_DIGEST
 
@@ -18,8 +19,10 @@ class TestTgaRecovery:
         store = TgaStateStore()
         runtime = TgaRuntime(store)
         
-        trace_id = "trace-recovery-001"
-        plan_id = "plan-recovery-001"
+        trace_id = "0191b7d5-1111-7111-8111-111111111111"
+        plan_id = "0191b7d5-2222-7222-8222-222222222222"
+        principal_uuid = "0191b7d5-0000-7000-8000-000000000000"
+        ts_val = "2026-06-17T22:29:05.000Z"
         
         # 1. Manually populate store with "crashed" state (EXECUTING)
         # Sequence:
@@ -32,39 +35,40 @@ class TestTgaRecovery:
         
         # Gen entry 1
         e1 = ExecutionLogEntry(
-            schema_id="v1", schema_version="v1", trace_id=trace_id, sequence_number=1,
-            prev_entry_digest=ZERO_DIGEST, entry_digest="", ts="now",
+            schema_id="v1", schema_version="v1", trace_id=trace_id, principal_id=principal_uuid, sequence_number=1,
+            prev_entry_digest=ZERO_DIGEST, entry_digest="pending", ts=ts_val,
             from_state=ExecutionStateEnum.PENDING, to_state=ExecutionStateEnum.PENDING,
-            artifact_type="action_request", artifact_id="ar-1", artifact_digest="d1",
-            artifact_payload={"intent": "test"}
+            artifact_type=ArtifactType.ACTION_REQUEST, artifact_id="0191b7d5-aaaa-7aaa-8aaa-aaaaaaaaaaaa", artifact_digest="d1"
         )
+        object.__setattr__(e1, "artifact_payload", {"intent": "test"})
         e1.entry_digest = e1.compute_digest()
         await store.append_log_entry(e1)
         
         # Gen entry 2
         e2 = ExecutionLogEntry(
-            schema_id="v1", schema_version="v1", trace_id=trace_id, sequence_number=2,
-            prev_entry_digest=e1.entry_digest, entry_digest="", ts="now",
+            schema_id="v1", schema_version="v1", trace_id=trace_id, principal_id=principal_uuid, sequence_number=2,
+            prev_entry_digest=e1.entry_digest, entry_digest="pending", ts=ts_val,
             from_state=ExecutionStateEnum.PENDING, to_state=ExecutionStateEnum.AUTHORIZED,
-            artifact_type="supervisor_decision", artifact_id="sd-1", artifact_digest="d2",
-            artifact_payload={"approved": True}
+            artifact_type=ArtifactType.SUPERVISOR_DECISION, artifact_id="0191b7d5-bbbb-7bbb-8bbb-bbbbbbbbbbbb", artifact_digest="d2"
         )
+        object.__setattr__(e2, "artifact_payload", {"approved": True})
         e2.entry_digest = e2.compute_digest()
         await store.append_log_entry(e2)
         
         # Gen entry 3 (Tool Call)
+        idem_uuid = "0191b7d5-3333-7333-8333-333333333333"
         tool_payload = {
             "call": {"name": "server:tool", "arguments": {"x": 1}},
-            "idempotency_key": "idem-1"
+            "idempotency_key": idem_uuid
         }
         e3 = ExecutionLogEntry(
-            schema_id="v1", schema_version="v1", trace_id=trace_id, sequence_number=3,
-            prev_entry_digest=e2.entry_digest, entry_digest="", ts="now",
+            schema_id="v1", schema_version="v1", trace_id=trace_id, principal_id=principal_uuid, sequence_number=3,
+            prev_entry_digest=e2.entry_digest, entry_digest="pending", ts=ts_val,
             from_state=ExecutionStateEnum.AUTHORIZED, to_state=ExecutionStateEnum.EXECUTING,
-            artifact_type="tool_call", artifact_id="tc-1", artifact_digest="d3",
-            tool_call_id="tc-1", idempotency_key="idem-1",
-            artifact_payload=tool_payload
+            artifact_type=ArtifactType.TOOL_CALL, artifact_id="0191b7d5-cccc-7ccc-8ccc-cccccccccccc", artifact_digest="d3",
+            tool_call_id="tc-1", idempotency_key=idem_uuid
         )
+        object.__setattr__(e3, "artifact_payload", tool_payload)
         e3.entry_digest = e3.compute_digest()
         await store.append_log_entry(e3)
         

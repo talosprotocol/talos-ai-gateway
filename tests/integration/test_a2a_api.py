@@ -15,15 +15,20 @@ def clear_overrides():
     yield
     app.dependency_overrides = {}
 
+from app.middleware.auth_public import AuthContext
+
 @pytest.fixture
 def mock_auth_context():
-    auth_ctx = MagicMock()
-    auth_ctx.key_id = "key-123"
-    auth_ctx.team_id = "team-1"
-    auth_ctx.org_id = "org-1"
-    auth_ctx.scopes = ["a2a.invoke", "llm.invoke", "a2a.stream"]
-    auth_ctx.allowed_model_groups = ["*"]
-    return auth_ctx
+    return AuthContext(
+        key_id="key-123",
+        team_id="team-1",
+        org_id="org-1",
+        scopes=["a2a.invoke", "llm.invoke", "a2a.stream", "a2a.send", "a2a.get"],
+        allowed_model_groups=["*"],
+        allowed_mcp_servers=["*"],
+        principal_id="principal-123",
+        signer_key_id=None,
+    )
 
 @pytest.fixture
 def mock_settings_visibility():
@@ -122,6 +127,7 @@ async def test_security_regression_tool_bypass(mock_auth_context):
          patch("app.dependencies.get_rate_limit_store") as m_rl, \
          patch("app.dependencies.get_usage_store") as m_usage, \
          patch("app.dependencies.get_routing_service") as m_routing, \
+         patch("app.domain.a2a.dispatcher.get_api_key", return_value="dummy-key"), \
          patch("app.domain.a2a.dispatcher.invoke_openai_compatible", new_callable=AsyncMock) as mock_invoke:
 
          m_rl.return_value.check_limit = AsyncMock(return_value=MagicMock(allowed=True))
@@ -129,6 +135,7 @@ async def test_security_regression_tool_bypass(mock_auth_context):
              "upstream": {"endpoint": "http://mock", "id": "u1"},
              "model_name": "gpt-4"
          }
+         m_routing.return_value.default_model_group_id.return_value = "gpt-4"
          mock_invoke.return_value = {
              "choices": [{"message": {"content": "ignored tool"}}],
              "usage": {"prompt_tokens": 1, "completion_tokens": 1}
@@ -164,8 +171,14 @@ async def test_security_regression_tool_bypass(mock_auth_context):
          assert kwargs.get("tools") is None
          assert len(kwargs["messages"]) == 1
 
-def test_tasks_get_not_implemented(mock_auth_context):
+from app.dependencies import get_task_store
+
+def test_tasks_get_not_found(mock_auth_context):
     app.dependency_overrides[get_auth_context] = lambda: mock_auth_context
+    mock_store = MagicMock()
+    mock_store.get_task.return_value = None
+    app.dependency_overrides[get_task_store] = lambda: mock_store
+    
     response = client.post("/a2a/v1/", json={
         "jsonrpc": "2.0",
         "method": "tasks.get",
@@ -175,7 +188,7 @@ def test_tasks_get_not_implemented(mock_auth_context):
     data = response.json()
     assert "error" in data
     assert data["error"]["code"] == -32000
-    assert data["error"]["data"]["talos_code"] == "NOT_IMPLEMENTED"
+    assert data["error"]["data"]["talos_code"] == "NOT_FOUND"
 
 @pytest.mark.asyncio
 async def test_tasks_send_happy_path(mock_auth_context):
@@ -186,6 +199,7 @@ async def test_tasks_send_happy_path(mock_auth_context):
          patch("app.dependencies.get_rate_limit_store") as m_rl, \
          patch("app.dependencies.get_usage_store") as m_usage, \
          patch("app.dependencies.get_routing_service") as m_routing, \
+         patch("app.domain.a2a.dispatcher.get_api_key", return_value="dummy-key"), \
          patch("app.domain.a2a.dispatcher.invoke_openai_compatible", new_callable=AsyncMock) as mock_invoke:
 
             m_rl.return_value.check_limit = AsyncMock(return_value=MagicMock(allowed=True))
@@ -196,6 +210,7 @@ async def test_tasks_send_happy_path(mock_auth_context):
                 "model_name": "gpt-4"
             }
             m_routing.return_value.select_upstream.return_value = select_res
+            m_routing.return_value.default_model_group_id.return_value = "gpt-4"
 
             # Mock invoke result
             mock_invoke.return_value = {

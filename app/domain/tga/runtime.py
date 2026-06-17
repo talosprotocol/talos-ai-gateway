@@ -77,6 +77,7 @@ class TgaRuntime:
         """Execute a TGA plan using the consolidated standalone runtime."""
         trace_id = plan.trace_id
         
+        stored_payload = None
         try:
             # 1. Authorize (Cold Path or Resume)
             if plan.capability_jws:
@@ -87,6 +88,7 @@ class TgaRuntime:
                     tool_name=plan.tool_name,
                     args=plan.tool_args
                 )
+                stored_payload = getattr(entry, "artifact_payload", None)
             else:
                 # Fallback for internal gateway plans without JWS (LEGACY PATH)
                 logger.warning(f"Executing TGA plan {trace_id} without JWS - using mock authorization")
@@ -97,6 +99,11 @@ class TgaRuntime:
                     if state.current_state in (ExecutionStateEnum.COMPLETED, ExecutionStateEnum.FAILED, ExecutionStateEnum.DENIED):
                          return ExecutionResult(trace_id=trace_id, final_state=state.current_state)
                     # Trace exists, assume it was already authorized or in-progress
+                    if state.current_state == ExecutionStateEnum.EXECUTING:
+                        entries = await self.store.list_log_entries(trace_id)
+                        tc_entry = next((e for e in entries if e.artifact_type == ArtifactType.TOOL_CALL), None)
+                        if tc_entry:
+                            stored_payload = getattr(tc_entry, "artifact_payload", None)
                 else:
                     # NEW TRACE: Manually drive state machine to EXECUTING
                     # We need valid UUIDv7 for principal_id in strict standalone mode
@@ -162,6 +169,10 @@ class TgaRuntime:
                         )
 
                     # 3. Tool Call -> EXECUTING
+                    tool_call_payload = {
+                        "tool_call_id": trace_id,
+                        "call": {"server": plan.tool_server, "name": plan.tool_name, "args": plan.tool_args}
+                    }
                     call_entry = ExecutionLogEntry(
                         trace_id=trace_id,
                         principal_id=principal_id,
@@ -175,10 +186,29 @@ class TgaRuntime:
                         ts=ts,
                         entry_digest=ZERO_DIGEST
                     )
+                    object.__setattr__(call_entry, "artifact_payload", tool_call_payload)
                     call_entry.entry_digest = call_entry.compute_digest()
                     await self.store.append_log_entry(call_entry)
 
             # 2. Phase 9.2: Classification & Guarding (Gateway Specific)
+            stored_server = plan.tool_server
+            stored_name = plan.tool_name
+            stored_args = plan.tool_args
+            tool_call = {
+                "tool_call_id": trace_id,
+                "call": {"server": plan.tool_server, "name": plan.tool_name, "args": plan.tool_args}
+            }
+
+            if stored_payload:
+                tool_call = stored_payload
+                call_info = stored_payload.get("call", {})
+                stored_name = call_info.get("name", "")
+                if ":" in stored_name and "server" not in call_info:
+                    stored_server, stored_name = stored_name.split(":", 1)
+                else:
+                    stored_server = call_info.get("server", plan.tool_server)
+                stored_args = call_info.get("args") or call_info.get("arguments") or {}
+
             if self.tool_guard:
                 tga_principal = principal or {
                     "auth_mode": "tga",
@@ -187,11 +217,11 @@ class TgaRuntime:
                 }
                 
                 await self.tool_guard.validate_call(
-                    server_id=plan.tool_server,
-                    tool_name=plan.tool_name,
+                    server_id=stored_server,
+                    tool_name=stored_name,
                     capability_read_only=False,
                     idempotency_key=f"tga-{trace_id[:16]}",
-                    tool_args=plan.tool_args,
+                    tool_args=stored_args,
                     audit_logger=self.audit_logger,
                     principal=tga_principal,
                     request_id=trace_id
@@ -199,11 +229,6 @@ class TgaRuntime:
 
             # 3. Dispatch to connector
             if plan.tool_dispatch_fn:
-                # Use tool_call_id from the log entry if possible
-                tool_call = {
-                    "tool_call_id": trace_id, # Simplified
-                    "call": {"server": plan.tool_server, "name": plan.tool_name, "args": plan.tool_args}
-                }
                 tool_effect = await plan.tool_dispatch_fn(tool_call)
             else:
                 tool_effect = {"outcome": {"status": "SUCCESS"}}

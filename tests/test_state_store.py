@@ -22,9 +22,10 @@ def make_entry(
         schema_id="talos.tga.execution_log_entry",
         schema_version="v1",
         trace_id=trace_id,
+        principal_id="01936a8b-4c2d-7000-8000-000000000000",
         sequence_number=seq,
         prev_entry_digest=prev_digest,
-        entry_digest="",  # Will be computed
+        entry_digest="pending",  # Will be computed
         ts="2026-01-15T19:00:00.000Z",
         from_state=from_state,
         to_state=to_state,

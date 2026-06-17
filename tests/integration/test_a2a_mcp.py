@@ -12,14 +12,16 @@ AUTH_HEADERS = {"Authorization": "Bearer test-token"}
 
 @pytest.fixture
 def mock_auth_context():
-    auth = MagicMock(spec=AuthContext)
-    auth.key_id = "test-key"
-    auth.team_id = "test-team"
-    auth.org_id = "test-org"
-    auth.scopes = ["a2a.invoke", "mcp.invoke"] # Both required
-    auth.allowed_mcp_servers = ["*"]
-    auth.can_access_mcp_server.return_value = True
-    return auth
+    return AuthContext(
+        key_id="test-key",
+        team_id="test-team",
+        org_id="test-org",
+        scopes=["a2a.send", "a2a.get", "mcp.invoke"],
+        allowed_model_groups=["*"],
+        allowed_mcp_servers=["*"],
+        principal_id="principal-123",
+        signer_key_id=None,
+    )
 
 @pytest.mark.asyncio
 async def test_mcp_allowed_tool_call(mock_auth_context):
@@ -123,7 +125,7 @@ async def test_mcp_denied_tool(mock_auth_context):
 
 @pytest.mark.asyncio
 async def test_mcp_missing_scope(mock_auth_context):
-    mock_auth_context.scopes = ["a2a.invoke"] # Missing mcp.invoke
+    mock_auth_context.scopes = ["a2a.send"] # Missing mcp.invoke
     app.dependency_overrides[get_auth_context] = lambda: mock_auth_context
     
     with patch("app.dependencies.get_rate_limit_store") as m_rl:

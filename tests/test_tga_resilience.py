@@ -29,9 +29,12 @@ def mock_guard():
 async def test_tga_runtime_happy_path(mock_store, mock_guard):
     runtime = TgaRuntime(store=mock_store, tool_guard=mock_guard)
     
+    trace_uuid = "0191b7d5-1111-7111-8111-111111111111"
+    plan_uuid = "0191b7d5-2222-7222-8222-222222222222"
+    
     plan = ExecutionPlan(
-        trace_id="trace-123",
-        plan_id="plan-456",
+        trace_id=trace_uuid,
+        plan_id=plan_uuid,
         tool_server="test-server",
         tool_name="test-tool",
         tool_args={"key": "value"},
@@ -45,20 +48,39 @@ async def test_tga_runtime_happy_path(mock_store, mock_guard):
     runtime._generate_id = MagicMock(return_value="id")
     runtime._make_entry = MagicMock(return_value=MagicMock(entry_digest="digest"))
     
+    recovered_state = ExecutionState(
+        trace_id=trace_uuid,
+        schema_id="v1",
+        schema_version="1.0",
+        plan_id=plan_uuid,
+        current_state=ExecutionStateEnum.EXECUTING,
+        last_sequence_number=3,
+        last_entry_digest="digest-3",
+        state_digest="state-hash"
+    )
+    mock_store.load_state = AsyncMock(side_effect=[None, recovered_state])
+    mock_store.list_log_entries = AsyncMock(return_value=[MagicMock(
+        principal_id="0191b7d5-0000-7000-8000-000000000000",
+        entry_digest="digest-3"
+    )])
+    
     result = await runtime.execute_plan(plan)
     
-    assert result.trace_id == "trace-123"
+    assert result.trace_id == trace_uuid
     assert result.final_state == ExecutionStateEnum.COMPLETED
     assert mock_store.append_log_entry.call_count >= 4 # Genesis, Decision, Executing, Completed
 
 @pytest.mark.asyncio
 async def test_tga_runtime_recovery_logic(mock_store, mock_guard):
+    trace_uuid = "0191b7d5-1111-7111-8111-111111111111"
+    plan_uuid = "0191b7d5-2222-7222-8222-222222222222"
+    
     # Simulate a crash during EXECUTING state
     recovered_state = ExecutionState(
-        trace_id="trace-123",
+        trace_id=trace_uuid,
         schema_id="v1",
         schema_version="1.0",
-        plan_id="plan-456",
+        plan_id=plan_uuid,
         current_state=ExecutionStateEnum.EXECUTING,
         last_sequence_number=3,
         last_entry_digest="digest-3",
@@ -70,30 +92,25 @@ async def test_tga_runtime_recovery_logic(mock_store, mock_guard):
     exec_entry = MagicMock(
         to_state=ExecutionStateEnum.EXECUTING,
         tool_call_id="tc-123",
-        idempotency_key="key-123"
+        idempotency_key="0191b7d5-3333-7333-8333-333333333333",
+        principal_id="0191b7d5-0000-7000-8000-000000000000"
     )
     mock_store.list_log_entries = AsyncMock(return_value=[exec_entry])
     
-    # Mock internal recovery methods
     runtime = TgaRuntime(store=mock_store, tool_guard=mock_guard)
-    runtime._recover_impl = AsyncMock(return_value=MagicMock(
-        recovered_state=ExecutionStateEnum.EXECUTING,
-        tool_call_payload={"call": "..."}
-    ))
-    runtime._dispatch_and_complete = AsyncMock(return_value=ExecutionResult(
-        trace_id="trace-123", final_state=ExecutionStateEnum.COMPLETED
-    ))
     
+    dispatch_mock = AsyncMock(return_value={"outcome": {"status": "SUCCESS"}})
     plan = ExecutionPlan(
-        trace_id="trace-123",
-        plan_id="plan-456",
+        trace_id=trace_uuid,
+        plan_id=plan_uuid,
         tool_server="test-server",
         tool_name="test-tool",
         tool_args={},
-        action_request={}
+        action_request={},
+        tool_dispatch_fn=dispatch_mock
     )
     
     result = await runtime.execute_plan(plan)
     
     assert result.final_state == ExecutionStateEnum.COMPLETED
-    runtime._recover_impl.assert_called_once()
+    dispatch_mock.assert_called_once()

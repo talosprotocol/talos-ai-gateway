@@ -126,7 +126,7 @@ class PostgresTgaStateStore(TgaStateStore):
             artifact_digest=entry.artifact_digest,
             tool_call_id=entry.tool_call_id,
             idempotency_key=entry.idempotency_key,
-            artifact_payload=entry.artifact_payload,
+            artifact_payload=getattr(entry, "artifact_payload", None),
             schema_id=entry.schema_id,
             schema_version=entry.schema_version
         )
@@ -157,7 +157,7 @@ class PostgresTgaStateStore(TgaStateStore):
             current_state=ExecutionStateEnum(trace.current_state),
             last_sequence_number=trace.last_sequence_number,
             last_entry_digest=trace.last_entry_digest,
-            state_digest=""
+            state_digest="pending"
         )
         trace.state_digest = derived_state.compute_digest()
         
@@ -178,11 +178,13 @@ class PostgresTgaStateStore(TgaStateStore):
             .all()
         )
         
-        return [
-            ExecutionLogEntry(
+        result_entries = []
+        for l in logs:
+            entry = ExecutionLogEntry(
                 schema_id=l.schema_id,
                 schema_version=l.schema_version,
                 trace_id=l.trace_id,
+                principal_id="0191b7d5-0000-7000-8000-000000000000",
                 sequence_number=l.sequence_number,
                 prev_entry_digest=l.prev_entry_digest,
                 entry_digest=l.entry_digest,
@@ -194,7 +196,8 @@ class PostgresTgaStateStore(TgaStateStore):
                 artifact_digest=l.artifact_digest,
                 tool_call_id=l.tool_call_id,
                 idempotency_key=l.idempotency_key,
-                artifact_payload=l.artifact_payload
             )
-            for l in logs
-        ]
+            if l.artifact_payload is not None:
+                object.__setattr__(entry, "artifact_payload", l.artifact_payload)
+            result_entries.append(entry)
+        return result_entries

@@ -596,20 +596,68 @@ class A2ADispatcher:
         return {"status": "TASK_STATE_CANCELED", "task_id": task_id}
 
     def _map_task_to_result(self, task: A2ATaskRecord) -> Dict[str, Any]:
-        result = {
-            "task_id": task["id"],
-            "status": self._map_v1_state(task["status"]),
-            "created_at": task["created_at"].isoformat() + "Z",
-            "updated_at": task["updated_at"].isoformat() + "Z",
-            "version": task["version"]
+        meta = task.get("request_meta") or {}
+        profile = {
+            "profile_id": meta.get("profile_id", "a2a-compat"),
+            "profile_version": meta.get("profile_version", "0.1"),
+            "spec_source": "a2a-protocol"
         }
-        if task.get("result"):
-            result["result"] = task["result"]
+        if task.get("result") and isinstance(task["result"], dict) and "profile" in task["result"]:
+            profile = task["result"]["profile"]
+            
+        created_at = task["created_at"]
+        if created_at.tzinfo is None:
+            created_str = created_at.isoformat() + "Z"
+        else:
+            created_str = created_at.isoformat()
+            
+        updated_at = task["updated_at"]
+        if updated_at.tzinfo is None:
+            updated_str = updated_at.isoformat() + "Z"
+        else:
+            updated_str = updated_at.isoformat()
+            
+        if created_str.endswith("ZZ"):
+            created_str = created_str[:-1]
+        if updated_str.endswith("ZZ"):
+            updated_str = updated_str[:-1]
+            
+        status = task["status"]
+        if status not in {"queued", "running", "completed", "failed", "canceled"}:
+            status_map = {
+                "TASK_STATE_SUBMITTED": "queued",
+                "TASK_STATE_WORKING": "running",
+                "TASK_STATE_COMPLETED": "completed",
+                "TASK_STATE_FAILED": "failed",
+                "TASK_STATE_CANCELED": "canceled",
+            }
+            status = status_map.get(status, "queued")
+
+        res = {
+            "profile": profile,
+            "task_id": task["id"],
+            "status": status,
+            "created_at": created_str,
+            "updated_at": updated_str,
+        }
+        
+        task_res = task.get("result")
+        if task_res and isinstance(task_res, dict):
+            if "artifacts" in task_res:
+                res["artifacts"] = task_res["artifacts"]
+            if "input" in task_res:
+                res["input"] = task_res["input"]
+                
         if task.get("error"):
-            result["error"] = task["error"]
-        if task.get("request_meta"):
-            result["metadata"] = task["request_meta"]
-        return result
+            err = task["error"]
+            if isinstance(err, dict):
+                res["error"] = {
+                    "code": err.get("code", -32000),
+                    "message": err.get("message", "Task execution failed"),
+                    "data": err.get("data")
+                }
+                
+        return res
 
     def _sanitize_request_meta(self, meta: Dict[str, Any]) -> Dict[str, Any]:
         ALLOWED_KEYS = {"method", "profile_id", "profile_version", "model_group_id", "has_tool_call", "tool_server_id", "tool_name", "origin_surface", "context_id", "message_id"}

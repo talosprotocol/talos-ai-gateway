@@ -14,9 +14,12 @@ class MockReplayDetector(ReplayDetector):
         self.replayed.add(k)
         return False
 
+from pathlib import Path
+
 @pytest.fixture
 def vectors():
-    with open("contracts/test_vectors/crypto/http_attestation_v1.json") as f:
+    path = Path(__file__).resolve().parents[3] / "contracts" / "test_vectors" / "crypto" / "http_attestation_v1.json"
+    with open(path) as f:
         return json.load(f)
 
 @pytest.fixture

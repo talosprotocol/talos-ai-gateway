@@ -88,6 +88,8 @@ class MemoryTaskStore(TaskStore):
         status: str, 
         expected_version: int,
         result: Optional[Dict] = None, 
+        artifacts: Optional[Dict] = None,
+        state_metadata: Optional[Dict] = None,
         error: Optional[Dict] = None
     ) -> int:
         task = _TASK_STATE.get(task_id)
@@ -99,9 +101,13 @@ class MemoryTaskStore(TaskStore):
              raise ValueError("Version mismatch")
              
         task["status"] = status
-        if result:
+        if result is not None:
             task["result"] = result
-        if error:
+        if artifacts is not None:
+            task["artifacts"] = artifacts
+        if state_metadata is not None:
+            task["state_metadata"] = state_metadata
+        if error is not None:
             task["error"] = error
         task["version"] = current_version + 1
         return task["version"]

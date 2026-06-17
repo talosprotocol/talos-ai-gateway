@@ -135,7 +135,16 @@ class TaskStore(ABC):
     @abstractmethod
     def create_task(self, task_data: A2ATaskRecord) -> None: pass
     @abstractmethod
-    def update_task_status(self, task_id: str, status: str, expected_version: int, result: Optional[Dict[str, Any]] = None, error: Optional[Dict[str, Any]] = None) -> int: pass
+    def update_task_status(
+        self, 
+        task_id: str, 
+        status: str, 
+        expected_version: int, 
+        result: Optional[Dict[str, Any]] = None, 
+        artifacts: Optional[Dict[str, Any]] = None,
+        state_metadata: Optional[Dict[str, Any]] = None,
+        error: Optional[Dict[str, Any]] = None
+    ) -> int: pass
     @abstractmethod
     def get_task(self, task_id: str, team_id: str) -> Optional[A2ATaskRecord]: pass
     @abstractmethod

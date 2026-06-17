@@ -38,9 +38,11 @@ def mock_auth_context():
         key_id="key-123",
         team_id="team-alpha",
         org_id="org-1",
-        scopes=["a2a.invoke", "llm.invoke"],
+        scopes=["a2a.invoke", "llm.invoke", "a2a.send", "a2a.get"],
         allowed_model_groups=["gpt-4o"],
-        allowed_mcp_servers=["*"]
+        allowed_mcp_servers=["*"],
+        principal_id="principal-123",
+        signer_key_id=None
     )
 
 client = TestClient(app)
@@ -53,8 +55,9 @@ AUTH_HEADERS = {
 @pytest.mark.asyncio
 async def test_persistence_lifecycle_and_privacy(db_session, mock_auth_context):
     # Override Auth
-    from app.api.a2a.routes import get_auth_context_or_none
+    from app.middleware.auth_public import get_auth_context_or_none, get_auth_context
     app.dependency_overrides[get_auth_context_or_none] = lambda: mock_auth_context
+    app.dependency_overrides[get_auth_context] = lambda: mock_auth_context
     
     # Real Store with SQLite
     task_store = PostgresTaskStore(db_session)
@@ -65,6 +68,7 @@ async def test_persistence_lifecycle_and_privacy(db_session, mock_auth_context):
          patch("app.dependencies.get_rate_limit_store") as m_rl, \
          patch("app.dependencies.get_mcp_client") as m_mcp, \
          patch("app.domain.a2a.dispatcher.get_redis_client") as m_redis_getter, \
+         patch("app.domain.a2a.dispatcher.get_api_key", return_value="dummy-key"), \
          patch("app.domain.a2a.dispatcher.invoke_openai_compatible") as m_invoke, \
          patch("app.domain.routing.RoutingService.select_upstream") as m_routing:
 
@@ -145,29 +149,37 @@ async def test_persistence_lifecycle_and_privacy(db_session, mock_auth_context):
          # 5. GET Request (Cross Team)
          # Mock a different team
          other_auth = AuthContext(
-             key_id="other", team_id="team-beta", org_id="org-1", 
-             scopes=["a2a.invoke"], allowed_model_groups=[], allowed_mcp_servers=[]
+             key_id="key-456",
+             team_id="team-beta",
+             org_id="org-1",
+             scopes=["a2a.invoke", "llm.invoke", "a2a.send", "a2a.get"],
+             allowed_model_groups=["gpt-4o"],
+             allowed_mcp_servers=["*"],
+             principal_id="principal-456",
+             signer_key_id=None
          )
          app.dependency_overrides[get_auth_context_or_none] = lambda: other_auth
+         app.dependency_overrides[get_auth_context] = lambda: other_auth
          
          response_deny = client.post("/a2a/v1/", json=payload_get, headers=AUTH_HEADERS)
          data_deny = response_deny.json()
          assert data_deny["error"]["code"] == -32000
          assert data_deny["error"]["data"]["talos_code"] == "NOT_FOUND"
-
+         
          # 6. Verify Audit Logging
          audit_mock = m_audit.return_value.append_event
          assert audit_mock.called
          # Check content of one event
          call_args = audit_mock.call_args_list[0]
          event = call_args[0][0] # First arg is event object
-         assert event["context"] == "a2a"
-         assert event["team_id"] == "team-alpha"
-         assert event["request_id"] == "req-1"
+         assert event["details"]["context"] == "a2a"
+         assert event["details"]["team_id"] == "team-alpha"
+         assert event["resource_id"] == "req-1"
 
          # 7. CAS Conflict Test
          # Reset Auth Override
          app.dependency_overrides[get_auth_context_or_none] = lambda: mock_auth_context
+         app.dependency_overrides[get_auth_context] = lambda: mock_auth_context
          
          # Create a task manually via store
          t3_id = "task-conflict"
