@@ -7,10 +7,13 @@ import os
 from typing import Optional
 from ..domain.rbac.policy_engine import PolicyEngine
 from ..domain.rbac.models import Scope, SurfaceRoute
+from ..utils.id import uuid7
 
 logger = logging.getLogger(__name__)
 
 class RBACMiddleware(BaseHTTPMiddleware):
+    """Legacy RBAC path; app.main uses auth_public dependency enforcement instead."""
+
     def __init__(self, app, policy_engine: Optional[PolicyEngine] = None):
         super().__init__(app)
         self.is_production = os.getenv("TALOS_ENV") == "production"
@@ -127,6 +130,10 @@ class RBACMiddleware(BaseHTTPMiddleware):
                 content={
                     "code": decision.reason_code,
                     "message": "Access Denied",
-                    "request_id": "req_123" # Mock
+                    "request_id": (
+                        getattr(request.state, "request_id", None)
+                        or request.headers.get("X-Request-ID")
+                        or uuid7()
+                    ),
                 }
             )

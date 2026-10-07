@@ -624,9 +624,11 @@ async def get_auth_context_or_none(
 def require_scope(scope: str) -> Any:
     """Dependency that requires a specific scope."""
     async def checker(
+        request: Request,
         auth: AuthContext = Depends(get_auth_context),
     ) -> AuthContext:
         if not auth.has_scope(scope):
+            request.state.authz_decision = "DENY"
             raise HTTPException(
                 status_code=403,
                 detail={

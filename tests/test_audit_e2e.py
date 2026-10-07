@@ -87,3 +87,55 @@ def test_audit_e2e_success(client, mock_audit_logger):
     # Note: The Mock logger won't produce the final 'event' structure unless we replicate build_event logic.
     # But we can verify inputs to log_event.
     pass
+
+
+def test_scope_denial_is_audited_as_denied_with_request_id(client, mock_audit_logger):
+    from fastapi import Depends, Request
+    from app.dependencies import get_audit_logger
+    from app.middleware.auth_public import AuthContext, get_auth_context, require_scope
+    from app.domain.registry import SurfaceItem
+    import app.dependencies as deps_module
+
+    surface = SurfaceItem(
+        id="test.scope-denial",
+        type="http",
+        required_scopes=[],
+        attestation_required=False,
+        audit_action="test.scope-denial",
+        data_classification="public",
+        audit_meta_allowlist=[],
+        path_template="/test/audit-scope-denial",
+    )
+
+    async def authenticated_without_scope(request: Request):
+        context = AuthContext(
+            key_id="key-2",
+            team_id="team-2",
+            org_id="org-2",
+            scopes=["llm.read"],
+            allowed_model_groups=["*"],
+            allowed_mcp_servers=["*"],
+            principal_id="principal-2",
+        )
+        request.state.auth = context
+        request.state.surface = surface
+        return context
+
+    app.dependency_overrides[get_auth_context] = authenticated_without_scope
+    app.dependency_overrides[get_audit_logger] = lambda: mock_audit_logger
+    deps_module._audit_logger_instance = mock_audit_logger
+
+    @app.get("/test/audit-scope-denial")
+    def protected_route(auth=Depends(require_scope("mcp.invoke"))):
+        return {"ok": True}
+
+    response = client.get(
+        "/test/audit-scope-denial",
+        headers={"X-Request-ID": "req-scope-denial-1"},
+    )
+
+    assert response.status_code == 403
+    mock_audit_logger.log_event.assert_called_once()
+    kwargs = mock_audit_logger.log_event.call_args.kwargs
+    assert kwargs["outcome"] == "denied"
+    assert kwargs["request_id"] == "req-scope-denial-1"
