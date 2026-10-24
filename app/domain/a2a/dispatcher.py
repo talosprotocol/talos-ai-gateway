@@ -1,8 +1,18 @@
+import asyncio
+import logging
 import os
 from app.utils.id import uuid7
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, cast
+
+LOGGER = logging.getLogger(__name__)
+
+# Protocol-level timeout defaults (seconds).
+# syncTimeoutSeconds       – how long tasks.send blocks before returning async hints.
+# executionTimeoutSeconds  – hard ceiling before the background coroutine is killed.
+A2A_DEFAULT_SYNC_TIMEOUT: float = 10.0
+A2A_DEFAULT_EXECUTION_TIMEOUT: float = 180.0
 
 from app.api.a2a.jsonrpc import validator, JsonRpcException
 from app.domain.a2a.mapper_llm import map_input_to_llm_messages, map_llm_response_to_task
@@ -116,7 +126,7 @@ class A2ADispatcher:
         task_store: TaskStore,
         mcp_client: McpClient,
         capability_validator: Optional[Any] = None,
-        audit_logger: Optional[Any] = None, # app.domain.audit.AuditLogger
+        audit_logger: Optional[Any] = None,  # app.domain.audit.AuditLogger
     ) -> None:
         self.auth = auth
         self.routing = routing_service
@@ -129,27 +139,24 @@ class A2ADispatcher:
         self._redis_promise = None
         self.redis: Optional[Redis] = None
 
-
     async def _get_redis(self) -> Optional[Redis]:
         if self.redis is None:
             if self._redis_promise is None:
                 self._redis_promise = get_redis_client()
             self.redis = await self._redis_promise
         return self.redis
-        
+
     async def dispatch(
-        self, 
-        payload: Dict[str, Any], 
+        self,
+        payload: Dict[str, Any],
         capability: Optional[str] = None,
-        idempotency_key: Optional[str] = None
+        idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        Main entry point for JSON-RPC dispatch.
-        """
+        """Main entry point for JSON-RPC dispatch."""
         request_id = payload.get("id")
         method = payload.get("method")
         normalized_payload = payload
-        
+
         # Distributed Systems Reasoning: Idempotency Check
         if idempotency_key:
             redis = await self._get_redis()
@@ -165,7 +172,7 @@ class A2ADispatcher:
         try:
             # 1. Validate Envelope
             validator.validate_request_envelope(payload)
-            
+
             # 2. Check Allowlist
             if method not in ALLOWED_METHODS:
                 raise JsonRpcException(-32601, "Method not found")
@@ -176,12 +183,12 @@ class A2ADispatcher:
                     params_copy.pop("tool_call")
                 normalized_payload = dict(payload)
                 normalized_payload["params"] = params_copy
-            
+
             # 3. Validate Method Request (Params)
             validator.validate_method_request(method, normalized_payload)
-            
+
             params = normalized_payload.get("params", {})
-            
+
             # 4. Dispatch
             result = None
             if method == "tasks.send":
@@ -192,28 +199,28 @@ class A2ADispatcher:
                 result = await self.handle_cancel(params)
             elif method == "tasks.list":
                 result = await self.handle_list(params)
-                
+
             # 5. Validate Response Structure (Optional/Strict)
             response_payload = {
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "result": result
+                "result": result,
             }
-            
+
             # Strict validation for tasks.get results
             if method == "tasks.get":
                 validator.validate_method_response(method, response_payload)
-            
+
             # Distributed Systems Reasoning: Save to Idempotency Cache
             if idempotency_key:
                 redis = await self._get_redis()
                 if redis:
                     cache_key = f"a2a:idem:{self.auth.team_id}:{idempotency_key}"
                     try:
-                        await redis.setex(cache_key, 86400, json.dumps(response_payload)) # 24h TTL
+                        await redis.setex(cache_key, 86400, json.dumps(response_payload))  # 24h TTL
                     except Exception:
                         pass
-                
+
             return response_payload
 
         except JsonRpcException as e:
@@ -223,8 +230,8 @@ class A2ADispatcher:
                 "error": {
                     "code": e.code,
                     "message": e.message,
-                    "data": e.data
-                }
+                    "data": e.data,
+                },
             }
         except Exception as e:
             # Internal Error
@@ -234,28 +241,28 @@ class A2ADispatcher:
                 "error": {
                     "code": -32603,
                     "message": "Internal error",
-                    "data": {"details": str(e)}
-                }
+                    "data": {"details": str(e)},
+                },
             }
 
     async def _publish_event(self, task_id: str, status: str, version: int, request_id: str) -> None:
         redis = await self._get_redis()
         if not redis:
             return
-        
+
         event = {
             "event_id": f"{task_id}:{version}",
             "task_id": task_id,
-            "status": status, 
+            "status": status,
             "version": version,
             "request_id": str(request_id),
-            "updated_at": datetime.now(timezone.utc).isoformat()
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-        
+
         try:
             # PubSub
             await redis.publish(f"a2a:tasks:{task_id}", json.dumps(event))
-            
+
             # Cache Last Event (1h TTL)
             await redis.setex(f"a2a:last_event:{task_id}", 3600, json.dumps(event))
         except Exception:
@@ -294,38 +301,255 @@ class A2ADispatcher:
         except Exception:
             pass
 
-    async def handle_send(self, params: Dict[str, Any], request_id: Any, capability: Optional[str] = None) -> Dict[str, Any]:
-        # Scope Check for A2A
+    # ---------------------------------------------------------------------- #
+    # Internal helpers: task work extraction                                   #
+    # ---------------------------------------------------------------------- #
+
+    async def _execute_task_work(
+        self,
+        task_id: str,
+        current_version: int,
+        params: Dict[str, Any],
+        request_id: Any,
+        capability: Optional[str],
+    ) -> Dict[str, Any]:
+        """Run the LLM/MCP work for a task, update store to COMPLETED, and return result.
+
+        Raises JsonRpcException or upstream-error exceptions on failure; the caller
+        is responsible for persisting the FAILED state in that case.
+        """
+        tool_call = params.get("tool_call") if isinstance(params.get("tool_call"), dict) else None
+        result_task: Optional[Dict[str, Any]] = None
+
+        # --- A2: MCP Path ---
+        if tool_call:
+            result_task = await self.mcp_mapper.execute_tool(
+                tool_call,
+                self.auth,
+                str(request_id),
+                capability=capability,
+            )
+
+        else:
+            # --- A1: LLM Path ---
+            if "llm.invoke" not in self.auth.scopes:
+                raise JsonRpcException(
+                    -32000,
+                    "Permission denied",
+                    data={"talos_code": "RBAC_DENIED", "details": "Missing 'llm.invoke' scope"},
+                )
+
+            if not self.auth.allowed_model_groups:
+                raise JsonRpcException(-32000, "No models allowed", data={"talos_code": "CONFIG_ERROR"})
+
+            if "*" in self.auth.allowed_model_groups:
+                model_group_id = self.routing.default_model_group_id()
+            else:
+                model_group_id = self.auth.allowed_model_groups[0]
+
+            if not model_group_id:
+                raise JsonRpcException(-32000, "No models allowed", data={"talos_code": "CONFIG_ERROR"})
+
+            self._audit("a2a.tasks.send", "started", resource_id=str(request_id))
+
+            start_time = time.time()
+
+            routing_req_id = uuid7()
+            selection = self.routing.select_upstream(model_group_id, routing_req_id)
+            if not selection:
+                raise JsonRpcException(
+                    -32000, "No upstream available", data={"talos_code": "UPSTREAM_UNAVAILABLE"}
+                )
+
+            upstream = selection["upstream"]
+            model_name = selection["model_name"]
+            provider = str(upstream.get("provider", "openai")).lower()
+            api_key = get_api_key(upstream.get("credentials_ref", ""))
+
+            llm_messages = map_input_to_llm_messages(params.get("input", []))
+
+            if _simulated_llm_enabled():
+                raw_result = _build_simulated_completion(
+                    model_name=model_name,
+                    upstream_id=str(upstream.get("id", "mock-upstream")),
+                    provider=provider,
+                    messages=llm_messages,
+                    reason="A2A mock responses enabled",
+                )
+            elif _dev_mode_enabled() and provider in AUTH_REQUIRED_PROVIDERS and not api_key:
+                raw_result = _build_simulated_completion(
+                    model_name=model_name,
+                    upstream_id=str(upstream.get("id", "mock-upstream")),
+                    provider=provider,
+                    messages=llm_messages,
+                    reason=f"no API key configured for {provider}",
+                )
+            else:
+                raw_result = await invoke_openai_compatible(
+                    endpoint=upstream["endpoint"],
+                    model_name=model_name,
+                    messages=llm_messages,
+                    api_key=api_key,
+                )
+
+            latency = int((time.time() - start_time) * 1000)
+            self._record_usage(model_group_id, "success", latency, raw_result)
+            self._audit("a2a.tasks.send", "completed", resource_id=str(request_id))
+
+            result_task = map_llm_response_to_task(raw_result, params.get("profile", {}))
+
+        # Stamp with persistent task ID and persist COMPLETED
+        result_task["task_id"] = task_id  # type: ignore[index]
+        new_version = await run_in_threadpool(
+            self.task_store.update_task_status,
+            task_id,
+            "completed",
+            expected_version=current_version,
+            result=result_task,
+        )
+        await self._publish_event(task_id, "completed", new_version, request_id)
+        return result_task  # type: ignore[return-value]
+
+    def _classify_error(self, exc: Exception) -> Dict[str, Any]:
+        """Map an exception to a structured error dict for the task store."""
+        if isinstance(exc, JsonRpcException):
+            return exc.data or {"code": exc.code, "message": exc.message}
+        if isinstance(exc, UpstreamRateLimitError):
+            return self._upstream_error_data("UPSTREAM_RATE_LIMITED", exc)
+        if isinstance(exc, UpstreamServerError):
+            return self._upstream_error_data("UPSTREAM_5XX", exc)
+        if isinstance(exc, UpstreamClientError):
+            return self._upstream_error_data("UPSTREAM_4XX", exc)
+        if isinstance(exc, UpstreamTransportError):
+            return self._upstream_error_data("UPSTREAM_TRANSPORT_ERROR", exc)
+        return {"talos_code": "INTERNAL_ERROR", "details": str(exc)}
+
+    async def _run_background_work(
+        self,
+        task_id: str,
+        current_version: int,
+        params: Dict[str, Any],
+        request_id: Any,
+        capability: Optional[str],
+        execution_timeout: float,
+    ) -> None:
+        """Background coroutine: runs _execute_task_work with a hard ceiling.
+
+        On TimeoutError  → marks task FAILED with error_code TASK_EXECUTION_TIMEOUT.
+        On other errors  → marks task FAILED with structured error details.
+        """
+        try:
+            await asyncio.wait_for(
+                self._execute_task_work(
+                    task_id, current_version, params, request_id, capability
+                ),
+                timeout=execution_timeout,
+            )
+        except asyncio.TimeoutError:
+            LOGGER.warning(
+                "Background task %s exceeded execution ceiling of %.1f s; marking FAILED.",
+                task_id,
+                execution_timeout,
+            )
+            error_data: Dict[str, Any] = {
+                "talos_code": "TASK_EXECUTION_TIMEOUT",
+                "details": (
+                    f"Task execution timed out: exceeded ceiling of {execution_timeout} seconds."
+                ),
+                "timeout_seconds": execution_timeout,
+            }
+            try:
+                await run_in_threadpool(
+                    self.task_store.update_task_status,
+                    task_id,
+                    "failed",
+                    expected_version=current_version,
+                    error=error_data,
+                )
+                await self._publish_event(task_id, "failed", current_version + 1, request_id)
+            except Exception:
+                LOGGER.exception(
+                    "Failed to persist TASK_EXECUTION_TIMEOUT for task %s", task_id
+                )
+        except Exception as exc:
+            LOGGER.exception("Background task %s failed: %s", task_id, exc)
+            error_data = self._classify_error(exc)
+            try:
+                await run_in_threadpool(
+                    self.task_store.update_task_status,
+                    task_id,
+                    "failed",
+                    expected_version=current_version,
+                    error=error_data,
+                )
+                await self._publish_event(task_id, "failed", current_version + 1, request_id)
+            except Exception:
+                LOGGER.exception(
+                    "Failed to persist failure for background task %s", task_id
+                )
+
+    # ---------------------------------------------------------------------- #
+    # Public handler: tasks.send                                              #
+    # ---------------------------------------------------------------------- #
+
+    async def handle_send(
+        self,
+        params: Dict[str, Any],
+        request_id: Any,
+        capability: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        # ------------------------------------------------------------------ #
+        # 0. Auth scope check                                                  #
+        # ------------------------------------------------------------------ #
         if not _has_any_scope(self.auth.scopes, "a2a.send"):
-             raise JsonRpcException(-32000, "Permission denied", data={"talos_code": "RBAC_DENIED", "details": "Missing A2A send scope"})
-        
+            raise JsonRpcException(
+                -32000,
+                "Permission denied",
+                data={"talos_code": "RBAC_DENIED", "details": "Missing A2A send scope"},
+            )
+
+        # ------------------------------------------------------------------ #
+        # 1. Protocol timeout config (per-request override via configuration)  #
+        # ------------------------------------------------------------------ #
+        config = params.get("configuration") or {}
+        return_immediately: bool = bool(config.get("returnImmediately", False))
+        sync_timeout: float = float(config.get("syncTimeoutSeconds", A2A_DEFAULT_SYNC_TIMEOUT))
+        execution_timeout: float = float(
+            config.get("executionTimeoutSeconds", A2A_DEFAULT_EXECUTION_TIMEOUT)
+        )
+
+        # ------------------------------------------------------------------ #
+        # 2. Persist task in QUEUED state                                      #
+        # ------------------------------------------------------------------ #
         task_id = str(params.get("task_id") or uuid7())
-        
-        # 1. Persist QUEUED
-        # Safe Metadata Only
+
         raw_tool_call = params.get("tool_call")
         tool_call = raw_tool_call if isinstance(raw_tool_call, dict) else None
         profile = params.get("profile", {})
-        request_meta = {
+        request_meta: Dict[str, Any] = {
             "method": "tasks.send",
             "has_tool_call": bool(tool_call),
             "tool_name": tool_call.get("tool_name") if tool_call else None,
             "profile_id": profile.get("profile_id", "default"),
             "profile_version": profile.get("profile_version", "0.1"),
-            "model_group_id": self.auth.allowed_model_groups[0] if self.auth.allowed_model_groups else "unknown",
-            "origin_surface": "a2a"
+            "model_group_id": (
+                self.auth.allowed_model_groups[0]
+                if self.auth.allowed_model_groups
+                else "unknown"
+            ),
+            "origin_surface": "a2a",
         }
         if params.get("context_id"):
             request_meta["context_id"] = str(params["context_id"])
         if params.get("message_id"):
             request_meta["message_id"] = str(params["message_id"])
-        
+
         request_meta = self._sanitize_request_meta(request_meta)
         input_redacted = params.get("input_redacted")
         if not isinstance(input_redacted, dict):
             input_redacted = None
-        
-        task_data = {
+
+        task_data: Dict[str, Any] = {
             "id": task_id,
             "team_id": self.auth.team_id,
             "key_id": self.auth.key_id,
@@ -338,12 +562,10 @@ class A2ADispatcher:
             "request_meta": request_meta,
             "input_redacted": input_redacted,
             "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc)
+            "updated_at": datetime.now(timezone.utc),
         }
-        
-        
-        # Cast to Any to satisfy mypy argument check for run_in_threadpool
-        # ideally task_data should be a valid TypedDict or Pydantic model
+        # Cast to Any to satisfy mypy argument check for run_in_threadpool;
+        # ideally task_data should be a valid TypedDict or Pydantic model.
         await run_in_threadpool(self.task_store.create_task, cast(Any, task_data))
         current_version = 1
 
@@ -358,164 +580,126 @@ class A2ADispatcher:
                     self.auth.team_id,
                     raw_config,
                 )
-        
-        # New: Check for explicit tool_call in params (Phase A2)
-        
-        # Rate Limiting
-        rpm_limit = 60 
+
+        # ------------------------------------------------------------------ #
+        # 3. Rate limit check                                                  #
+        # ------------------------------------------------------------------ #
+        rpm_limit = 60
         key = rate_limit_key(self.auth.team_id, self.auth.key_id, "a2a", "invocations")
         rl_res = await self.rl_store.check_limit(key, rpm_limit)
-        
+
         if not rl_res.allowed:
             self._audit("denied", "rate_limited", error_code="RATE_LIMITED")
-            
-            # Fail Task
             await run_in_threadpool(
-                self.task_store.update_task_status, 
-                task_id, "failed", 
+                self.task_store.update_task_status,
+                task_id,
+                "failed",
                 expected_version=current_version,
-                error={"code": "RATE_LIMITED"}
+                error={"code": "RATE_LIMITED"},
             )
-            
-            raise JsonRpcException(-32000, "Rate limit exceeded", data={"talos_code": "RATE_LIMITED", "retry_after_ms": 1000})
+            raise JsonRpcException(
+                -32000,
+                "Rate limit exceeded",
+                data={"talos_code": "RATE_LIMITED", "retry_after_ms": 1000},
+            )
 
-        # 2. Update RUNNING
+        # ------------------------------------------------------------------ #
+        # 4. Transition to RUNNING                                             #
+        # ------------------------------------------------------------------ #
         current_version = await run_in_threadpool(
             self.task_store.update_task_status,
-            task_id, "running",
-            expected_version=current_version
+            task_id,
+            "running",
+            expected_version=current_version,
         )
         await self._publish_event(task_id, "running", current_version, request_id)
 
-        try:
-            result_task = None
-            
-            # --- A2: MCP Path ---
-            if tool_call:
-                result_task = await self.mcp_mapper.execute_tool(
-                    tool_call, 
-                    self.auth, 
-                    str(request_id),
-                    capability=capability
+        # ------------------------------------------------------------------ #
+        # 5. returnImmediately=true: fire-and-forget, return RUNNING snapshot  #
+        # ------------------------------------------------------------------ #
+        if return_immediately:
+            asyncio.create_task(
+                self._run_background_work(
+                    task_id, current_version, params, request_id, capability, execution_timeout
                 )
-
-            else:
-                # --- A1: LLM Path ---
-                if "llm.invoke" not in self.auth.scopes:
-                     raise JsonRpcException(-32000, "Permission denied", data={"talos_code": "RBAC_DENIED", "details": "Missing 'llm.invoke' scope"})
-                
-                if not self.auth.allowed_model_groups:
-                     raise JsonRpcException(-32000, "No models allowed", data={"talos_code": "CONFIG_ERROR"})
-                
-                if "*" in self.auth.allowed_model_groups:
-                    model_group_id = self.routing.default_model_group_id()
-                else:
-                    model_group_id = self.auth.allowed_model_groups[0]
-                
-                if not model_group_id:
-                    raise JsonRpcException(-32000, "No models allowed", data={"talos_code": "CONFIG_ERROR"})
-                
-                # Audit Start
-                self._audit("a2a.tasks.send", "started", resource_id=str(request_id))
-                
-                start_time = time.time()
-                
-                # Route
-                routing_req_id = uuid7()
-                selection = self.routing.select_upstream(model_group_id, routing_req_id)
-                if not selection:
-                    raise JsonRpcException(-32000, "No upstream available", data={"talos_code": "UPSTREAM_UNAVAILABLE"})
-                
-                upstream = selection["upstream"]
-                model_name = selection["model_name"]
-                provider = str(upstream.get("provider", "openai")).lower()
-                api_key = get_api_key(upstream.get("credentials_ref", ""))
-                
-                llm_messages = map_input_to_llm_messages(params.get("input", []))
-
-                if _simulated_llm_enabled():
-                    result = _build_simulated_completion(
-                        model_name=model_name,
-                        upstream_id=str(upstream.get("id", "mock-upstream")),
-                        provider=provider,
-                        messages=llm_messages,
-                        reason="A2A mock responses enabled",
-                    )
-                elif _dev_mode_enabled() and provider in AUTH_REQUIRED_PROVIDERS and not api_key:
-                    result = _build_simulated_completion(
-                        model_name=model_name,
-                        upstream_id=str(upstream.get("id", "mock-upstream")),
-                        provider=provider,
-                        messages=llm_messages,
-                        reason=f"no API key configured for {provider}",
-                    )
-                else:
-                    result = await invoke_openai_compatible(
-                        endpoint=upstream["endpoint"],
-                        model_name=model_name,
-                        messages=llm_messages,
-                        api_key=api_key
-                    )
-                
-                latency = int((time.time() - start_time) * 1000)
-                
-                self._record_usage(model_group_id, "success", latency, result)
-                self._audit("a2a.tasks.send", "completed", resource_id=str(request_id))
-                
-                result_task = map_llm_response_to_task(result, params.get("profile", {}))
-
-            # 3. Update COMPLETED
-            # Overwrite task ID in result to match persistent ID
-            result_task["task_id"] = task_id
-            
-            current_version = await run_in_threadpool(
-                self.task_store.update_task_status,
-                task_id, "completed",
-                expected_version=current_version,
-                result=result_task
             )
-            await self._publish_event(task_id, "completed", current_version, request_id)
-            
-            return result_task
+            return {
+                "task_id": task_id,
+                "status": "running",
+                "async": True,
+                "pollIntervalMs": 1000,
+                "executionTimeoutSeconds": execution_timeout,
+                "expiresAt": (
+                    datetime.now(timezone.utc) + timedelta(seconds=execution_timeout)
+                ).isoformat(),
+            }
 
-        except Exception as e:
-            # 3. Update FAILED
-            error_data = {"details": str(e)}
-            if isinstance(e, JsonRpcException):
-                error_data = e.data or {"code": e.code, "message": e.message}
-            elif isinstance(e, UpstreamRateLimitError):
-                error_data = self._upstream_error_data("UPSTREAM_RATE_LIMITED", e)
-            elif isinstance(e, UpstreamServerError):
-                error_data = self._upstream_error_data("UPSTREAM_5XX", e)
-            elif isinstance(e, UpstreamClientError):
-                error_data = self._upstream_error_data("UPSTREAM_4XX", e)
-            elif isinstance(e, UpstreamTransportError):
-                error_data = self._upstream_error_data("UPSTREAM_TRANSPORT_ERROR", e)
-            
+        # ------------------------------------------------------------------ #
+        # 6. Sync window: attempt to resolve within syncTimeoutSeconds         #
+        # ------------------------------------------------------------------ #
+        try:
+            return await asyncio.wait_for(
+                self._execute_task_work(
+                    task_id, current_version, params, request_id, capability
+                ),
+                timeout=sync_timeout,
+            )
+
+        except asyncio.TimeoutError:
+            # Sync window expired — hand off to a background task and return
+            # async polling hints so the client can poll tasks.get.
+            LOGGER.info(
+                "tasks.send for task %s exceeded sync window (%.1f s); promoting to background.",
+                task_id,
+                sync_timeout,
+            )
+            asyncio.create_task(
+                self._run_background_work(
+                    task_id, current_version, params, request_id, capability, execution_timeout
+                )
+            )
+            return {
+                "task_id": task_id,
+                "status": "running",
+                "async": True,
+                "pollIntervalMs": 1000,
+                "executionTimeoutSeconds": execution_timeout,
+                "expiresAt": (
+                    datetime.now(timezone.utc) + timedelta(seconds=execution_timeout)
+                ).isoformat(),
+            }
+
+        except Exception as exc:
+            # Synchronous failure — update store and re-raise for caller.
+            error_data = self._classify_error(exc)
             await run_in_threadpool(
                 self.task_store.update_task_status,
-                task_id, "failed",
+                task_id,
+                "failed",
                 expected_version=current_version,
-                error=error_data
+                error=error_data,
             )
             await self._publish_event(task_id, "failed", current_version + 1, request_id)
 
-            if isinstance(e, JsonRpcException):
-                raise e
-            if isinstance(e, UpstreamRateLimitError):
+            if isinstance(exc, JsonRpcException):
+                raise exc
+            if isinstance(exc, UpstreamRateLimitError):
                 raise JsonRpcException(-32000, "Upstream rate limited", data=error_data)
-            if isinstance(e, UpstreamServerError):
+            if isinstance(exc, UpstreamServerError):
                 raise JsonRpcException(-32000, "Upstream server error", data=error_data)
-            if isinstance(e, UpstreamClientError):
+            if isinstance(exc, UpstreamClientError):
                 raise JsonRpcException(-32000, "Upstream rejected request", data=error_data)
-            if isinstance(e, UpstreamTransportError):
+            if isinstance(exc, UpstreamTransportError):
                 raise JsonRpcException(-32000, "Upstream transport error", data=error_data)
-            raise JsonRpcException(-32000, "Internal error processing task", data={"talos_code": "INTERNAL_ERROR", "details": str(e)})
-
+            raise JsonRpcException(
+                -32000,
+                "Internal error processing task",
+                data={"talos_code": "INTERNAL_ERROR", "details": str(exc)},
+            )
 
     async def handle_get(self, params: Dict[str, Any]) -> Dict[str, Any]:
         if not _has_any_scope(self.auth.scopes, "a2a.send", "a2a.get"):
-             raise JsonRpcException(-32000, "Permission denied", data={"talos_code": "RBAC_DENIED"})
+            raise JsonRpcException(-32000, "Permission denied", data={"talos_code": "RBAC_DENIED"})
 
         task_id = params.get("task_id")
         if not task_id:
@@ -529,12 +713,12 @@ class A2ADispatcher:
 
     async def handle_list(self, params: Dict[str, Any]) -> Dict[str, Any]:
         if not _has_any_scope(self.auth.scopes, "a2a.send", "a2a.get"):
-             raise JsonRpcException(-32000, "Permission denied", data={"talos_code": "RBAC_DENIED"})
+            raise JsonRpcException(-32000, "Permission denied", data={"talos_code": "RBAC_DENIED"})
 
         page_size = params.get("page_size", 50)
         status = params.get("status")
         context_id = params.get("context_id")
-        
+
         cursor_updated_at = None
         cursor_task_id = None
         cursor = params.get("cursor")
@@ -555,11 +739,11 @@ class A2ADispatcher:
             status=status,
             page_size=page_size,
             cursor_updated_at=cursor_updated_at,
-            cursor_task_id=cursor_task_id
+            cursor_task_id=cursor_task_id,
         )
 
         results = [self._map_task_to_result(t) for t in tasks]
-        
+
         next_cursor = None
         if next_cursor_tuple:
             next_cursor = f"{next_cursor_tuple[0].isoformat()}:{next_cursor_tuple[1]}"
@@ -567,12 +751,12 @@ class A2ADispatcher:
         return {
             "tasks": results,
             "next_cursor": next_cursor,
-            "has_more": bool(next_cursor)
+            "has_more": bool(next_cursor),
         }
 
     async def handle_cancel(self, params: Dict[str, Any]) -> Dict[str, Any]:
         if not _has_any_scope(self.auth.scopes, "a2a.send", "a2a.cancel"):
-             raise JsonRpcException(-32000, "Permission denied", data={"talos_code": "RBAC_DENIED"})
+            raise JsonRpcException(-32000, "Permission denied", data={"talos_code": "RBAC_DENIED"})
 
         task_id = params.get("task_id")
         if not task_id:
@@ -588,8 +772,9 @@ class A2ADispatcher:
         # Update to CANCELED
         await run_in_threadpool(
             self.task_store.update_task_status,
-            task_id, "canceled",
-            expected_version=task["version"]
+            task_id,
+            "canceled",
+            expected_version=task["version"],
         )
         await self._publish_event(task_id, "canceled", task["version"] + 1, task["request_id"])
 
@@ -600,28 +785,28 @@ class A2ADispatcher:
         profile = {
             "profile_id": meta.get("profile_id", "a2a-compat"),
             "profile_version": meta.get("profile_version", "0.1"),
-            "spec_source": "a2a-protocol"
+            "spec_source": "a2a-protocol",
         }
         if task.get("result") and isinstance(task["result"], dict) and "profile" in task["result"]:
             profile = task["result"]["profile"]
-            
+
         created_at = task["created_at"]
         if created_at.tzinfo is None:
             created_str = created_at.isoformat() + "Z"
         else:
             created_str = created_at.isoformat()
-            
+
         updated_at = task["updated_at"]
         if updated_at.tzinfo is None:
             updated_str = updated_at.isoformat() + "Z"
         else:
             updated_str = updated_at.isoformat()
-            
+
         if created_str.endswith("ZZ"):
             created_str = created_str[:-1]
         if updated_str.endswith("ZZ"):
             updated_str = updated_str[:-1]
-            
+
         status = task["status"]
         if status not in {"queued", "running", "completed", "failed", "canceled"}:
             status_map = {
@@ -633,60 +818,66 @@ class A2ADispatcher:
             }
             status = status_map.get(status, "queued")
 
-        res = {
+        res: Dict[str, Any] = {
             "profile": profile,
             "task_id": task["id"],
             "status": status,
             "created_at": created_str,
             "updated_at": updated_str,
         }
-        
+
         task_res = task.get("result")
         if task_res and isinstance(task_res, dict):
             if "artifacts" in task_res:
                 res["artifacts"] = task_res["artifacts"]
             if "input" in task_res:
                 res["input"] = task_res["input"]
-                
+
         if task.get("error"):
             err = task["error"]
             if isinstance(err, dict):
                 res["error"] = {
                     "code": err.get("code", -32000),
                     "message": err.get("message", "Task execution failed"),
-                    "data": err.get("data")
+                    "data": err.get("data"),
                 }
-                
+
         return res
 
     def _sanitize_request_meta(self, meta: Dict[str, Any]) -> Dict[str, Any]:
-        ALLOWED_KEYS = {"method", "profile_id", "profile_version", "model_group_id", "has_tool_call", "tool_server_id", "tool_name", "origin_surface", "context_id", "message_id"}
-        FORBIDDEN_KEYS = {"messages", "prompt", "input", "tool_input", "headers", "authorization", "api_key", "secret", "cookie"}
-        
+        ALLOWED_KEYS = {
+            "method", "profile_id", "profile_version", "model_group_id",
+            "has_tool_call", "tool_server_id", "tool_name", "origin_surface",
+            "context_id", "message_id",
+        }
+        FORBIDDEN_KEYS = {
+            "messages", "prompt", "input", "tool_input",
+            "headers", "authorization", "api_key", "secret", "cookie",
+        }
+
         sanitized = {}
         for k, v in meta.items():
             if k in FORBIDDEN_KEYS:
-                # Log warning or just drop? Plan says "reject if forbidden keys present (optional)". 
-                # We will strict reject for internal safety? No, just drop and ensure they don't get in.
-                # Actually, user said: "reject if forbidden keys are present (optional, but recommended in prod)"
-                # But request_meta is constructed by US in handle_send, not passed by user.
-                # So we just need to ensure *we* don't put them in.
+                # request_meta is constructed by us in handle_send, not passed by user.
+                # We just need to ensure we don't put forbidden keys in.
                 continue
             if k in ALLOWED_KEYS:
                 sanitized[k] = v
-                
-        # Deep scan check (Simulated for safety, but since we construct it, shallow check of keys is enough)
-        # But if 'tool_name' contained a 'secret', that would be bad. 
-        # Since we construct request_meta from params, we are safe if we only select known scalars.
+
+        # Deep scan check: since we construct request_meta from params,
+        # a shallow key check is sufficient for our threat model.
         return sanitized
 
-
-    def _audit(self, action: str, outcome: str, resource_id: Optional[str] = None, details: Optional[Dict[str, Any]] = None, error_code: Optional[str] = None) -> None:
+    def _audit(
+        self,
+        action: str,
+        outcome: str,
+        resource_id: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+        error_code: Optional[str] = None,
+    ) -> None:
         audit_details = details or {}
-        audit_details.update({
-            "team_id": self.auth.team_id,
-            "context": "a2a"
-        })
+        audit_details.update({"team_id": self.auth.team_id, "context": "a2a"})
         if resource_id:
             audit_details["resource_id"] = resource_id
         if error_code:
@@ -702,52 +893,58 @@ class A2ADispatcher:
             "status": outcome,
             "schema_id": "talos.audit.a2a.v1",
             "schema_version": 1,
-            "details": audit_details
+            "details": audit_details,
         }
         self.audit_store.append_event(event)
 
         # Forward to central audit service if configured
         if self.audit_logger:
             from app.domain.registry import SurfaceItem
-            # Map a2a internal event to a surface-like structure for the central logger
+
             surface_id = action if action.startswith("a2a.") else f"a2a.{action}"
             mock_surface = SurfaceItem(
                 id=surface_id,
                 type="internal",
                 path_template=f"/a2a/v1/rpc#{action}",
-                audit_meta_allowlist=list(audit_details.keys())
+                audit_meta_allowlist=list(audit_details.keys()),
             )
             self.audit_logger.log_event(
                 surface=mock_surface,
                 principal={
                     "auth_mode": "bearer",
                     "principal_id": self.auth.principal_id or self.auth.key_id,
-                    "team_id": self.auth.team_id
+                    "team_id": self.auth.team_id,
                 },
                 http_info={"method": "INTERNAL", "status_code": 200},
                 outcome=outcome,
                 request_id=resource_id or str(uuid7()),
                 metadata=audit_details,
-                resource={"resource_type": "a2a_task", "resource_id": resource_id}
+                resource={"resource_type": "a2a_task", "resource_id": resource_id},
             )
 
-    def _record_usage(self, target: str, status: str, latency: int, result: Optional[Dict[str, Any]] = None) -> None:
+    def _record_usage(
+        self,
+        target: str,
+        status: str,
+        latency: int,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> None:
         usage = {
             "id": uuid7(),
             "key_id": self.auth.key_id,
             "team_id": self.auth.team_id,
             "org_id": self.auth.org_id,
-            "surface": "a2a", # Surface is a2a
-            "target": target, # But target is the model group
+            "surface": "a2a",   # Surface is a2a
+            "target": target,   # But target is the model group
             "latency_ms": latency,
             "status": status,
             "input_tokens": 0,
-            "output_tokens": 0
+            "output_tokens": 0,
         }
         if result and "usage" in result:
             usage["input_tokens"] = result["usage"].get("prompt_tokens", 0)
             usage["output_tokens"] = result["usage"].get("completion_tokens", 0)
-            
+
         self.usage_store.record_usage(usage)
 
     def _map_v1_state(self, status: str) -> str:
