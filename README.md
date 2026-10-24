@@ -17,6 +17,15 @@ Unified LLM Inference + MCP Tool Gateway with RBAC and Audit.
 
 ## Quick Start
 
+### Via Homebrew (macOS & Linux)
+
+```bash
+brew tap talosprotocol/tap
+brew install talos-gateway
+```
+
+### Local Development
+
 ```bash
 # Start infrastructure
 make up
